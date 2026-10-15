@@ -74,7 +74,8 @@ def browsers_dir() -> Path:
 
 def _chromium_exe_candidates() -> tuple[str, ...]:
     if os.name == "nt":
-        return ("chrome-win/chrome.exe",)
+        # Newer Playwright: chrome-win64/ ; older: chrome-win/
+        return ("chrome-win64/chrome.exe", "chrome-win/chrome.exe")
     return ("chrome-linux/chrome", "chrome-linux/headless_shell")
 
 
