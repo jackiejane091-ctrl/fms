@@ -111,7 +111,14 @@ button.primary { background:#16a34a; color:#fff; font-weight:700; }
 button.small { font-size:12px; padding:4px 10px; }
 /* script builder (alignment pass #5, v6.2.0.0) */
 .builder { display:grid; grid-template-columns:280px 1fr; gap:16px; margin:16px 0; align-items:start; }
-.builder-panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+.builder-panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px;
+  /* independent scrolling: left actions list and right script box scroll separately */
+  max-height:calc(100vh - 300px); min-height:320px; overflow-y:auto; }
+/* keep the panel headers visible while scrolling */
+.builder-panel h3, #availPanel p.muted, #availPanel #actSearch,
+#canvasPanel .canvas-head { position:sticky; top:0; background:var(--panel);
+  z-index:2; padding-bottom:4px; }
+#availPanel #actSearch { top:52px; }
 .builder-panel h3 { margin:0 0 6px; font-size:14px; letter-spacing:.4px; }
 .builder-panel h4 { margin:12px 0 6px; font-size:12px; color:var(--muted); letter-spacing:.4px; }
 #actSearch { width:100%; box-sizing:border-box; margin:6px 0; }
