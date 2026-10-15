@@ -65,6 +65,24 @@ def _open_in_browser_when_ready(url: str, timeout: int = 60) -> None:
         webbrowser.open(url)
 
 
+class _FMSApi:
+    """JS bridge for native dialogs (pywebview desktop window only)."""
+
+    def pick_folder(self) -> str:
+        try:
+            import webview
+
+            wins = webview.windows
+            if not wins:
+                return ""
+            result = wins[0].create_file_dialog(webview.FOLDER_DIALOG)
+            if result:
+                return result[0]
+        except Exception:
+            pass
+        return ""
+
+
 def _maybe_create_desktop_shortcut() -> None:
     """Create a Desktop shortcut (Windows, frozen only) on first launch."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
@@ -112,7 +130,7 @@ def main() -> None:
             daemon=True).start()
         if _wait_for_server(url):
             webview.create_window("FMS", url, width=1280, height=800,
-                                  min_size=(960, 600))
+                                  min_size=(960, 600), js_api=_FMSApi())
             webview.start()
         return
     except ImportError:

@@ -26,14 +26,14 @@
         </select>
       </label>
       <label>Tags <input name="tags" id="f_tags"></label>
-      <label>Main Images (folder) <input name="main_image_folder" id="f_main_image_folder"></label>
+      <label>Main Images (folder) <input name="main_image_folder" id="f_main_image_folder"> <button type="button" class="browse-btn" onclick="pickFolder('f_main_image_folder')">📁 Browse</button></label>
       <label>Category
         <select name="category" id="f_category">
           <option value="">Select Category</option>
           {% for c in categories %}<option value="{{ c|replace(' > ', '||') }}">{{ c }}</option>{% endfor %}
         </select>
       </label>
-      <label>Extra Images (folder) <input name="extra_image_folder" id="f_extra_image_folder"></label>
+      <label>Extra Images (folder) <input name="extra_image_folder" id="f_extra_image_folder"> <button type="button" class="browse-btn" onclick="pickFolder('f_extra_image_folder')">📁 Browse</button></label>
       <label>Availability
         <select name="availability" id="f_availability">
           <option value="">Select Availability</option>
@@ -190,6 +190,17 @@ async function delProd(id){
   if(!confirm('Delete product #' + id + '?')) return;
   await fetch('/api/products/' + id, {method: 'DELETE'});
   location.reload();
+}
+// Native folder picker (desktop app only — needs the pywebview JS bridge).
+async function pickFolder(fieldId){
+  try{
+    if(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder){
+      const p = await window.pywebview.api.pick_folder();
+      if(p) $(fieldId).value = p;
+    }else{
+      alert('Browse sirf FMS desktop app me kaam karta hai — path copy karke paste kar dein.');
+    }
+  }catch(e){ /* dialog cancelled */ }
 }
 </script>
 {% endblock %}
