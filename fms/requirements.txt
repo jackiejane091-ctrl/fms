@@ -1,0 +1,11 @@
+# FMS Phase 1 — pinned dependencies (tested 2026-10-15, Python 3.12)
+# NOTE: Playwright also needs its browser once on the target machine:
+#     python -m playwright install chromium
+fastapi==0.143.1
+uvicorn==0.54.0
+playwright==1.64.0
+cryptography==50.0.2
+pyotp==2.10.0
+jinja2==3.1.6
+httpx==0.28.1
+python-multipart==0.0.32

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}— Run #{{ run.id }}{% endblock %}
+{% block content %}
+<h1>Run #{{ run.id }} <span class="pill {{ run.status }}">{{ run.status }}</span>
+  {% if run.paused %}<span class="pill paused">paused</span>{% endif %}</h1>
+<p class="muted">Group: {{ run.group_id }} · Mode: {{ run.mode }} ·
+   Posted {{ run.total_posted }}/{{ run.total_planned }} ·
+   Started {{ run.started_at or '—' }}</p>
+
+<div class="row">
+  <button onclick="ctl('pause')" {% if not run.live or run.paused %}disabled{% endif %}>Pause</button>
+  <button onclick="ctl('resume')" {% if not run.paused %}disabled{% endif %}>Resume</button>
+  <button onclick="ctl('stop')" class="danger" {% if not run.live %}disabled{% endif %}>Stop</button>
+  {% if run.mode == 'download_images_titles' and run.live %}
+  <button onclick="signal('download_start')" class="primary">Start Download</button>
+  {% endif %}
+  <a href="/logs?run_id={{ run.id }}">View logs</a>
+</div>
+
+<h2>Per-account progress</h2>
+<table>
+  <tr><th>Account</th><th>Status</th><th>Quota</th><th>Posted</th><th>Failed</th></tr>
+  {% for a in run.per_account %}
+  <tr>
+    <td>{{ a.label }}</td>
+    <td>{{ a.status }}</td>
+    <td>{{ a.quota if a.quota is not none else '—' }}</td>
+    <td>{{ a.posted }}</td>
+    <td>{{ a.failed }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% if run.mode == 'script' %}
+<h2>Script progress — {{ run.script_name }}</h2>
+<table>
+  <tr><th>Account</th><th>Blocks done</th><th>Finished</th></tr>
+  {% for s in run.script_progress %}
+  <tr>
+    <td>{{ s.label }}</td>
+    <td>{{ s.done_count }}/{{ s.total_blocks }}
+      <span class="muted">{{ s.done_blocks|join(', ') }}</span></td>
+    <td>{{ 'yes' if s.finished else 'no' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if run.mode == 'manual_publish' %}
+<h2>Filled tabs — publish manually in the browser</h2>
+<table>
+  <tr><th>#</th><th>Account</th><th>Tab</th><th>Title</th><th>Status</th><th></th></tr>
+  {% for t in run.tabs %}
+  <tr>
+    <td>{{ t.id }}</td>
+    <td>{{ t.account_label }}</td>
+    <td>{{ t.tab_ref }}</td>
+    <td>{{ t.title_used }}</td>
+    <td><span class="pill {{ t.status }}">{{ t.status }}</span></td>
+    <td>
+      {% if t.status == 'filled' %}
+      <button onclick="tabStatus({{ t.id }}, 'published')">Mark published</button>
+      <button onclick="tabStatus({{ t.id }}, 'skipped')">Skip</button>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">No tabs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Latest log lines</h2>
+<pre class="logs">{% for l in logs %}[{{ l.created_at }}] {{ l.level }}: {{ l.message }}
+{% endfor %}</pre>
+{% endblock %}
+{% block scripts %}
+<script>
+async function ctl(action){
+  await fetch('/api/runs/{{ run.id }}/'+action, {method:'POST'});
+  setTimeout(()=>location.reload(), 600);
+}
+async function signal(name){
+  const f = new FormData();
+  f.append('name', name);
+  await fetch('/api/runs/{{ run.id }}/signal', {method:'POST', body: f});
+  setTimeout(()=>location.reload(), 600);
+}
+async function tabStatus(tabId, status){
+  const f = new FormData();
+  f.append('status', status);
+  await fetch('/api/runs/{{ run.id }}/tabs/' + tabId, {method:'POST', body: f});
+  setTimeout(()=>location.reload(), 400);
+}
+// Auto-refresh while the run is live
+{% if run.live %}setTimeout(()=>location.reload(), 5000);{% endif %}
+</script>
+{% endblock %}

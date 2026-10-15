@@ -1,0 +1,89 @@
+# Builds the split-bundle Windows package on a Windows runner.
+# PyInstaller cannot cross-compile for Windows from Linux/macOS, so the
+# .exe is produced here, not locally.
+#
+# SPLIT BUNDLE (v0.2.0+):
+#   Job "build-app":     small app-only FMS.exe (~50 MB) -> artifact "FMS-windows-app"
+#   Job "build-browsers": browsers-windows.zip (~600 MB, Chromium for Windows)
+#                         -> artifact "browsers-windows". Rebuild ONLY when the
+#                         pinned Playwright version changes (the Chromium build
+#                         is tied to it); the zip is uploaded to Google Drive
+#                         once and reused by every FMS install.
+#
+# Trigger: Actions tab -> "Build FMS (split bundle)" -> Run workflow
+#          (also runs automatically when you push a tag like v0.2.0)
+# After the run: download both artifacts, upload to the user's Google Drive,
+# then update fms_version.json on Drive (see ROADMAP.md "Release process").
+
+name: Build FMS (split bundle)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-app:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r fms/requirements.txt pyinstaller
+
+      - name: Build app-only FMS.exe
+        run: python build_exe.py
+
+      - name: Upload FMS.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: FMS-windows-app
+          path: dist/FMS.exe
+          if-no-files-found: error
+
+  build-browsers:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright and Chromium
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r fms/requirements.txt
+          python -m playwright install chromium
+
+      - name: Zip the browsers folder
+        run: |
+          $src = Join-Path $env:USERPROFILE "AppData\Local\ms-playwright"
+          if (-not (Test-Path $src)) { throw "ms-playwright folder not found at $src" }
+          Compress-Archive -Path "$src\*" -DestinationPath browsers-windows.zip -Force
+          $mb = [math]::Round((Get-Item browsers-windows.zip).Length / 1MB)
+          Write-Host "browsers-windows.zip: $mb MB"
+
+      - name: Upload browsers zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: browsers-windows
+          path: browsers-windows.zip
+          if-no-files-found: error

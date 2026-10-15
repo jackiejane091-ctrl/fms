@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% block title %}— Runs{% endblock %}
+{% block content %}
+<h1>Runs</h1>
+
+<details open>
+  <summary><b>+ Start new run</b></summary>
+  <form id="runForm" class="grid-form">
+    <div class="row wide" id="runControls">
+      <span><b>Start:</b> <button type="submit" style="background:var(--ok);color:#06121f">Start</button></span>
+      <span><b>Pause/Continue:</b> <button type="button" onclick="pauseAll()">Pause All</button></span>
+      <span><b>Schedule At:</b> <input name="schedule_at" id="schedTop" type="datetime-local"></span>
+      <button type="button" class="speedbtn" id="speedBtn" onclick="cycleSpeed()" title="Run speed">⚡1x</button>
+      <input type="hidden" name="speed" id="speedVal" value="1">
+    </div>
+    <label>Group
+      <select name="group_id" id="groupSel" required onchange="loadBoard()">
+        {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.account_count }} accounts)</option>{% endfor %}
+      </select>
+    </label>
+    <label>Script:
+      <select name="mode" id="actionSel" onchange="modeChanged()">
+        <option value="" selected disabled>— Select Script —</option>
+        {% for mode, label in actions %}<option value="{{ mode }}">{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label id="scriptRow">Behavior script (or use the action above)
+      <select name="script_id" id="scriptSel" onchange="modeChanged()">
+        <option value="">— use action above —</option>
+        {% for s in scripts %}<option value="{{ s.id }}">{{ s.name }} ({{ s.blocks|length }} blocks)</option>{% endfor %}
+      </select>
+    </label>
+    <label id="pubModeRow" style="display:none">Publish mode
+      <select name="publish_mode">
+        <option value="all_together">All drafts together</option>
+        <option value="one_by_one">One by one (with gap)</option>
+      </select>
+    </label>
+    <label id="pubGapRow" style="display:none">Gap (minutes, one-by-one)
+      <input name="publish_gap_min" type="number" step="0.5" value="5" min="0">
+    </label>
+    <label>Batch Size: <span class="spinner">
+      <button type="button" onclick="stepBatch(1)">+</button>
+      <input name="batch_size" id="batchSize" type="number" value="2" min="1" max="10" style="width:64px;text-align:center">
+      <button type="button" onclick="stepBatch(-1)">−</button>
+    </span></label>
+    <label>Min ads / account <input name="min_ads" type="number" value="1" min="0"></label>
+    <label>Max ads / account <input name="max_ads" type="number" value="3" min="1"></label>
+    <label>Min Actions <input name="renew_min_count" type="number" value="1" min="0"></label>
+    <label>Max Actions <input name="renew_max_count" type="number" value="5" min="1"></label>
+    <label>Min price <input name="min_price" type="number" step="0.01" placeholder="blank = product price"></label>
+    <label>Max price <input name="max_price" type="number" step="0.01"></label>
+    <label>Min delay (s) <input name="min_delay_s" type="number" step="0.1" value="2"></label>
+    <label>Max delay (s) <input name="max_delay_s" type="number" step="0.1" value="5"></label>
+    <label>Account start gap (s) <input name="account_start_gap_s" type="number" step="0.5" value="5" min="0"></label>
+    <label>No of browsers parallely <input name="max_parallel_browsers" type="number" value="5" min="1" max="10"></label>
+    <label>Retry count before quitting <input name="retry_count" type="number" value="3" min="0" max="10"></label>
+    <label>Tabs without limit <input name="tabs_without_limit" type="number" value="2" min="1"></label>
+    <label>Tabs draft and publish <input name="tabs_draft_publish" type="number" value="6" min="1"></label>
+    <fieldset class="wide" id="typingBox">
+      <legend><b>Typing mode</b></legend>
+      <label class="check"><input type="radio" name="typing_mode" value="human" checked onchange="typingChanged()">
+        <b>Human-like typing</b><br><span class="muted">Types character by character. Most human-like, slowest, best against strict detection.</span></label>
+      <label class="check"><input type="radio" name="typing_mode" value="fast_js" onchange="typingChanged()">
+        <b>Fast fill (JS)</b><br><span class="muted">Instantly sets values. Fastest, no clipboard use. Less human-like; Facebook may treat it more strictly.</span></label>
+      <label class="check"><input type="radio" name="typing_mode" value="clipboard" onchange="typingChanged()">
+        <b>OS clipboard paste</b><br><span class="muted">Copies each value and pastes with Ctrl+V. More human-like than JS, but uses your system clipboard (can interfere while you work) and is slower when many browsers run because pastes are queued.</span></label>
+      <div id="humanOpts" style="margin-top:8px">
+        <div class="muted">Human-like typing options</div>
+        <div class="row" style="margin:6px 0">
+          <span class="muted">Speed presets:</span>
+          <button type="button" data-preset="fast" onclick="setPreset('fast')">Fast</button>
+          <button type="button" data-preset="normal" class="active-preset" onclick="setPreset('normal')">Normal</button>
+          <button type="button" data-preset="careful" onclick="setPreset('careful')">Careful</button>
+          <input type="hidden" name="typing_preset" id="typingPreset" value="normal">
+        </div>
+        <div class="grid-form">
+          <label>Min delay (ms) <input name="min_delay_ms" type="number" value="30" min="0" oninput="typingChanged()"></label>
+          <label>Max delay (ms) <input name="max_delay_ms" type="number" value="80" min="0" oninput="typingChanged()"></label>
+          <label>Thinking pause min (ms) <input name="thinking_pause_min_ms" type="number" value="200" min="0"></label>
+          <label>Thinking pause max (ms) <input name="thinking_pause_max_ms" type="number" value="600" min="0"></label>
+          <label>Extra delay after punctuation (ms) <input name="extra_delay_after_punctuation_ms" type="number" value="80" min="0"></label>
+          <label>Newline pause min (ms) <input name="newline_pause_min_ms" type="number" value="300" min="0"></label>
+          <label>Newline pause max (ms) <input name="newline_pause_max_ms" type="number" value="900" min="0"></label>
+          <label>Long-text hybrid paste above (chars) <input name="hybrid_threshold_chars" type="number" value="500" min="1" title="Texts longer than this are typed partially then pasted"></label>
+        </div>
+        <p class="muted" id="estSpeed"></p>
+      </div>
+    </fieldset>
+    <fieldset class="wide" id="ixBox">
+      <legend><b>IXBrowser (anti-detect)</b> <span class="muted">— optional, Chrome stays the default</span></legend>
+      <label class="check"><input type="checkbox" name="ix_browser_enabled" id="ixEnabled" onchange="ixChanged()"> Use IXBrowser instead of Chrome</label>
+      <p class="muted">Install IXBrowser, enable Local API, and use a plan that includes API access. Per-account Profile ID is set in Manage Accounts (leave empty to auto-create on first launch). Profiles created by FMS are placed in the FBMRobo group in IXBrowser.</p>
+      <div class="grid-form" id="ixFields" style="display:none">
+        <label>Local API Host <input name="ix_local_api_host" id="ixHost" type="text" value="127.0.0.1"></label>
+        <label>Local API Port <input name="ix_local_api_port" id="ixPort" type="number" value="53200" min="1" max="65535"></label>
+        <span><button type="button" onclick="ixReset()">Reset host &amp; port</button></span>
+      </div>
+    </fieldset>
+    <label id="waitRow" style="display:none">Wait (minutes) <input name="wait_minutes" type="number" step="0.5" value="0" min="0"></label>
+    <label id="locRow" style="display:none">New location <input name="new_location" type="text" placeholder="e.g. Manchester, UK"></label>
+    <label id="urlsRow" class="wide" style="display:none">Listing URLs (one per line)
+      <textarea name="action_urls" rows="3" cols="60" placeholder="https://www.facebook.com/marketplace/item/..."></textarea>
+    </label>
+    <label id="scrapOptsRow" style="display:none"><input type="checkbox" name="scrap_include_description" checked> Also copy description
+      <input type="checkbox" name="scrap_include_location" checked> Also copy location</label>
+    <label id="dlRow" class="wide" style="display:none">Download folder (on this laptop)
+      <input name="download_folder" type="text" placeholder="e.g. C:\FMS\downloads — empty = default folder">
+      <span class="hint">The browser opens on Marketplace: search, open each wanted product in a new tab, then press "Start Download" on the run page.</span>
+    </label>
+    <label class="wide">Products (tick at least one for posting actions)
+      <div class="checklist">
+      {% for p in products %}
+        <label class="check"><input type="checkbox" name="product_ids" value="{{ p.id }}"> {{ p.name }}</label>
+      {% endfor %}
+      </div>
+    </label>
+    <label class="wide">Exclude accounts (one label per line)
+      <textarea name="exclude_labels" rows="2" cols="60" placeholder="enter accounts to exclude..."></textarea>
+    </label>
+    <label class="check"><input type="checkbox" name="hide_from_friends"> Hide from friends</label>
+    <label class="check"><input type="checkbox" name="shuffle"> Shuffle account order</label>
+    <label class="check"><input type="checkbox" name="split_locations"> Split locations across accounts</label>
+    <label class="check"><input type="checkbox" name="fresh" checked> Fresh data (uncheck = resume interrupted run)</label>
+    <button type="submit">Start run</button>
+  </form>
+  <p class="muted">Wave semantics: batch size N opens N browsers at once, each on a different
+  account; the next wave starts only after the current wave fully finishes.
+  Parallelism is capped by "No of browsers parallely".</p>
+</details>
+
+<h2 id="boardSec">Run board</h2>
+<div class="board" id="boardPanels">
+  <div class="panel">
+    <h3>Accounts: (<span id="bpAccountsN">0</span>)</h3>
+    <input id="boardFilter" placeholder="Filter accounts..." oninput="boardFilter()" style="width:100%;margin-bottom:6px">
+    <ul id="bpAccounts"></ul>
+  </div>
+  <div class="panel"><h3>Pending: (<span id="bpPendingN">0</span>)</h3><ul id="bpPending"></ul></div>
+  <div class="panel"><h3>In Progress: (<span id="bpProgN">0</span>)</h3><ul id="bpProg"></ul></div>
+  <div class="panel"><h3>Done Posting: (<span id="bpDoneN">0</span>)</h3><ul id="bpDone"></ul></div>
+  <div class="panel"><h3>Failed: (<span id="bpFailedN">0</span>)</h3><ul id="bpFailed"></ul></div>
+  <div class="panel"><h3>Exclude: (<span id="bpExclN">0</span>)</h3><ul id="bpExcl"></ul></div>
+</div>
+<div class="row" style="justify-content:space-between">
+  <h2 style="margin:0">Logs:</h2>
+  <span><button type="button" onclick="boardToggleLogs()" id="logsToggleBtn">Expand/Collapse</button>
+  <button type="button" onclick="boardCopyLogs()">Copy All</button></span>
+</div>
+<pre class="logs" id="boardLogs" style="display:none"></pre>
+
+<h2>All runs</h2>
+<table>
+  <tr><th>#</th><th>Group</th><th>Mode</th><th>Status</th><th>Posted</th><th>Started</th><th>Finished</th><th></th></tr>
+  {% for r in runs %}
+  <tr>
+    <td>{{ r.id }}</td>
+    <td>{{ r.group_name }}</td>
+    <td>{{ r.mode }}</td>
+    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+    <td>{{ r.total_posted }}/{{ r.total_planned }}</td>
+    <td>{{ r.started_at or '—' }}</td>
+    <td>{{ r.finished_at or '—' }}</td>
+    <td><a href="/runs/{{ r.id }}">open</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="muted">No runs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+const POSTING_MODES = ['complete','draft_publish','manual_publish','relist_edit','create_drafts','publish_drafts'];
+function stepBatch(d){
+  const el = document.getElementById('batchSize');
+  el.value = Math.min(10, Math.max(1, (parseInt(el.value)||2) + d));
+}
+function cycleSpeed(){
+  const order = ['1','1.5','2'];
+  const el = document.getElementById('speedVal');
+  el.value = order[(order.indexOf(el.value)+1) % order.length];
+  document.getElementById('speedBtn').textContent = '⚡' + el.value + 'x';
+}
+async function pauseAll(){
+  const r = await fetch('/api/runs');
+  const runs = await r.json();
+  const live = runs.find(x => x.status === 'running' || x.status === 'paused');
+  if(!live){ alert('No live run to pause.'); return; }
+  await fetch('/api/runs/'+live.id+'/pause', {method:'POST'});
+  alert('Paused run #' + live.id);
+}
+function modeChanged(){
+  const useScript = document.getElementById('scriptSel').value !== '';
+  // If a behavior script is chosen, the action select is disabled and the
+  // run submits as a script run.
+  document.getElementById('actionSel').disabled = useScript;
+  const m = useScript ? 'script' : document.getElementById('actionSel').value;
+  const dp = m === 'draft_publish';
+  document.getElementById('pubModeRow').style.display = dp ? '' : 'none';
+  document.getElementById('pubGapRow').style.display = dp ? '' : 'none';
+  document.getElementById('locRow').style.display = m === 'change_location' ? '' : 'none';
+  const needUrls = m === 'scrap_data';
+  document.getElementById('urlsRow').style.display = needUrls ? '' : 'none';
+  document.getElementById('scrapOptsRow').style.display = m === 'scrap_data' ? '' : 'none';
+  document.getElementById('dlRow').style.display = m === 'download_images_titles' ? '' : 'none';
+  document.getElementById('waitRow').style.display = m === 'wait_next_turn' ? '' : 'none';
+}
+modeChanged();
+// -- typing mode UI -----------------------------------------------------------
+const PRESET_SCALE = {fast: 0.5, normal: 1.0, careful: 2.0};
+function typingChanged(){
+  const mode = document.querySelector('input[name="typing_mode"]:checked').value;
+  document.getElementById('humanOpts').style.display = mode === 'human' ? '' : 'none';
+  const f = document.getElementById('runForm');
+  const g = k => parseFloat(new FormData(f).get(k)) || 0;
+  const scale = PRESET_SCALE[document.getElementById('typingPreset').value] || 1;
+  const avg = (g('min_delay_ms') + g('max_delay_ms')) / 2 * scale;
+  const cps = avg > 0 ? (1000 / avg) : 0;
+  const secs = cps > 0 ? Math.round((500 / cps) * 1.2) : 0;
+  document.getElementById('estSpeed').textContent =
+    `Estimated speed: ~${cps.toFixed(1)} chars/sec. A 500-char description takes about ${secs}s (excluding hybrid paste).`;
+}
+function setPreset(p){
+  document.getElementById('typingPreset').value = p;
+  document.querySelectorAll('#typingBox [data-preset]').forEach(b =>
+    b.classList.toggle('active-preset', b.dataset.preset === p));
+  typingChanged();
+}
+function ixChanged(){
+  document.getElementById('ixFields').style.display =
+    document.getElementById('ixEnabled').checked ? '' : 'none';
+}
+function ixReset(){
+  document.getElementById('ixHost').value = '127.0.0.1';
+  document.getElementById('ixPort').value = 53200;
+}
+typingChanged();
+document.getElementById('runForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const num = (k, d) => { const v = f.get(k); return v === '' || v === null ? d : parseFloat(v); };
+  const useScript = f.get('script_id') !== '';
+  const body = {
+    group_id: parseInt(f.get('group_id')),
+    mode: useScript ? 'script' : f.get('mode'),
+    product_ids: f.getAll('product_ids').map(Number),
+    script_id: useScript ? parseInt(f.get('script_id')) : null,
+    batch_size: parseInt(f.get('batch_size')), min_ads: parseInt(f.get('min_ads')),
+    max_ads: parseInt(f.get('max_ads')),
+    renew_min_count: parseInt(f.get('renew_min_count') || '1'),
+    renew_max_count: parseInt(f.get('renew_max_count') || '5'),
+    min_price: num('min_price', null), max_price: num('max_price', null),
+    min_delay_s: num('min_delay_s', 2), max_delay_s: num('max_delay_s', 5),
+    shuffle: !!f.get('shuffle'), split_locations: !!f.get('split_locations'),
+    publish_mode: f.get('publish_mode') || 'all_together',
+    publish_gap_min: num('publish_gap_min', 5),
+    hide_from_friends: !!f.get('hide_from_friends'),
+    account_start_gap_s: num('account_start_gap_s', 5),
+    max_parallel_browsers: parseInt(f.get('max_parallel_browsers')) || 5,
+    retry_count: parseInt(f.get('retry_count')) || 0,
+    tabs_without_limit: parseInt(f.get('tabs_without_limit')) || 2,
+    tabs_draft_publish: parseInt(f.get('tabs_draft_publish')) || 6,
+    action_urls: (f.get('action_urls') || '').split('\n').map(s=>s.trim()).filter(Boolean),
+    scrap_include_description: !!f.get('scrap_include_description'),
+    scrap_include_location: !!f.get('scrap_include_location'),
+    download_folder: f.get('download_folder') || null,
+    new_location: f.get('new_location') || null,
+    wait_minutes: num('wait_minutes', 0),
+    exclude_labels: (f.get('exclude_labels') || '').split('\n').map(s=>s.trim()).filter(Boolean),
+    speed: num('speed', 1),
+    schedule_at: f.get('schedule_at') || null,
+    fresh: !!f.get('fresh'),
+    typing_mode: f.get('typing_mode') || 'human',
+    typing_preset: f.get('typing_preset') || 'normal',
+    min_delay_ms: parseInt(f.get('min_delay_ms')) || 30,
+    max_delay_ms: parseInt(f.get('max_delay_ms')) || 80,
+    thinking_pause_min_ms: parseInt(f.get('thinking_pause_min_ms')) || 200,
+    thinking_pause_max_ms: parseInt(f.get('thinking_pause_max_ms')) || 600,
+    extra_delay_after_punctuation_ms: parseInt(f.get('extra_delay_after_punctuation_ms')) || 80,
+    newline_pause_min_ms: parseInt(f.get('newline_pause_min_ms')) || 300,
+    newline_pause_max_ms: parseInt(f.get('newline_pause_max_ms')) || 900,
+    hybrid_threshold_chars: parseInt(f.get('hybrid_threshold_chars')) || 500,
+    ix_browser_enabled: !!f.get('ix_browser_enabled'),
+    ix_local_api_host: f.get('ix_local_api_host') || '127.0.0.1',
+    ix_local_api_port: parseInt(f.get('ix_local_api_port')) || 53200
+  };
+  if(!useScript && POSTING_MODES.includes(body.mode) && !body.product_ids.length){
+    alert('Tick at least one product.'); return;
+  }
+  if(!useScript && !body.mode){
+    alert('Select a script (action) first.'); return;
+  }
+  const r = await fetch('/api/runs', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if(r.ok){ const j = await r.json(); location.href = '/runs/' + j.run_id; }
+  else alert('Failed: ' + await r.text());
+});
+// -- run board ---------------------------------------------------------------
+function boardLi(list){ return list.map(l => '<li>'+l+'</li>').join(''); }
+async function loadBoard(){
+  const gid = document.getElementById('groupSel').value;
+  if(!gid) return;
+  const r = await fetch('/api/board?group_id=' + gid);
+  const b = await r.json();
+  const set = (n, ul, items) => {
+    document.getElementById(n).textContent = items.length;
+    document.getElementById(ul).innerHTML = boardLi(items);
+  };
+  set('bpAccountsN','bpAccounts', b.accounts);
+  set('bpPendingN','bpPending', b.pending);
+  set('bpProgN','bpProg', b.in_progress);
+  set('bpDoneN','bpDone', b.done_posting);
+  set('bpFailedN','bpFailed', b.failed);
+  set('bpExclN','bpExcl', b.exclude);
+  document.getElementById('boardLogs').textContent = b.logs.join('\n');
+  boardFilter();
+}
+function boardFilter(){
+  const q = document.getElementById('boardFilter').value.toLowerCase();
+  document.querySelectorAll('#bpAccounts li').forEach(li => {
+    li.style.display = li.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+function boardToggleLogs(){
+  const el = document.getElementById('boardLogs');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function boardCopyLogs(){
+  const t = document.getElementById('boardLogs').textContent;
+  navigator.clipboard.writeText(t).then(()=>alert('Logs copied.'));
+}
+loadBoard();
+setInterval(loadBoard, 8000);
+</script>
+{% endblock %}

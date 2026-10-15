@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}— Script Builder{% endblock %}
+{% block content %}
+<h1>Script Builder</h1>
+<p class="muted">Click or drag to add actions to your script. Each account runs
+the blocks in order (shuffle + K-of-N groups make every account's session
+look different).</p>
+
+<div class="row" style="align-items:center;gap:12px">
+  <label style="flex:1">SCRIPT NAME
+    <input id="sname" value="{{ script.name }}" placeholder="e.g. Morning Routine"
+           style="font-size:1rem;width:100%"></label>
+  <label class="check"><input type="checkbox" id="sshuffle" {% if script.shuffle %}checked{% endif %}>
+  Shuffle block order per account</label>
+</div>
+
+<div class="builder">
+  <!-- ============ AVAILABLE ACTIONS ============ -->
+  <aside class="builder-panel" id="availPanel">
+    <h3>AVAILABLE ACTIONS</h3>
+    <p class="muted" style="margin:4px 0">Click or drag to add</p>
+    <input id="actSearch" placeholder="Search actions..." autocomplete="off">
+    <div id="actGroups"></div>
+  </aside>
+
+  <!-- ============ SCRIPT ACTIONS ============ -->
+  <section class="builder-panel" id="canvasPanel">
+    <div class="canvas-head">
+      <h3>SCRIPT ACTIONS</h3>
+      <span id="actCount" class="badge">0 actions</span>
+    </div>
+    <div id="dropArea" class="drop-area">
+      Drop actions anywhere in this area or click from the left panel
+    </div>
+    <div id="blocks"></div>
+  </section>
+</div>
+
+<div class="row">
+  <button onclick="save()" class="primary">Save Script</button>
+  <a href="/scripts" class="btn">Cancel</a>
+  <span class="spacer"></span>
+  <span class="muted" id="saveMsg"></span>
+</div>
+
+<!-- ============ SETTINGS DIALOG ============ -->
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><b id="settingsTitle">Settings</b>
+      <span class="spacer"></span>
+      <button onclick="closeSettings()" class="danger">✕</button></div>
+    <div id="settingsBody" class="grid-form"></div>
+    <div class="row"><button onclick="closeSettings()" class="primary">Done</button></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let blocks = {{ script.blocks | tojson }};
+const BTYPES = {{ block_types | tojson }};
+const BLABELS = {{ block_labels | tojson }};
+const BCATS = {{ builder_categories | tojson }};
+const SMETA = {{ settings_meta | tojson }};
+const LEGACY = new Set({{ legacy_params | tojson }});
+const PRODUCTS = {{ products | tojson }};
+let seq = 1;
+blocks.forEach(b => { const n = parseInt((b.id||'b0').slice(1)); if(n >= seq) seq = n + 1; });
+let settingsBlockId = null;
+
+const label = t => BLABELS[t] || t;
+
+/* ---------------- AVAILABLE ACTIONS panel ---------------- */
+function renderAvail(){
+  const q = (document.getElementById('actSearch').value || '').toLowerCase();
+  const el = document.getElementById('actGroups');
+  el.innerHTML = '';
+  for(const [cat, types] of BCATS){
+    const shown = types.filter(t => label(t).toLowerCase().includes(q));
+    if(!shown.length) continue;
+    const g = document.createElement('div');
+    g.className = 'act-cat';
+    g.innerHTML = `<h4>${cat}</h4>`;
+    shown.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'act-item';
+      item.textContent = label(t);
+      item.title = 'Click or drag to add: ' + label(t);
+      item.draggable = true;
+      item.dataset.type = t;
+      item.addEventListener('click', () => addBlock(t));
+      item.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/x-fms-block', t);
+        e.dataTransfer.effectAllowed = 'copy';
+      });
+      g.appendChild(item);
+    });
+    el.appendChild(g);
+  }
+}
+document.getElementById('actSearch').addEventListener('input', renderAvail);
+
+/* ---------------- SCRIPT ACTIONS canvas ---------------- */
+function updateCount(){
+  const n = blocks.length;
+  document.getElementById('actCount').textContent =
+    n + (n === 1 ? ' action' : ' actions');
+}
+
+const dropArea = document.getElementById('dropArea');
+dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.classList.add('over'); });
+dropArea.addEventListener('dragleave', () => dropArea.classList.remove('over'));
+dropArea.addEventListener('drop', e => {
+  e.preventDefault();
+  dropArea.classList.remove('over');
+  const t = e.dataTransfer.getData('text/x-fms-block');
+  if(t && BTYPES[t]) addBlock(t);
+});
+
+function paramInput(b, pname, pdef, phelp){
+  const val = b.params[pname];
+  const dflt = pdef[0];
+  if(pname === 'product_id'){
+    let h = `<select data-p="${pname}"><option value="">— choose —</option>`;
+    PRODUCTS.forEach(p => { h += `<option value="${p.id}" ${p.id == val ? 'selected' : ''}>${p.name}</option>`; });
+    return h + '</select>';
+  }
+  if(pname === 'members'){
+    let h = '<div class="checklist">';
+    blocks.forEach(ob => {
+      if(ob.id === b.id) return;
+      const on = (val || []).includes(ob.id) ? 'checked' : '';
+      h += `<label class="check"><input type="checkbox" data-p="members" value="${ob.id}" ${on}> ${ob.id} (${label(ob.type)})</label>`;
+    });
+    return h + '</div>';
+  }
+  if(pname === 'publish_mode'){
+    return `<select data-p="${pname}">
+      <option value="all_together" ${val === 'all_together' ? 'selected' : ''}>all_together</option>
+      <option value="one_by_one" ${val === 'one_by_one' ? 'selected' : ''}>one_by_one</option></select>`;
+  }
+  const step = (typeof dflt === 'number' && !Number.isInteger(dflt)) || pname.startsWith('p_') ? 'step="0.01" min="0" max="1"' : 'step="any"';
+  const type = typeof val === 'number' ? 'number' : 'text';
+  return `<input type="${type}" data-p="${pname}" value="${val ?? ''}" ${type === 'number' ? step : ''}>`;
+}
+
+function render(){
+  updateCount();
+  const el = document.getElementById('blocks');
+  el.innerHTML = '';
+  dropArea.style.display = blocks.length ? 'none' : '';
+  blocks.forEach((b, i) => {
+    const card = document.createElement('div');
+    card.className = 'block-card';
+    card.innerHTML =
+      `<div class="block-head"><b>${label(b.type)}</b> <code>${b.id}</code>
+        <span class="spacer"></span>
+        <button onclick="openSettings('${b.id}')" title="Settings">⚙</button>
+        <button onclick="move(${i},-1)" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button onclick="move(${i},1)" ${i === blocks.length - 1 ? 'disabled' : ''}>↓</button>
+        <button onclick="del(${i})" class="danger">✕</button></div>
+      <div class="muted block-desc">${descFor(b)}</div>`;
+    el.appendChild(card);
+  });
+}
+
+function descFor(b){
+  const p = b.params || {};
+  const t = b.type;
+  if(t === 'post' || t === 'drafts' || t === 'relist_edit' || t === 'delete_relist')
+    return `product #${p.product_id ?? '—'}`;
+  if(t === 'scroll_feed' || t === 'watch_reels' || t === 'watch_videos' ||
+     t === 'scroll_marketplace' || t === 'read_notifications' || t === 'scroll_messages')
+    return `${p.min_minutes ?? 0}–${p.max_minutes ?? 0} min`;
+  if(t === 'wait_next_turn') return `${p.wait_minutes ?? 0} min`;
+  return '';
+}
+
+/* ---------------- settings dialog ---------------- */
+function settingsFields(b){
+  // Exact per-activity dialogs from the v6.2.0.0 screenshots; generic
+  // param editor for everything else (legacy params hidden).
+  if(SMETA[b.type]) return SMETA[b.type].fields.map(
+    ([k, lab, help]) => [k, lab, help, BTYPES[b.type][k]]);
+  return Object.entries(BTYPES[b.type] || {})
+    .filter(([k]) => !LEGACY.has(k))
+    .map(([k, v]) => [k, v[1], '', v]);
+}
+
+function openSettings(bid){
+  const b = blocks.find(x => x.id === bid);
+  if(!b) return;
+  settingsBlockId = bid;
+  const meta = SMETA[b.type];
+  document.getElementById('settingsTitle').textContent =
+    meta ? meta.title : (label(b.type) + ' Settings');
+  const body = document.getElementById('settingsBody');
+  body.innerHTML = '';
+  for(const [k, lab, help, pdef] of settingsFields(b)){
+    const wrap = document.createElement('label');
+    wrap.innerHTML = `${lab}${help ? `<span class="muted">${help}</span>` : ''}`;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = paramInput(b, k, pdef || [b.params[k], '']);
+    const inp = tmp.firstChild;
+    wrap.appendChild(inp);
+    body.appendChild(wrap);
+    // sync back into the block object
+    const sync = () => syncParam(b, k, inp);
+    if(inp.tagName === 'DIV'){ // checklist (members)
+      inp.querySelectorAll('[data-p]').forEach(x => x.addEventListener('change', () => {
+        b.params.members = [...inp.querySelectorAll('[data-p="members"]:checked')].map(y => y.value);
+      }));
+    } else {
+      inp.addEventListener('change', sync);
+    }
+  }
+  document.getElementById('settingsModal').classList.remove('hidden');
+}
+
+function syncParam(b, k, inp){
+  if(inp.type === 'number'){
+    b.params[k] = inp.value === '' ? null : parseFloat(inp.value);
+  } else if(inp.tagName === 'SELECT' && k === 'product_id'){
+    b.params[k] = inp.value === '' ? null : parseInt(inp.value);
+  } else {
+    b.params[k] = inp.value;
+  }
+}
+
+function closeSettings(){
+  document.getElementById('settingsModal').classList.add('hidden');
+  settingsBlockId = null;
+  render();
+}
+document.getElementById('settingsModal').addEventListener('click', e => {
+  if(e.target.id === 'settingsModal') closeSettings();
+});
+
+/* ---------------- mutations ---------------- */
+function addBlock(t){
+  const params = {};
+  for(const [k, v] of Object.entries(BTYPES[t]))
+    params[k] = Array.isArray(v[0]) ? [...v[0]] : v[0];
+  blocks.push({id: 'b' + (seq++), type: t, params});
+  render();
+}
+function move(i, d){ const j = i + d; [blocks[i], blocks[j]] = [blocks[j], blocks[i]]; render(); }
+function del(i){ blocks.splice(i, 1); render(); }
+
+async function save(){
+  const body = {name: document.getElementById('sname').value,
+                shuffle: document.getElementById('sshuffle').checked,
+                blocks};
+  const r = await fetch('/api/scripts/{{ script.id }}', {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('saveMsg').textContent =
+    r.ok ? 'Saved ✓' : 'Failed: ' + await r.text();
+  if(r.ok) render();
+}
+
+renderAvail();
+render();
+</script>
+{% endblock %}

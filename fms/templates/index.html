@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}— Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="cards">
+  <div class="card"><div class="num">{{ stats.groups }}</div><div class="lbl">Groups</div></div>
+  <div class="card"><div class="num">{{ stats.accounts }}</div><div class="lbl">Accounts</div></div>
+  <div class="card"><div class="num">{{ stats.products }}</div><div class="lbl">Products</div></div>
+  <div class="card"><div class="num">{{ stats.runs }}</div><div class="lbl">Runs</div></div>
+</div>
+
+<h2>Recent runs</h2>
+<table>
+  <tr><th>#</th><th>Group</th><th>Mode</th><th>Status</th><th>Posted</th><th>Started</th><th></th></tr>
+  {% for r in runs %}
+  <tr>
+    <td>{{ r.id }}</td>
+    <td>{{ r.group_name }}</td>
+    <td>{{ r.mode }}</td>
+    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+    <td>{{ r.total_posted }}/{{ r.total_planned }}</td>
+    <td>{{ r.started_at or '—' }}</td>
+    <td><a href="/runs/{{ r.id }}">open</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">No runs yet. Go to Runs to start one.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

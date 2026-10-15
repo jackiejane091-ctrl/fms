@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}— Logs{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+<form method="get" action="/logs" class="inline-form">
+  <select name="run_id" onchange="this.form.submit()">
+    <option value="">All runs</option>
+    {% for r in runs %}
+    <option value="{{ r.id }}" {% if run_id == r.id %}selected{% endif %}>Run #{{ r.id }} ({{ r.status }})</option>
+    {% endfor %}
+  </select>
+  <noscript><button type="submit">Filter</button></noscript>
+</form>
+<pre class="logs">{% for l in logs %}[{{ l.created_at }}] run={{ l.run_id }} {{ l.level }}: {{ l.message }}
+{% else %}No log entries.{% endfor %}</pre>
+{% endblock %}

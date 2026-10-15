@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}— Scripts{% endblock %}
+{% block content %}
+<h1>Scripts</h1>
+<p class="muted">Named behavior scripts: each account runs its own resolved copy
+(shuffle + K-of-N groups make every account's session look different).</p>
+
+<details open>
+  <summary><b>+ New script</b></summary>
+  <form id="newScript" class="grid-form">
+    <label class="wide">Name <input name="name" required placeholder="e.g. My Posting"></label>
+    <label class="check"><input type="checkbox" name="shuffle"> Shuffle block order per account</label>
+    <button type="submit">Create</button>
+  </form>
+</details>
+
+<h2>All scripts</h2>
+<input id="scriptSearch" placeholder="Search scripts..." autocomplete="off"
+       style="margin-bottom:8px;max-width:280px">
+<table id="scriptTable">
+  <tr><th>#</th><th>Name</th><th>Blocks</th><th>Shuffle</th><th></th></tr>
+  {% for s in scripts %}
+  <tr data-name="{{ s.name|lower }}">
+    <td>{{ s.id }}</td>
+    <td>{{ s.name }}</td>
+    <td>{{ s.blocks|length }}</td>
+    <td>{{ 'yes' if s.shuffle else 'no' }}</td>
+    <td><a href="/scripts/{{ s.id }}">edit</a>
+      <a href="#" onclick="delScript({{ s.id }});return false;" class="danger">delete</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No scripts yet.</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Block types</h2>
+<table>
+  <tr><th>Type</th><th>Parameters</th></tr>
+  {% for t, params in block_types.items() %}
+  <tr><td><code>{{ t }}</code></td>
+      <td>{% for p, d in params.items() %}<code>{{ p }}</code>={{ d[0] }} {% endfor %}</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('scriptSearch').addEventListener('input', e => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('#scriptTable tr[data-name]').forEach(tr => {
+    tr.style.display = tr.dataset.name.includes(q) ? '' : 'none';
+  });
+});
+document.getElementById('newScript').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const r = await fetch('/api/scripts', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: f.get('name'), shuffle: !!f.get('shuffle'), blocks: []})});
+  if(r.ok){ const j = await r.json(); location.href = '/scripts/' + j.id; }
+  else alert('Failed: ' + await r.text());
+});
+async function delScript(id){
+  if(!confirm('Delete script #' + id + '?')) return;
+  await fetch('/api/scripts/' + id, {method:'DELETE'});
+  location.reload();
+}
+</script>
+{% endblock %}

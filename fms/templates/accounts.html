@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}— Accounts{% endblock %}
+{% block content %}
+<h1>Accounts</h1>
+
+<h2>Manage Groups</h2>
+<table>
+  <tr><th>Id</th><th>Group Name</th><th>Accounts</th><th>Product Counts</th>
+      <th>Manage Accounts</th><th>Clone</th><th>Edit</th><th>Delete</th></tr>
+  {% for g in groups %}
+  <tr>
+    <td>{{ g.id }}</td>
+    <td>{{ g.name }}</td>
+    <td>{{ g.account_count }}</td>
+    <td>{{ g.product_count }}</td>
+    <td><a href="/accounts?group_id={{ g.id }}" title="Manage accounts">✏️</a></td>
+    <td><button onclick="cloneGroup({{ g.id }}, '{{ g.name|escape }}')" title="Clone group">📋</button></td>
+    <td><button onclick="renameGroup({{ g.id }}, '{{ g.name|escape }}')" title="Rename">✏️</button></td>
+    <td><button onclick="delGroup({{ g.id }})" class="danger" title="Delete">🗑️</button></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="8" class="muted">No groups yet.</td></tr>
+  {% endfor %}
+</table>
+<div class="row">
+  <form action="/api/groups" method="post" class="inline-form">
+    <input name="name" placeholder="New group name" required>
+    <button type="submit">+ Group</button>
+  </form>
+</div>
+
+{% if group_id %}
+<h2>Group products <span class="muted">— {{ groups|selectattr('id','equalto',group_id)|map(attribute='name')|first }}</span></h2>
+<div class="wide">
+  <div class="checklist" id="groupProducts">
+    {% for p in products %}
+    <label class="check"><input type="checkbox" value="{{ p.id }}"
+      {% if p.id in group_products|map(attribute='id') %}checked{% endif %}> {{ p.name }}</label>
+    {% endfor %}
+  </div>
+  <button onclick="saveGroupProducts({{ group_id }})">Save group products</button>
+</div>
+
+<h2>Accounts <span class="muted">— {{ groups|selectattr('id','equalto',group_id)|map(attribute='name')|first }}</span></h2>
+<div class="row wrap">
+  <button onclick="showSingle()">Add Single Account</button>
+  <button onclick="showBulk()">Add Bulk Accounts</button>
+  <button onclick="document.getElementById('importFile').click()">Import from File</button>
+  <input type="file" id="importFile" accept=".txt" style="display:none" onchange="importFile(this)">
+  <button onclick="removeSelected()" class="danger">Remove Selected</button>
+  <button onclick="proxiesToSelected()">Add Proxies to Selected</button>
+  <button onclick="removeProxiesSelected()">Remove Proxies from Selected</button>
+  <button onclick="checkProxyStatus()">Check Proxy Status</button>
+  <button onclick="removeDeadProxies()">Remove Not Working Proxies</button>
+</div>
+
+<div id="singleBox" class="wide" style="display:none">
+  <h3>Add Single Account</h3>
+  <form id="singleForm" class="grid-form">
+    <input type="hidden" name="group_id" value="{{ group_id }}">
+    <label>Email / phone <input name="label" required></label>
+    <label>Password <input name="password" type="password"></label>
+    <label>Browser <input name="browser" value="chrome"></label>
+    <label>Cookie (optional) <input name="cookie"></label>
+    <label>2FA secret (optional) <input name="twofa_secret"></label>
+    <label>Anti-detect Profile ID (optional) <input name="ix_profile_id" placeholder="empty = auto-create on first launch"></label>
+    <button type="submit">Add account</button>
+  </form>
+</div>
+
+<div id="bulkBox" class="wide" style="display:none">
+  <h3>Add Bulk Accounts</h3>
+  <form id="bulkForm" class="grid-form">
+    <input type="hidden" name="group_id" value="{{ group_id }}">
+    <label class="wide">One per line: <code>login;password;True|False;Browser</code>
+      <textarea name="text" rows="5" cols="70" placeholder="user@gmail.com;secret123;True;Chrome&#10;+447700900123;pass456;False;Chrome"></textarea>
+    </label>
+    <span class="muted">True/False = active flag — <b>False</b> keeps the ID inactive (never opened). Login can be email or phone number. Browser defaults to Chrome.</span>
+    <button type="submit">Add accounts</button>
+    <span id="bulkResult" class="muted"></span>
+  </form>
+</div>
+
+<div class="row">
+  <label class="check"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"> Select All (<span id="selCount">0</span> selected)</label>
+  <input id="searchBox" placeholder="search..." oninput="filterRows()">
+</div>
+
+<table id="acctTable">
+  <tr><th></th><th>#</th><th>Email</th><th>Password</th><th>Browser</th>
+      <th>Anti-detect Profile ID</th><th>Active</th><th>Proxy</th><th>Proxy Status</th><th>Cookie</th><th></th></tr>
+  {% for a in accounts %}
+  <tr data-label="{{ a.label|lower }}">
+    <td><input type="checkbox" class="rowSel" value="{{ a.id }}" onchange="updateSelCount()"></td>
+    <td>{{ a.id }}</td>
+    <td>{{ a.label }}</td>
+    <td title="Password is stored encrypted">{{ '••••••' if a.has_password else '—' }}</td>
+    <td>{{ a.browser or 'chrome' }}</td>
+    <td>{{ a.ix_profile_id or '—' }}</td>
+    <td><label class="switch"><input type="checkbox" {% if a.active %}checked{% endif %} onchange="toggleAcc({{ a.id }})"><span class="slider"></span></label></td>
+    <td>{{ a.proxy_text or '—' }}</td>
+    <td>{% if a.proxy_status is none %}—{% elif a.proxy_status %}<span class="pill active">Working</span>{% else %}<span class="pill failed">Not working</span>{% endif %}</td>
+    <td>{{ 'set' if a.has_cookie else '—' }}</td>
+    <td class="actions">
+      <button onclick="editCookie({{ a.id }})" title="Set/edit cookie">🍪</button>
+      <button onclick="editIx({{ a.id }}, '{{ a.ix_profile_id or '' }}')" title="Anti-detect Profile ID">🛡️</button>
+      <button onclick="delAcc({{ a.id }})" class="danger" title="Delete">🗑️</button>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="11" class="muted">No accounts in this group yet.</td></tr>
+  {% endfor %}
+</table>
+<p class="muted">Login is email/phone + password by default. Cookie login and 2FA are optional extras per account.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const GID = {{ group_id or 'null' }};
+function selectedIds(){
+  return [...document.querySelectorAll('.rowSel:checked')].map(c => parseInt(c.value));
+}
+function updateSelCount(){
+  document.getElementById('selCount').textContent = selectedIds().length;
+}
+function toggleSelectAll(box){
+  document.querySelectorAll('.rowSel').forEach(c => c.checked = box.checked);
+  updateSelCount();
+}
+function filterRows(){
+  const q = document.getElementById('searchBox').value.toLowerCase();
+  document.querySelectorAll('#acctTable tr[data-label]').forEach(r => {
+    r.style.display = r.dataset.label.includes(q) ? '' : 'none';
+  });
+}
+function showSingle(){ document.getElementById('singleBox').style.display=''; document.getElementById('bulkBox').style.display='none'; }
+function showBulk(){ document.getElementById('bulkBox').style.display=''; document.getElementById('singleBox').style.display='none'; }
+async function cloneGroup(id, name){
+  if(!confirm('Clone group "'+name+'" (accounts + products)?')) return;
+  const r = await fetch('/api/groups/'+id+'/clone', {method:'POST'});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function renameGroup(id, name){
+  const v = prompt('Rename group:', name);
+  if(v === null || !v.trim()) return;
+  const f = new FormData(); f.append('name', v.trim());
+  const r = await fetch('/api/groups/'+id, {method:'PUT', body: f});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function delGroup(id){
+  if(!confirm('Delete group and ALL its accounts?')) return;
+  const r = await fetch('/api/groups/'+id, {method:'DELETE'});
+  if(r.ok) location.href = '/accounts'; else alert('Failed: '+await r.text());
+}
+async function saveGroupProducts(gid){
+  const ids = [...document.querySelectorAll('#groupProducts input:checked')].map(c => parseInt(c.value));
+  const r = await fetch('/api/groups/'+gid+'/products', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({product_ids: ids})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function toggleAcc(id){
+  const r = await fetch('/api/accounts/'+id+'/toggle', {method:'POST'});
+  if(!r.ok){ alert('Failed: '+await r.text()); location.reload(); }
+}
+async function delAcc(id){
+  if(!confirm('Delete account #'+id+'?')) return;
+  await fetch('/api/accounts/'+id, {method:'DELETE'});
+  location.reload();
+}
+async function removeSelected(){
+  const ids = selectedIds();
+  if(!ids.length){ alert('Select at least one account.'); return; }
+  if(!confirm('Delete '+ids.length+' selected account(s)?')) return;
+  const r = await fetch('/api/accounts/delete-selected', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function proxiesToSelected(){
+  const ids = selectedIds();
+  if(!ids.length){ alert('Select at least one account.'); return; }
+  const t = prompt('Paste proxies (one per line, host:port or host:port:user:pass):');
+  if(t === null || !t.trim()) return;
+  const r = await fetch('/api/accounts/proxies/assign', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({account_ids: ids, proxies_text: t})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function removeProxiesSelected(){
+  const ids = selectedIds();
+  if(!ids.length){ alert('Select at least one account.'); return; }
+  const r = await fetch('/api/accounts/proxies/remove', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function checkProxyStatus(){
+  const ids = selectedIds();
+  if(!ids.length){ alert('Select at least one account.'); return; }
+  const r = await fetch('/api/accounts/proxies/check', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
+  const j = await r.json();
+  const lines = j.results.map(x => x.label+': '+(x.working===null?'no proxy':(x.working?'Working':'NOT WORKING — '+x.message)));
+  alert(lines.join('\n'));
+  location.reload();
+}
+async function removeDeadProxies(){
+  const ids = selectedIds();
+  if(!ids.length){ alert('Select at least one account.'); return; }
+  if(!confirm('Remove not-working proxies from selected accounts?')) return;
+  const r = await fetch('/api/accounts/proxies/remove-dead', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
+  const j = await r.json();
+  alert('Accounts cleared: '+j.accounts_cleared+' · Proxies deleted: '+j.proxies_deleted);
+  location.reload();
+}
+async function editCookie(id){
+  const v = prompt('Cookie for account #'+id+' (empty = clear, cancel = keep):');
+  if(v === null) return;
+  const r = await fetch('/api/accounts/'+id, {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({cookie: v.trim() || null})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function editIx(id, current){
+  const v = prompt('Anti-detect Profile ID for account #'+id+' (empty = auto-create on first launch):', current || '');
+  if(v === null) return;
+  const r = await fetch('/api/accounts/'+id, {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({ix_profile_id: v.trim() || ''})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+async function importFile(input){
+  const f = input.files[0];
+  if(!f) return;
+  const fd = new FormData();
+  fd.append('group_id', GID);
+  fd.append('file', f);
+  const r = await fetch('/api/accounts/import', {method:'POST', body: fd});
+  const j = await r.json();
+  alert('Imported: '+j.added+' · Errors: '+j.errors.length+(j.errors.length?'\n'+j.errors.join('\n'):''));
+  location.reload();
+}
+document.getElementById('singleForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = {group_id: parseInt(f.get('group_id')), label: f.get('label'),
+    password: f.get('password')||null, cookie: f.get('cookie')||null,
+    twofa_secret: f.get('twofa_secret')||null, browser: f.get('browser')||'chrome',
+    ix_profile_id: f.get('ix_profile_id')||null};
+  const r = await fetch('/api/accounts', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+});
+document.getElementById('bulkForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const r = await fetch('/api/accounts/bulk', {method:'POST', body: new URLSearchParams(f)});
+  const j = await r.json();
+  document.getElementById('bulkResult').textContent =
+    'Added: '+j.added+' · Errors: '+j.errors.length;
+  if(j.errors.length) alert(j.errors.join('\n'));
+  if(j.added) setTimeout(()=>location.reload(), 800);
+});
+updateSelCount();
+</script>
+{% endblock %}

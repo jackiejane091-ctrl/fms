@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FMS {% block title %}{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">FMS <span class="phase">Phase 2</span></div>
+  <nav>
+    <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
+    <a href="/accounts" class="{% if request.url.path.startswith('/accounts') %}active{% endif %}">Accounts</a>
+    <a href="/products" class="{% if request.url.path.startswith('/products') %}active{% endif %}">Products</a>
+    <a href="/scripts" class="{% if request.url.path.startswith('/scripts') %}active{% endif %}">Scripts</a>
+    <a href="/runs" class="{% if request.url.path.startswith('/runs') %}active{% endif %}">Runs</a>
+    <a href="/logs" class="{% if request.url.path.startswith('/logs') %}active{% endif %}">Logs</a>
+    <span class="dropdown" id="ddSettings">
+      <button type="button" onclick="toggleDd('ddSettings')">Settings ▾</button>
+      <span class="menu">
+        <a href="/runs#typingBox">Typing mode<small>Human-like / Fast fill (JS) / Clipboard paste</small></a>
+        <a href="/runs#ixBox">IXBrowser (anti-detect)<small>Optional — Chrome stays the default</small></a>
+        <a href="/accounts">Manage Accounts<small>Proxies, cookies, active flags</small></a>
+        <a href="/runs#boardSec">Run board<small>Live account status panels</small></a>
+      </span>
+    </span>
+    <span class="dropdown" id="ddHelp">
+      <button type="button" onclick="toggleDd('ddHelp')">Help ▾</button>
+      <span class="menu">
+        <a href="/logs">View logs<small>What the automation did, step by step</small></a>
+        <a href="/api/docs">API docs<small>JSON endpoints for scripting</small></a>
+      </span>
+    </span>
+    <button type="button" class="upd-btn" id="updBtn" onclick="checkUpdate()">⟳ Update</button>
+    <span class="ver" id="fmsVer" title="FMS version"></span>
+  </nav>
+</header>
+<div id="browserBanner" class="banner hidden">
+  <div>
+    <strong>One-time setup needed:</strong> FMS needs its browser files (~600&nbsp;MB, downloaded once).
+    <div class="muted" id="browserMsg">Click below to start — you can keep using the dashboard while it downloads.</div>
+    <div class="progress hidden" id="browserProg"><div class="bar" id="browserBar"></div></div>
+  </div>
+  <button type="button" class="btn-primary" id="browserBtn" onclick="downloadBrowsers()">Download browsers</button>
+</div>
+<div id="updateBanner" class="banner hidden">
+  <div>
+    <strong id="updateTitle">Update available</strong>
+    <div class="muted" id="updateMsg"></div>
+    <div class="progress hidden" id="updateProg"><div class="bar" id="updateBar"></div></div>
+  </div>
+  <span>
+    <button type="button" class="btn-primary" id="updateDlBtn" onclick="downloadUpdate()">Download</button>
+    <button type="button" class="btn-primary hidden" id="updateRestartBtn" onclick="quitFms()">Restart FMS</button>
+    <button type="button" onclick="hideUpdateBanner()">Later</button>
+  </span>
+</div>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>Local only — nothing leaves this laptop.
+  <button id="quitBtn" class="quit" onclick="quitFms()">Quit FMS</button>
+</footer>
+{% block scripts %}{% endblock %}
+<script>
+function toggleDd(id){
+  const el = document.getElementById(id);
+  const was = el.classList.contains('open');
+  document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+  if(!was) el.classList.add('open');
+}
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('.dropdown')) document.querySelectorAll('.dropdown.open')
+    .forEach(d => d.classList.remove('open'));
+});
+async function quitFms(){
+  if(!confirm('Quit FMS? Any running listings will stop.')) return;
+  try { await fetch('/api/shutdown', {method:'POST'}); } catch(e) {}
+  document.body.innerHTML = '<p style="padding:40px">FMS is closing… you can close this tab.</p>';
+}
+/* ---- version + self-update ---- */
+let updateInfo = null;
+async function initVersion(){
+  try {
+    const v = await (await fetch('/api/version')).json();
+    document.getElementById('fmsVer').textContent = 'v' + v.version;
+  } catch(e) {}
+  try {
+    const b = await (await fetch('/api/browsers/status')).json();
+    if(b.ok && !b.ready){
+      document.getElementById('browserBanner').classList.remove('hidden');
+    }
+  } catch(e) {}
+}
+async function checkUpdate(){
+  const btn = document.getElementById('updBtn');
+  btn.disabled = true; btn.textContent = '⟳ Checking…';
+  try {
+    const r = await (await fetch('/api/update/check')).json();
+    if(!r.ok){ alert('Update check failed: ' + (r.error || 'unknown error')); return; }
+    if(r.update_available){
+      updateInfo = r;
+      document.getElementById('updateTitle').textContent =
+        'Update available: v' + r.current + ' → v' + r.latest;
+      document.getElementById('updateMsg').textContent =
+        (r.changelog || '') + (r.exe_size_mb ? ' (~' + r.exe_size_mb + ' MB download)' : '');
+      document.getElementById('updateBanner').classList.remove('hidden');
+      document.getElementById('updateDlBtn').classList.remove('hidden');
+      document.getElementById('updateRestartBtn').classList.add('hidden');
+    } else {
+      alert('FMS is up to date (v' + r.current + ').');
+    }
+  } catch(e){ alert('Update check failed: network error.'); }
+  finally { btn.disabled = false; btn.textContent = '⟳ Update'; }
+}
+function hideUpdateBanner(){
+  document.getElementById('updateBanner').classList.add('hidden');
+}
+async function downloadUpdate(){
+  document.getElementById('updateDlBtn').classList.add('hidden');
+  const prog = document.getElementById('updateProg'), bar = document.getElementById('updateBar');
+  prog.classList.remove('hidden');
+  try {
+    const r = await fetch('/api/update/download', {method:'POST'});
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'download failed'); }
+  } catch(e){ alert('Download failed: ' + e.message); return; }
+  const t = setInterval(async ()=>{
+    try {
+      const p = await (await fetch('/api/update/progress')).json();
+      bar.style.width = Math.min(100, p.percent || 0) + '%';
+      document.getElementById('updateMsg').textContent =
+        p.state === 'downloading'
+          ? ('Downloading… ' + p.downloaded_mb + ' / ' + (p.total_mb ? p.total_mb + ' MB' : '?'))
+          : (p.message || p.state);
+      if(p.state === 'done'){
+        clearInterval(t);
+        document.getElementById('updateMsg').textContent =
+          'Download complete. Restart FMS to apply the update.';
+        document.getElementById('updateRestartBtn').classList.remove('hidden');
+      } else if(p.state === 'error'){ clearInterval(t); alert('Download failed: ' + p.message); }
+    } catch(e){ /* keep polling */ }
+  }, 1000);
+}
+/* ---- browsers one-time setup ---- */
+async function downloadBrowsers(){
+  const btn = document.getElementById('browserBtn');
+  btn.disabled = true;
+  const prog = document.getElementById('browserProg'), bar = document.getElementById('browserBar');
+  prog.classList.remove('hidden');
+  try {
+    const r = await fetch('/api/browsers/download', {method:'POST'});
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'failed to start'); }
+  } catch(e){
+    document.getElementById('browserMsg').textContent = 'Could not start: ' + e.message;
+    btn.disabled = false; return;
+  }
+  const t = setInterval(async ()=>{
+    try {
+      const p = await (await fetch('/api/update/progress')).json();
+      bar.style.width = Math.min(100, p.percent || 0) + '%';
+      document.getElementById('browserMsg').textContent =
+        p.state === 'downloading'
+          ? ('Downloading browsers… ' + p.downloaded_mb + ' / ' + (p.total_mb ? p.total_mb + ' MB' : '?') + ' — one-time setup')
+          : (p.message || p.state);
+      if(p.state === 'done'){ clearInterval(t); document.getElementById('browserBanner').classList.add('hidden'); }
+      else if(p.state === 'error'){ clearInterval(t); btn.disabled = false;
+        document.getElementById('browserMsg').textContent = 'Failed: ' + p.message; }
+    } catch(e){ /* keep polling */ }
+  }, 1000);
+}
+initVersion();
+</script>
+</body>
+</html>

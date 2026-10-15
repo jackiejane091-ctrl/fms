@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}— Products{% endblock %}
+{% block content %}
+<h1>Manage Products</h1>
+<div class="prod-toolbar">
+  <button id="addItemBtn" title="Add item listing">➕</button>
+  <button id="addVehicleBtn" title="Add vehicle listing">🚗</button>
+  <button id="addPropertyBtn" title="Add property listing">🏠</button>
+  <span class="muted">Products ({{ products|length }})</span>
+</div>
+
+<div id="prodDialog" class="modal hidden">
+  <div class="modal-box wide">
+    <h2 id="prodDialogTitle">Add Product</h2>
+    <form id="prodForm" class="grid-form two-col">
+      <input type="hidden" name="id" id="f_id">
+      <input type="hidden" name="listing_type" id="f_listing_type" value="item">
+      <label>Product Name <input name="name" id="f_name" required></label>
+      <label>Append Title Count <input name="append_title_count" id="f_append_title_count" type="number" min="0" value="0"></label>
+      <label>Price <input name="base_price" id="f_base_price" type="number" step="0.01"></label>
+      <label>Condition
+        <select name="condition" id="f_condition">
+          <option value="">Select Condition</option>
+          <option>New</option><option>Used - like new</option>
+          <option>Used - good</option><option>Used - fair</option>
+        </select>
+      </label>
+      <label>Tags <input name="tags" id="f_tags"></label>
+      <label>Main Images (folder) <input name="main_image_folder" id="f_main_image_folder"></label>
+      <label>Category
+        <select name="category" id="f_category">
+          <option value="">Select Category</option>
+          {% for c in categories %}<option value="{{ c|replace(' > ', '||') }}">{{ c }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Extra Images (folder) <input name="extra_image_folder" id="f_extra_image_folder"></label>
+      <label>Availability
+        <select name="availability" id="f_availability">
+          <option value="">Select Availability</option>
+          <option>In Stock</option><option>Out of Stock</option>
+        </select>
+      </label>
+      <label>Video (file) <input name="video_path" id="f_video_path"></label>
+      <label class="wide">Titles — one per line (rotated)<span class="count" id="titlesCount"></span>
+        <textarea name="titles" id="f_titles" rows="4"></textarea></label>
+      <label class="wide">Locations — one per line (rotated)<span class="count" id="locationsCount"></span>
+        <textarea name="locations" id="f_locations" rows="4"></textarea></label>
+      <fieldset class="wide">
+        <legend>Delivery Options</legend>
+        {% for key, label in delivery_options.items() %}
+        <label class="inline"><input type="checkbox" name="delivery_options" value="{{ key }}" id="f_do_{{ key }}"> {{ label }}</label>
+        {% endfor %}
+      </fieldset>
+      <div class="wide">
+        <b>Descriptions <span class="count" id="descCount"></span></b>
+        <button type="button" id="addDescBtn" class="small">➕ Add Description</button>
+        <div id="descList"></div>
+      </div>
+      <div class="wide form-actions">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" id="cancelProdBtn">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<table>
+  <tr><th>Id</th><th>Listing Type</th><th>Product Name</th><th>Price</th>
+      <th>Locations</th><th>Titles</th><th>Images</th><th>Category</th>
+      <th>Clone</th><th>Edit</th><th>Delete</th></tr>
+  {% for p in products %}
+  <tr>
+    <td>{{ p.id }}</td>
+    <td>{{ p.listing_type|capitalize }}</td>
+    <td>{{ p.name }}</td>
+    <td>{{ p.base_price if p.base_price is not none else '—' }}</td>
+    <td>{{ p.location_count }}</td>
+    <td>{{ p.title_count }}</td>
+    <td>{{ p.images_used }} / {{ p.image_count }}</td>
+    <td title="{{ p.category or '' }}">{{ (p.category or '—')|truncate(28) }}</td>
+    <td><button onclick="cloneProd({{ p.id }})" title="Clone">📋</button></td>
+    <td><button onclick="editProd({{ p.id }})" title="Edit">✏️</button></td>
+    <td><button onclick="delProd({{ p.id }})" class="danger" title="Delete">🗑️</button></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="11" class="muted">No products yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+const lines = s => (s||'').split('\n').map(x=>x.trim()).filter(Boolean);
+const $ = id => document.getElementById(id);
+const dlg = $('prodDialog');
+
+function updateCounts(){
+  $('titlesCount').textContent = ' (' + lines($('f_titles').value).length + ')';
+  $('locationsCount').textContent = ' (' + lines($('f_locations').value).length + ')';
+  $('descCount').textContent = ' (' + document.querySelectorAll('#descList textarea').length + ')';
+}
+function addDescBox(value){
+  const ta = document.createElement('textarea');
+  ta.rows = 3; ta.placeholder = 'Description ' + (document.querySelectorAll('#descList textarea').length + 1);
+  ta.value = value || '';
+  ta.addEventListener('input', updateCounts);
+  const wrap = document.createElement('div');
+  const rm = document.createElement('button');
+  rm.type = 'button'; rm.className = 'small danger'; rm.textContent = '✕';
+  rm.onclick = () => { wrap.remove(); updateCounts(); };
+  wrap.appendChild(ta); wrap.appendChild(rm);
+  $('descList').appendChild(wrap);
+  updateCounts();
+}
+$('addDescBtn').addEventListener('click', () => addDescBox(''));
+$('f_titles').addEventListener('input', updateCounts);
+$('f_locations').addEventListener('input', updateCounts);
+
+function openDialog(listingType, title){
+  $('prodForm').reset();
+  $('f_id').value = '';
+  $('f_listing_type').value = listingType || 'item';
+  $('prodDialogTitle').textContent = title || 'Add Product';
+  $('descList').innerHTML = '';
+  addDescBox('');
+  document.querySelectorAll('input[name="delivery_options"]').forEach(c => c.checked = false);
+  dlg.classList.remove('hidden');
+  updateCounts();
+}
+$('addItemBtn').onclick = () => openDialog('item', 'Add Product');
+$('addVehicleBtn').onclick = () => openDialog('vehicle', 'Add Vehicle');
+$('addPropertyBtn').onclick = () => openDialog('property', 'Add Property');
+$('cancelProdBtn').onclick = () => dlg.classList.add('hidden');
+
+async function editProd(id){
+  const r = await fetch('/api/products/' + id);
+  if(!r.ok){ alert('Load failed'); return; }
+  const p = await r.json();
+  openDialog(p.listing_type || 'item', 'Edit Product');
+  $('f_id').value = p.id;
+  $('f_name').value = p.name || '';
+  $('f_append_title_count').value = p.append_title_count || 0;
+  $('f_base_price').value = p.base_price ?? '';
+  $('f_condition').value = p.condition || '';
+  $('f_tags').value = p.tags || '';
+  $('f_main_image_folder').value = p.main_image_folder || '';
+  $('f_category').value = p.category || '';
+  $('f_extra_image_folder').value = p.extra_image_folder || '';
+  $('f_availability').value = p.availability || '';
+  $('f_video_path').value = p.video_path || '';
+  $('f_titles').value = (p.titles || []).join('\n');
+  $('f_locations').value = (p.locations || []).join('\n');
+  (p.delivery_options || []).forEach(o => { const c = $('f_do_' + o); if(c) c.checked = true; });
+  $('descList').innerHTML = '';
+  (p.descriptions && p.descriptions.length ? p.descriptions : ['']).forEach(d => addDescBox(d));
+  updateCounts();
+}
+
+$('prodForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const id = $('f_id').value;
+  const body = {
+    name: $('f_name').value.trim(),
+    listing_type: $('f_listing_type').value,
+    append_title_count: parseInt($('f_append_title_count').value || '0', 10),
+    base_price: $('f_base_price').value ? parseFloat($('f_base_price').value) : null,
+    condition: $('f_condition').value || null,
+    tags: $('f_tags').value || null,
+    main_image_folder: $('f_main_image_folder').value || null,
+    category: $('f_category').value || null,
+    extra_image_folder: $('f_extra_image_folder').value || null,
+    availability: $('f_availability').value || null,
+    video_path: $('f_video_path').value || null,
+    titles: lines($('f_titles').value),
+    locations: lines($('f_locations').value),
+    delivery_options: [...document.querySelectorAll('input[name="delivery_options"]:checked')].map(c => c.value),
+    descriptions: [...document.querySelectorAll('#descList textarea')].map(t => t.value.trim()).filter(Boolean),
+  };
+  if(!body.name){ alert('Product Name is required'); return; }
+  const url = id ? '/api/products/' + id : '/api/products';
+  const r = await fetch(url, {method: id ? 'PUT' : 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if(r.ok) location.reload(); else alert('Save failed: ' + await r.text());
+});
+
+async function cloneProd(id){
+  const r = await fetch('/api/products/' + id + '/clone', {method: 'POST'});
+  if(r.ok) location.reload(); else alert('Clone failed: ' + await r.text());
+}
+async function delProd(id){
+  if(!confirm('Delete product #' + id + '?')) return;
+  await fetch('/api/products/' + id, {method: 'DELETE'});
+  location.reload();
+}
+</script>
+{% endblock %}
