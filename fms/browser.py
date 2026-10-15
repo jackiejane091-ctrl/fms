@@ -29,7 +29,9 @@ USER_AGENTS = [
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
 ]
 
-VIEWPORTS = [(1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080)]
+# Screen-friendly sizes: the browser WINDOW is sized to the viewport so it
+# never opens bigger than the laptop screen.
+VIEWPORTS = [(1280, 720), (1366, 768), (1440, 900)]
 LOCALES = ["en-GB", "en-US"]
 TIMEZONES = ["Europe/London", "America/New_York"]
 
@@ -213,6 +215,7 @@ class PlaywrightDriver(BaseDriver):
         proxy = self._proxy_config()
         # Deterministic-ish fingerprint per account (stable across runs).
         rng = random.Random(self.account["id"])
+        vw, vh = rng.choice(VIEWPORTS)
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),
             headless=self.headless,
@@ -220,9 +223,9 @@ class PlaywrightDriver(BaseDriver):
             user_agent=rng.choice(USER_AGENTS),
             locale=rng.choice(LOCALES),
             timezone_id=rng.choice(TIMEZONES),
-            viewport={"width": rng.choice(VIEWPORTS)[0],
-                      "height": rng.choice(VIEWPORTS)[1]},
-            args=["--disable-blink-features=AutomationControlled"],
+            viewport={"width": vw, "height": vh},
+            args=["--disable-blink-features=AutomationControlled",
+                  f"--window-size={vw},{vh}"],
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
