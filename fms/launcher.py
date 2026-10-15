@@ -2,8 +2,10 @@
 
 Double-click behavior:
   1. Find a free localhost port (8000+).
-  2. Start the dashboard server (uvicorn) in the main thread.
-  3. Open the dashboard in the default browser once it's ready.
+  2. Start the dashboard server (uvicorn) in a background thread.
+  3. Open the dashboard in its OWN desktop window (pywebview);
+     falls back to the default browser if webview is unavailable.
+  4. Create a Desktop shortcut on first launch (Windows).
 
 Quit via the "Quit FMS" button in the dashboard footer.
 """
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -45,16 +48,49 @@ def _free_port(start: int = 8000) -> int:
     raise RuntimeError("Could not find a free localhost port.")
 
 
-def _open_when_ready(url: str, timeout: int = 60) -> None:
+def _wait_for_server(url: str, timeout: int = 60) -> bool:
     end = time.time() + timeout
     while time.time() < end:
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 if resp.status == 200:
-                    webbrowser.open(url)
-                    return
+                    return True
         except Exception:
             time.sleep(0.5)
+    return False
+
+
+def _open_in_browser_when_ready(url: str, timeout: int = 60) -> None:
+    if _wait_for_server(url, timeout):
+        webbrowser.open(url)
+
+
+def _maybe_create_desktop_shortcut() -> None:
+    """Create a Desktop shortcut (Windows, frozen only) on first launch."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    try:
+        from fms.config import data_dir
+
+        marker = data_dir() / "desktop_shortcut_created"
+        if marker.exists():
+            return
+        exe = sys.executable
+        # PowerShell via WScript.Shell — no extra packages needed.
+        ps = (
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+            "$env:USERPROFILE+'\\Desktop\\FMS.lnk');"
+            f"$s.TargetPath='{exe}';$s.IconLocation='{exe},0';"
+            "$s.WorkingDirectory='" + os.path.dirname(exe).replace("'", "''") + "';"
+            "$s.Save()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+                        "-Command", ps],
+                       capture_output=True, timeout=30)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -62,12 +98,29 @@ def main() -> None:
     # Self-update: if a previous session downloaded FMS.new.exe, swap it in
     # now (the running exe can't be replaced while it's open on Windows).
     apply_pending_update()
+    _maybe_create_desktop_shortcut()
     port = _free_port(8000)
     url = f"http://127.0.0.1:{port}/"
     app = create_app(driver_name="playwright")
-    # uvicorn runs in the MAIN thread (signal handling only works there);
-    # the browser-opener goes in a background thread.
-    threading.Thread(target=_open_when_ready, args=(url,), daemon=True).start()
+
+    try:
+        import webview  # pywebview: native desktop window
+
+        threading.Thread(
+            target=lambda: uvicorn.run(
+                app, host="127.0.0.1", port=port, log_level="warning"),
+            daemon=True).start()
+        if _wait_for_server(url):
+            webview.create_window("FMS", url, width=1280, height=800,
+                                  min_size=(960, 600))
+            webview.start()
+        return
+    except ImportError:
+        pass
+
+    # Fallback: open in the default browser (uvicorn in main thread).
+    threading.Thread(target=_open_in_browser_when_ready,
+                     args=(url,), daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 

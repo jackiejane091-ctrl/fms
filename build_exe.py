@@ -68,6 +68,7 @@ def main() -> None:
         # Playwright's driver (node) ships as package data. The *browser
         # binaries* are intentionally NOT bundled (split bundle).
         "--collect-data", "playwright",
+        "--icon", str(ROOT / "fms" / "icon.ico"),
         str(ROOT / "fms" / "launcher.py"),
     ]
     print("Running PyInstaller (app-only, no bundled browsers)…")
