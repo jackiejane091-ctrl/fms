@@ -129,7 +129,8 @@ def main() -> None:
                 app, host="127.0.0.1", port=port, log_level="warning"),
             daemon=True).start()
         if _wait_for_server(url):
-            webview.create_window("FMS", url, width=1280, height=800,
+            # Professional desktop size (like FBM Robo) — NOT fullscreen.
+            webview.create_window("FMS", url, width=1120, height=780,
                                   min_size=(960, 600), js_api=_FMSApi())
             webview.start()
         return

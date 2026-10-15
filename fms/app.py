@@ -184,15 +184,13 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     # ------------------------------------------------------------------ pages
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-        stats = {
-            "groups": len(accounts_mod.list_groups(db)),
-            "accounts": db.fetchone("SELECT COUNT(*) AS c FROM accounts")["c"],
-            "products": db.fetchone("SELECT COUNT(*) AS c FROM products")["c"],
-            "runs": db.fetchone("SELECT COUNT(*) AS c FROM runs")["c"],
-        }
+        # Command-center home (FBM Robo style): run controls + live board.
         return templates.TemplateResponse(
-            request, "index.html", {"request": request, "stats": stats,
-                                    "runs": engine.list_runs(10)})
+            request, "index.html", {"request": request,
+                                    "groups": accounts_mod.list_groups(db),
+                                    "products": products_mod.list_products(db),
+                                    "scripts": scripts_mod.list_scripts(db),
+                                    "actions": engine_mod.ACTIONS})
 
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, group_id: int | None = None):

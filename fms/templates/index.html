@@ -1,29 +1,141 @@
 {% extends "base.html" %}
-{% block title %}— Dashboard{% endblock %}
+{% block title %}— Home{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<div class="cards">
-  <div class="card"><div class="num">{{ stats.groups }}</div><div class="lbl">Groups</div></div>
-  <div class="card"><div class="num">{{ stats.accounts }}</div><div class="lbl">Accounts</div></div>
-  <div class="card"><div class="num">{{ stats.products }}</div><div class="lbl">Products</div></div>
-  <div class="card"><div class="num">{{ stats.runs }}</div><div class="lbl">Runs</div></div>
+<!-- FMS Command Center — simple one-screen layout (FBM Robo style) -->
+<div class="cc-top">
+  <div class="cc-row">
+    <span class="cc-field"><b>Batch Size:</b>
+      <span class="spinner">
+        <button type="button" onclick="stepBatch(1)">+</button>
+        <input name="batch_size" id="batchSize" type="number" value="3" min="1" max="10" style="width:56px;text-align:center">
+        <button type="button" onclick="stepBatch(-1)">−</button>
+      </span>
+    </span>
+    <span class="cc-field"><b>Script:</b>
+      <select id="scriptSel" onchange="modeChanged()" style="min-width:180px">
+        <option value="">— Select Script —</option>
+        {% for s in scripts %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+      </select>
+    </span>
+    <span class="cc-field"><b>Select Groups:</b>
+      <select id="groupSel" onchange="loadBoard()" style="min-width:220px">
+        {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.account_count }} accounts)</option>{% endfor %}
+      </select>
+    </span>
+    <span class="cc-field cc-actions">
+      <a href="/accounts" class="btn">Accounts</a>
+      <a href="/products" class="btn">Products</a>
+      <a href="/scripts" class="btn">Manage Scripts</a>
+    </span>
+  </div>
+  <div class="cc-row">
+    <span class="cc-field"><b>Start:</b>
+      <button type="button" class="btn-start" onclick="startRun()">Start</button>
+    </span>
+    <span class="cc-field"><b>Pause/Continue:</b>
+      <button type="button" class="btn" onclick="pauseAll()">Pause All</button>
+    </span>
+    <span class="cc-field"><b>Schedule At:</b>
+      <input type="datetime-local" id="schedAt">
+    </span>
+    <span class="cc-field"><label class="check"><input type="checkbox" id="activeOnly" checked> Active Accounts</label></span>
+    <span class="cc-field"><button type="button" class="speedbtn" id="speedBtn" onclick="cycleSpeed()" title="Run speed">⚡1x</button>
+      <input type="hidden" id="speedVal" value="1"></span>
+  </div>
+  <div class="cc-row">
+    <span class="cc-field"><b>Action:</b>
+      <select id="actionSel" style="min-width:180px">
+        {% for mode, label in actions %}<option value="{{ mode }}">{{ label }}</option>{% endfor %}
+      </select>
+    </span>
+    <span class="cc-field"><b>Products:</b>
+      <span class="muted">{{ products|length }} products — <a href="/products">manage</a></span>
+    </span>
+  </div>
 </div>
 
-<h2>Recent runs</h2>
-<table>
-  <tr><th>#</th><th>Group</th><th>Mode</th><th>Status</th><th>Posted</th><th>Started</th><th></th></tr>
-  {% for r in runs %}
-  <tr>
-    <td>{{ r.id }}</td>
-    <td>{{ r.group_name }}</td>
-    <td>{{ r.mode }}</td>
-    <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
-    <td>{{ r.total_posted }}/{{ r.total_planned }}</td>
-    <td>{{ r.started_at or '—' }}</td>
-    <td><a href="/runs/{{ r.id }}">open</a></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="7" class="muted">No runs yet. Go to Runs to start one.</td></tr>
-  {% endfor %}
-</table>
+<div class="board" id="boardPanels">
+  <div class="panel"><h3>Pending: (<span id="bpPendingN">0</span>)</h3><ul id="bpPending"></ul></div>
+  <div class="panel"><h3>In Progress: (<span id="bpProgN">0</span>)</h3><ul id="bpProg"></ul></div>
+  <div class="panel"><h3>Done Posting: (<span id="bpDoneN">0</span>)</h3><ul id="bpDone"></ul></div>
+  <div class="panel"><h3>Failed: (<span id="bpFailedN">0</span>)</h3><ul id="bpFailed"></ul></div>
+</div>
+
+<div class="row" style="justify-content:space-between;align-items:center">
+  <h2 style="margin:0">Logs:</h2>
+  <span><button type="button" onclick="boardToggleLogs()" id="logsToggleBtn">Expand/Collapse</button>
+  <button type="button" onclick="boardCopyLogs()">Copy All</button></span>
+</div>
+<pre class="logs" id="boardLogs" style="display:none;max-height:300px;overflow:auto"></pre>
+{% endblock %}
+{% block scripts %}
+<script>
+function stepBatch(d){
+  const el = document.getElementById('batchSize');
+  el.value = Math.min(10, Math.max(1, (parseInt(el.value)||3) + d));
+}
+function cycleSpeed(){
+  const order = ['1','1.5','2'];
+  const el = document.getElementById('speedVal');
+  el.value = order[(order.indexOf(el.value)+1) % order.length];
+  document.getElementById('speedBtn').textContent = '⚡' + el.value + 'x';
+}
+async function pauseAll(){
+  const r = await fetch('/api/runs');
+  const runs = await r.json();
+  const live = runs.find(x => x.status === 'running' || x.status === 'paused');
+  if(!live){ alert('No live run to pause.'); return; }
+  await fetch('/api/runs/'+live.id+'/pause', {method:'POST'});
+  alert('Paused run #' + live.id);
+}
+function modeChanged(){
+  document.getElementById('actionSel').disabled =
+    document.getElementById('scriptSel').value !== '';
+}
+async function startRun(){
+  const gid = document.getElementById('groupSel').value;
+  const scriptId = document.getElementById('scriptSel').value;
+  const mode = scriptId ? 'script' : document.getElementById('actionSel').value;
+  if(!gid){ alert('Pehle ek group select karein.'); return; }
+  const fd = new FormData();
+  fd.append('group_id', gid);
+  fd.append('mode', mode);
+  if(scriptId) fd.append('script_id', scriptId);
+  fd.append('batch_size', document.getElementById('batchSize').value);
+  fd.append('speed', document.getElementById('speedVal').value);
+  const sched = document.getElementById('schedAt').value;
+  if(sched) fd.append('schedule_at', sched);
+  fd.append('active_only', document.getElementById('activeOnly').checked ? '1' : '0');
+  const r = await fetch('/api/runs', {method:'POST', body: fd});
+  if(r.ok){ const j = await r.json(); location.href = '/runs/' + j.run_id; }
+  else alert('Failed: ' + await r.text());
+}
+function boardLi(list){ return list.map(l => '<li>'+l+'</li>').join(''); }
+async function loadBoard(){
+  const gid = document.getElementById('groupSel').value;
+  if(!gid) return;
+  const r = await fetch('/api/board?group_id=' + gid);
+  const b = await r.json();
+  const set = (n, ul, items) => {
+    document.getElementById(n).textContent = items.length;
+    document.getElementById(ul).innerHTML = boardLi(items);
+  };
+  set('bpPendingN','bpPending', b.pending);
+  set('bpProgN','bpProg', b.in_progress);
+  set('bpDoneN','bpDone', b.done_posting);
+  set('bpFailedN','bpFailed', b.failed);
+  document.getElementById('boardLogs').textContent = (b.logs || []).join('\n');
+}
+function boardToggleLogs(){
+  const el = document.getElementById('boardLogs');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function boardCopyLogs(){
+  const t = document.getElementById('boardLogs').textContent;
+  navigator.clipboard.writeText(t).then(()=>alert('Logs copied.'));
+}
+modeChanged();
+loadBoard();
+setInterval(loadBoard, 8000);
+</script>
 {% endblock %}
