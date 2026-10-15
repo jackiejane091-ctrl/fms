@@ -19,9 +19,13 @@ via PLAYWRIGHT_BROWSERS_PATH.
 """
 from __future__ import annotations
 
+import http.cookiejar
 import os
+import re
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -92,6 +96,36 @@ def browsers_ready(folder: Path | None = None) -> bool:
     return find_chromium(folder) is not None
 
 
+def _open_with_drive_confirm(url: str):
+    """Open a download URL, following Google Drive's virus-scan confirmation.
+
+    Drive serves an HTML warning page (instead of the file) for large files;
+    the page has a ``download-form`` whose action + hidden fields (id, export,
+    confirm, uuid) must be submitted to get the real bytes. Returns the final
+    HTTP response.
+    """
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    req = urllib.request.Request(url, headers={"User-Agent": "FMS"})
+    resp = opener.open(req, timeout=60)
+    ctype = resp.headers.get("Content-Type", "")
+    if "drive.google.com" in url and "text/html" in ctype:
+        html = resp.read().decode("utf-8", "replace")
+        form = re.search(
+            r'<form id="download-form" action="([^"]+)"[^>]*>(.*?)</form>',
+            html, re.S)
+        if form:
+            action, inner = form.group(1), form.group(2)
+            fields = re.findall(
+                r'<input type="hidden" name="([^"]+)" value="([^"]*)">', inner)
+            query = "&".join(f"{k}={urllib.parse.quote(v)}" for k, v in fields)
+            sep = "&" if "?" in action else "?"
+            req2 = urllib.request.Request(f"{action}{sep}{query}",
+                                          headers={"User-Agent": "FMS"})
+            resp = opener.open(req2, timeout=60)
+    return resp
+
+
 def download_and_extract(url: str, folder: Path | None = None,
                          progress_cb=None) -> Path:
     """Download the browsers zip, extract it, verify Chromium, clean up.
@@ -108,8 +142,7 @@ def download_and_extract(url: str, folder: Path | None = None,
     downloaded = 0
     total = None
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "FMS"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _open_with_drive_confirm(url) as resp:
             length = resp.headers.get("Content-Length")
             total = int(length) if length and length.isdigit() else None
             with open(tmp_zip, "wb") as f:
@@ -124,6 +157,10 @@ def download_and_extract(url: str, folder: Path | None = None,
         if total and downloaded != total:
             raise RuntimeError(
                 f"Incomplete download: got {downloaded} of {total} bytes.")
+        if not zipfile.is_zipfile(tmp_zip):
+            raise RuntimeError(
+                "Downloaded file is not a valid zip (the download link may "
+                "have returned a web page instead of the file).")
         with zipfile.ZipFile(tmp_zip) as zf:
             # Basic zip-slip guard.
             for member in zf.namelist():
