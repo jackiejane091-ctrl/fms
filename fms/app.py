@@ -24,6 +24,7 @@ from . import products as products_mod
 from . import proxies as proxies_mod
 from . import scrap as scrap_mod
 from . import scripts as scripts_mod
+from . import settings as settings_mod
 from . import updater as updater_mod
 from .browser import get_driver
 from .db import Database
@@ -272,6 +273,21 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def logs_page(request: Request, run_id: int | None = None):
         return templates.TemplateResponse(request, "logs.html", {"request": request, "logs": engine.recent_logs(run_id, 300),
              "run_id": run_id, "runs": engine.list_runs(30)})
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request):
+        return templates.TemplateResponse(request, "settings.html",
+            {"request": request, "s": settings_mod.get_all(db)})
+
+    @app.post("/api/settings")
+    async def api_save_settings(request: Request):
+        form = await request.form()
+        settings_mod.save_all(db, dict(form))
+        return {"ok": True}
+
+    @app.get("/api/settings")
+    def api_get_settings():
+        return settings_mod.get_all(db)
 
     # ------------------------------------------------------------------- API
     @app.get("/api/groups")

@@ -121,8 +121,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS manual_tabs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE IF NOT EXISTS manual_tabs (    id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     tab_ref TEXT NOT NULL,      -- driver tab handle
@@ -136,6 +135,11 @@ CREATE TABLE IF NOT EXISTS group_products (
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     position INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (group_id, product_id)
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
 );
 """
 

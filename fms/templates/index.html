@@ -23,6 +23,7 @@
       </select>
     </span>
     <span class="cc-field cc-actions">
+      <a href="/settings" class="btn">⚙️ Settings</a>
       <a href="/accounts" class="btn">Accounts</a>
       <a href="/products" class="btn">Products</a>
       <a href="/scripts" class="btn">Manage Scripts</a>
@@ -97,16 +98,37 @@ async function startRun(){
   const scriptId = document.getElementById('scriptSel').value;
   const mode = scriptId ? 'script' : document.getElementById('actionSel').value;
   if(!gid){ alert('Pehle ek group select karein.'); return; }
-  const fd = new FormData();
-  fd.append('group_id', gid);
-  fd.append('mode', mode);
-  if(scriptId) fd.append('script_id', scriptId);
-  fd.append('batch_size', document.getElementById('batchSize').value);
-  fd.append('speed', document.getElementById('speedVal').value);
-  const sched = document.getElementById('schedAt').value;
-  if(sched) fd.append('schedule_at', sched);
-  fd.append('active_only', document.getElementById('activeOnly').checked ? '1' : '0');
-  const r = await fetch('/api/runs', {method:'POST', body: fd});
+  // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
+  const s = await (await fetch('/api/settings')).json();
+  const body = {
+    group_id: parseInt(gid),
+    mode: mode,
+    script_id: scriptId ? parseInt(scriptId) : null,
+    batch_size: parseInt(document.getElementById('batchSize').value) || 3,
+    speed: parseFloat(document.getElementById('speedVal').value) || 1,
+    schedule_at: document.getElementById('schedAt').value || null,
+    shuffle: s.shuffle === '1',
+    hide_from_friends: s.hide_from_friends === '1',
+    min_delay_s: parseFloat(s.min_seconds_to_post) || 25,
+    max_delay_s: parseFloat(s.max_seconds_to_post) || 40,
+    max_parallel_browsers: parseInt(s.max_parallel_browsers) || 5,
+    account_start_gap_s: parseFloat(s.account_start_gap_s) || 5,
+    retry_count: parseInt(s.retry_count) || 3,
+    tabs_without_limit: parseInt(s.tabs_without_limit) || 2,
+    tabs_draft_publish: parseInt(s.tabs_draft_publish) || 6,
+    typing_mode: s.typing_mode || 'human',
+    typing_preset: s.typing_preset || 'normal',
+    min_delay_ms: parseInt(s.min_delay_ms) || 30,
+    max_delay_ms: parseInt(s.max_delay_ms) || 80,
+    thinking_pause_min_ms: parseInt(s.thinking_pause_min_ms) || 200,
+    thinking_pause_max_ms: parseInt(s.thinking_pause_max_ms) || 600,
+    extra_delay_after_punctuation_ms: parseInt(s.extra_delay_after_punctuation_ms) || 80,
+    newline_pause_min_ms: parseInt(s.newline_pause_min_ms) || 300,
+    newline_pause_max_ms: parseInt(s.newline_pause_max_ms) || 900,
+    hybrid_threshold_chars: parseInt(s.hybrid_threshold_chars) || 500,
+  };
+  const r = await fetch('/api/runs', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if(r.ok){ const j = await r.json(); location.href = '/runs/' + j.run_id; }
   else alert('Failed: ' + await r.text());
 }

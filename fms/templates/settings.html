@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}— Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="muted">Ye settings save karne pe <b>har run pe automatically apply</b> hongi.</p>
+
+<form id="settingsForm" class="grid-form">
+  <label>Batch Size <input name="batch_size" type="number" value="{{ s.batch_size }}" min="1" max="10"></label>
+
+  <label class="check"><input type="checkbox" name="shuffle" value="1" {% if s.shuffle == '1' %}checked{% endif %}> Shuffle</label>
+  <label class="check"><input type="checkbox" name="hide_from_friends" value="1" {% if s.hide_from_friends == '1' %}checked{% endif %}> Hide From Friends</label>
+  <label class="check"><input type="checkbox" name="use_human_behaviour" value="1" {% if s.use_human_behaviour == '1' %}checked{% endif %}> Use Human Behaviour
+    <br><span class="muted">Human-like behaviour makes automation look more human, but can slow down listing a little.</span></label>
+
+  <label>Min Seconds To Post <input name="min_seconds_to_post" type="number" value="{{ s.min_seconds_to_post }}" min="0"></label>
+  <label>Max Seconds To Post <input name="max_seconds_to_post" type="number" value="{{ s.max_seconds_to_post }}" min="0"></label>
+  <label>No Of Browser Can Launch Parallely <input name="max_parallel_browsers" type="number" value="{{ s.max_parallel_browsers }}" min="1" max="10"></label>
+  <label>Account Start Gap In Sec <input name="account_start_gap_s" type="number" step="0.5" value="{{ s.account_start_gap_s }}" min="0"></label>
+  <label>Retry Count Before Quitting <input name="retry_count" type="number" value="{{ s.retry_count }}" min="0" max="10"></label>
+  <label>Skip Images Used In No Of Days <input name="skip_images_days" type="number" value="{{ s.skip_images_days }}" min="0"></label>
+  <label>Tabs Without Limit <input name="tabs_without_limit" type="number" value="{{ s.tabs_without_limit }}" min="1"></label>
+  <label>Tabs Draft And Publish <input name="tabs_draft_publish" type="number" value="{{ s.tabs_draft_publish }}" min="1"></label>
+
+  <fieldset class="wide">
+    <legend><b>Typing mode</b></legend>
+    <label class="check"><input type="radio" name="typing_mode" value="human" {% if s.typing_mode == 'human' %}checked{% endif %}>
+      <b>Human-like typing</b><br><span class="muted">Types character by character. Most human-like, slowest, best against strict detection.</span></label>
+    <label class="check"><input type="radio" name="typing_mode" value="fast_js" {% if s.typing_mode == 'fast_js' %}checked{% endif %}>
+      <b>Fast fill (JS)</b><br><span class="muted">Instantly sets values. Fastest, no clipboard use. Less human-like; Facebook may treat it more strictly.</span></label>
+    <label class="check"><input type="radio" name="typing_mode" value="clipboard" {% if s.typing_mode == 'clipboard' %}checked{% endif %}>
+      <b>OS clipboard paste</b><br><span class="muted">Copies each value and pastes with Ctrl+V. More human-like than JS, but uses your system clipboard.</span></label>
+    <div style="margin-top:8px">
+      <div class="muted">Human-like typing options</div>
+      <div class="row" style="margin:6px 0">
+        <span class="muted">Speed presets:</span>
+        {% for p in ['fast','normal','careful'] %}
+        <button type="button" data-preset="{{ p }}" class="{% if s.typing_preset == p %}active-preset{% endif %}" onclick="setPreset('{{ p }}')">{{ p|capitalize }}</button>
+        {% endfor %}
+      </div>
+      <div class="grid-form">
+        <label>Min delay (ms) <input name="min_delay_ms" type="number" value="{{ s.min_delay_ms }}" min="0"></label>
+        <label>Max delay (ms) <input name="max_delay_ms" type="number" value="{{ s.max_delay_ms }}" min="0"></label>
+        <label>Thinking pause min (ms) <input name="thinking_pause_min_ms" type="number" value="{{ s.thinking_pause_min_ms }}" min="0"></label>
+        <label>Thinking pause max (ms) <input name="thinking_pause_max_ms" type="number" value="{{ s.thinking_pause_max_ms }}" min="0"></label>
+        <label>Extra delay after punctuation (ms) <input name="extra_delay_after_punctuation_ms" type="number" value="{{ s.extra_delay_after_punctuation_ms }}" min="0"></label>
+        <label>Newline pause min (ms) <input name="newline_pause_min_ms" type="number" value="{{ s.newline_pause_min_ms }}" min="0"></label>
+        <label>Newline pause max (ms) <input name="newline_pause_max_ms" type="number" value="{{ s.newline_pause_max_ms }}" min="0"></label>
+        <label>Long-text hybrid paste above (chars) <input name="hybrid_threshold_chars" type="number" value="{{ s.hybrid_threshold_chars }}" min="1"></label>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="wide">
+    <legend><b>IXBrowser (anti-detect)</b> <span class="muted">— optional, Chrome stays the default</span></legend>
+    <label class="check"><input type="checkbox" name="ix_browser_enabled" value="1" {% if s.ix_browser_enabled == '1' %}checked{% endif %}> Use IXBrowser instead of Chrome</label>
+    <div class="grid-form">
+      <label>Local API Host <input name="ix_local_api_host" type="text" value="{{ s.ix_local_api_host }}"></label>
+      <label>Local API Port <input name="ix_local_api_port" type="number" value="{{ s.ix_local_api_port }}" min="1" max="65535"></label>
+    </div>
+  </fieldset>
+
+  <span class="wide row">
+    <button type="submit" class="btn-primary" style="padding:10px 34px">Save</button>
+    <a href="/" class="btn">Cancel</a>
+  </span>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+const PRESETS = {fast:[15,40], normal:[30,80], careful:[60,140]};
+function setPreset(p){
+  document.querySelectorAll('[data-preset]').forEach(b =>
+    b.classList.toggle('active-preset', b.dataset.preset === p));
+  const [mn, mx] = PRESETS[p];
+  document.querySelector('[name=min_delay_ms]').value = mn;
+  document.querySelector('[name=max_delay_ms]').value = mx;
+}
+document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  // unchecked checkboxes are absent from FormData -> send as 0
+  for (const k of ['shuffle','hide_from_friends','use_human_behaviour','ix_browser_enabled'])
+    if (!fd.has(k)) fd.append(k, '0');
+  const r = await fetch('/api/settings', {method:'POST', body: fd});
+  if (r.ok) { alert('Settings saved! Ye ab har run pe apply hongi.'); location.href = '/'; }
+  else alert('Save failed: ' + await r.text());
+});
+</script>
+{% endblock %}
