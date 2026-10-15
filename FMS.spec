@@ -3,7 +3,7 @@
 # Run from the repo root:  python build_exe.py
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [('fms/templates', 'fms/templates'), ('fms/static', 'fms/static')]
+datas = [('fms/templates', 'templates'), ('fms/static', 'static')]
 datas += collect_data_files('playwright')
 
 

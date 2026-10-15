@@ -37,8 +37,8 @@ def main() -> None:
     ensure_pyinstaller()
 
     datas = [
-        (str(ROOT / "fms" / "templates"), "fms/templates"),
-        (str(ROOT / "fms" / "static"), "fms/static"),
+        (str(ROOT / "fms" / "templates"), "templates"),
+        (str(ROOT / "fms" / "static"), "static"),
     ]
     add_data = []
     for src, dest in datas:
