@@ -9,7 +9,9 @@ Quit via the "Quit FMS" button in the dashboard footer.
 """
 from __future__ import annotations
 
+import os
 import socket
+import sys
 import threading
 import time
 import urllib.request
@@ -20,6 +22,16 @@ import uvicorn
 import fms  # noqa: F401  (frozen bootstrap: local Playwright browsers folder)
 from fms.app import create_app
 from fms.updater import apply_pending_update
+
+
+def _ensure_stdio() -> None:
+    """PyInstaller --windowed builds have no console: sys.stdout/sys.stderr
+    are None, which crashes uvicorn's log formatter ('isatty' on NoneType).
+    Point them at devnull so logging (and any stray print) is safe."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")  # noqa: PTH123
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")  # noqa: PTH123
 
 
 def _free_port(start: int = 8000) -> int:
@@ -46,6 +58,7 @@ def _open_when_ready(url: str, timeout: int = 60) -> None:
 
 
 def main() -> None:
+    _ensure_stdio()
     # Self-update: if a previous session downloaded FMS.new.exe, swap it in
     # now (the running exe can't be replaced while it's open on Windows).
     apply_pending_update()
