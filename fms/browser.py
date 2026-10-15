@@ -323,6 +323,21 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             return False
 
+    def _find_login_field(self, page, fallbacks, timeout_each: int = 5000):
+        """Try each login selector in order; return the first visible locator."""
+        last_exc = None
+        for sel in fallbacks:
+            try:
+                loc = S.to_playwright(page, sel)
+                loc.wait_for(state="visible", timeout=timeout_each)
+                return loc
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No login selector matched.")
+
     def login(self) -> bool:
         self._ensure()
         page = self._page
@@ -356,13 +371,14 @@ class PlaywrightDriver(BaseDriver):
         page.goto(S.LOGIN_URL, wait_until="domcontentloaded")
         human.human_pause()
         try:
-            email = S.to_playwright(page, S.LOGIN_EMAIL)
-            email.wait_for(timeout=15000)
+            email = self._find_login_field(page, S.LOGIN_EMAIL_FALLBACKS)
             self._type(email, label)
             human.human_pause(200, 500)
-            self._type(S.to_playwright(page, S.LOGIN_PASS), password)
+            self._type(self._find_login_field(page, S.LOGIN_PASS_FALLBACKS),
+                       password)
             human.human_pause(300, 800)
-            human.human_click(page, S.to_playwright(page, S.LOGIN_BUTTON))
+            human.human_click(
+                page, self._find_login_field(page, S.LOGIN_BUTTON_FALLBACKS))
             human.human_pause(2000, 4000)
         except Exception:
             return False

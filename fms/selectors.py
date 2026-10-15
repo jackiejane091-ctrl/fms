@@ -18,10 +18,33 @@ MKT_CREATE_ITEM_URL = "https://www.facebook.com/marketplace/create/item/"
 MKT_YOUR_LISTINGS_URL = "https://www.facebook.com/marketplace/you/selling/"
 
 # ------------------------------------------------------------------ login ---
-# Facebook login page
+# Facebook login page — Facebook serves several page variants, so each field
+# has fallback selectors tried in order (first match wins).
 LOGIN_EMAIL = ("css", "#email")
+LOGIN_EMAIL_FALLBACKS = [
+    ("css", "#email"),
+    ("css", "input[name='email']"),
+    ("css", "[data-testid='royal_email']"),
+    ("css", "input[type='text'][autocomplete='username']"),
+    ("placeholder", "Email address or phone number"),
+    ("placeholder", "Email or phone number"),
+]
 LOGIN_PASS = ("css", "#pass")
+LOGIN_PASS_FALLBACKS = [
+    ("css", "#pass"),
+    ("css", "input[name='pass']"),
+    ("css", "[data-testid='royal_pass']"),
+    ("css", "input[type='password']"),
+    ("placeholder", "Password"),
+]
 LOGIN_BUTTON = ("css", "button[name='login']")
+LOGIN_BUTTON_FALLBACKS = [
+    ("css", "button[name='login']"),
+    ("css", "[data-testid='royal_login_button']"),
+    ("css", "button[type='submit']"),
+    ("text", "Log in"),
+    ("text", "Log In"),
+]
 # Logged-in indicator (profile link / nav)
 LOGGED_IN_INDICATOR = ("css", "a[aria-label='Your profile'], a[aria-label*='Profile']")
 # 2FA / checkpoint prompts
