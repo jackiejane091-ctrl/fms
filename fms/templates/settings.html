@@ -54,8 +54,9 @@
     <legend><b>IXBrowser (anti-detect)</b> <span class="muted">— optional, Chrome stays the default</span></legend>
     <label class="check"><input type="checkbox" name="ix_browser_enabled" value="1" {% if s.ix_browser_enabled == '1' %}checked{% endif %}> Use IXBrowser instead of Chrome</label>
     <div class="grid-form">
-      <label>Local API Host <input name="ix_local_api_host" type="text" value="{{ s.ix_local_api_host }}"></label>
-      <label>Local API Port <input name="ix_local_api_port" type="number" value="{{ s.ix_local_api_port }}" min="1" max="65535"></label>
+      <label>Local API Host <input name="ix_local_api_host" id="ixHost" type="text" value="{{ s.ix_local_api_host }}"></label>
+      <label>Local API Port <input name="ix_local_api_port" id="ixPort" type="number" value="{{ s.ix_local_api_port }}" min="1" max="65535"></label>
+      <span><button type="button" onclick="ixReset()">Reset host &amp; port</button></span>
     </div>
   </fieldset>
 
@@ -74,6 +75,10 @@ function setPreset(p){
   const [mn, mx] = PRESETS[p];
   document.querySelector('[name=min_delay_ms]').value = mn;
   document.querySelector('[name=max_delay_ms]').value = mx;
+}
+function ixReset(){
+  document.getElementById('ixHost').value = '127.0.0.1';
+  document.getElementById('ixPort').value = '53200';
 }
 document.getElementById('settingsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
