@@ -14,8 +14,6 @@
     <a href="/accounts" class="{% if request.url.path.startswith('/accounts') %}active{% endif %}">Accounts</a>
     <a href="/products" class="{% if request.url.path.startswith('/products') %}active{% endif %}">Products</a>
     <a href="/scripts" class="{% if request.url.path.startswith('/scripts') %}active{% endif %}">Scripts</a>
-    <a href="/runs" class="{% if request.url.path.startswith('/runs') %}active{% endif %}">Runs</a>
-    <a href="/logs" class="{% if request.url.path.startswith('/logs') %}active{% endif %}">Logs</a>
     <span class="dropdown" id="ddSettings">
       <button type="button" onclick="toggleDd('ddSettings')">Settings ▾</button>
       <span class="menu">
