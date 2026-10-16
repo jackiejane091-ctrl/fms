@@ -48,7 +48,6 @@ async function mgShowAdd(id, name){ _agEditId = id||null;
     } catch(e){}
   }
   document.getElementById('agName').value = name||'';
-  document.getElementById('agManageAccts').href = id ? '/accounts?group_id='+id : '/accounts';
   agLoadProducts(id); document.getElementById('agModal').style.display='flex'; }
 function closeAddGroup(){ document.getElementById('agModal').style.display='none'; location.reload(); }
 function openManageAcctsFromGroup(){

@@ -701,7 +701,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             info = updater_mod.fetch_version_info()
         except RuntimeError as exc:
             raise HTTPException(400, str(exc))
-        exe_url = info.get("exe_url") or ""
+        exe_url = info.get("exe_url") or info.get("download_url") or ""
         try:
             updater_mod.download_update(exe_url, info.get("exe_size"))
         except RuntimeError as exc:

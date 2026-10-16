@@ -43,6 +43,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r fms/requirements.txt pyinstaller
 
+      # "Pehle khud X-ray karo" (2026-10-16): v0.2.16 shipped an Accounts-page
+      # crash that empty-DB tests missed. This gate renders every page with a
+      # realistic seeded database; if it fails, the build stops here and no
+      # broken FMS.exe can ever be uploaded to the user.
+      - name: Pre-release X-ray (must be green before build)
+        run: python fms/tests/prerelease_xray.py
+
       - name: Build app-only FMS.exe
         run: python build_exe.py
 
