@@ -881,6 +881,15 @@ class RunController:
         remaining = quota - self._posted_count(account["id"])
         self.log(f"[{label}] logged in, {remaining} listing(s) to post",
                  account_id=account["id"])
+        # v0.2.33: human warm-up — browse the feed briefly before the first
+        # post, like a real person would (anti "suspected automated behavior").
+        if remaining > 0:
+            try:
+                self.log(f"[{label}] warming up (browsing feed)…",
+                         account_id=account["id"])
+                driver.human_warmup()
+            except Exception:
+                pass
         # Tabs Without Limit: the quota is worked in tab-groups of N, like the
         # real tool opening N tabs at a time for the limit-bypass path.
         chunk = max(1, int(self.cfg.tabs_without_limit))

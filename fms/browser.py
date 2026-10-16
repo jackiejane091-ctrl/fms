@@ -35,6 +35,45 @@ LOCALES = ["en-GB", "en-US"]
 # laptop's REAL system timezone (timezone_id is simply not overridden).
 
 
+# v0.2.33: stealth init script — hide the remaining automation traces so
+# Facebook sees a normal human-driven browser (anti "suspected automated
+# behavior"). Runs in every page before any site script.
+_STEALTH_JS = """() => {
+  // navigator.webdriver -> undefined (belt & braces with the blink flag)
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch (e) {}
+  // plugins: real Chrome ships a few; an empty list is a bot tell
+  try {
+    const plugs = [
+      { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer',
+        description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+        description: '' },
+      { name: 'Native Client', filename: 'internal-nacl-plugin',
+        description: '' },
+    ];
+    plugs.item = (i) => plugs[i] || null;
+    plugs.namedItem = (n) => plugs.find((p) => p.filename === n) || null;
+    Object.defineProperty(navigator, 'plugins', { get: () => plugs });
+  } catch (e) {}
+  // languages: consistent with the context locale (__LOCALE__)
+  try {
+    Object.defineProperty(navigator, 'languages',
+      { get: () => ['__LOCALE__', 'en-US'] });
+  } catch (e) {}
+  // permissions: don't leak automation via notification-permission probes
+  try {
+    const orig = window.navigator.permissions.query.bind(
+      window.navigator.permissions);
+    window.navigator.permissions.query = (params) =>
+      params && params.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : orig(params);
+  } catch (e) {}
+}"""
+
+
 class BaseDriver(ABC):
     """Interface the listing engine programs against."""
 
@@ -52,6 +91,14 @@ class BaseDriver(ABC):
         payload keys: title, price, description, category, attributes (dict),
         condition, availability, location, tags, image_paths (list), video_path.
         """
+
+    def human_warmup(self) -> None:
+        """Brief human-like feed browsing before the first post (v0.2.33).
+
+        A human doesn't log in and instantly open the create-listing page;
+        they scroll the feed a little first. Default: no-op (MockDriver).
+        """
+        return None
 
     # -- Phase 2: drafts, manual-publish, relist/edit, scrap, activities --------
     def create_draft(self, payload: dict) -> str | None:
@@ -244,6 +291,13 @@ class PlaywrightDriver(BaseDriver):
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+        # v0.2.33: stealth init script so Facebook sees a human-driven
+        # browser, not automation ("we suspected automated behavior").
+        try:
+            self._context.add_init_script(
+                _STEALTH_JS.replace("__LOCALE__", loc))
+        except Exception:
+            pass
 
     # -- IXBrowser (anti-detect, optional) -------------------------------------
     IX_GROUP = "FBMRobo"  # profiles FMS creates are placed in this IX group
@@ -612,6 +666,20 @@ class PlaywrightDriver(BaseDriver):
             self._last_form_error = (f"{type(exc).__name__}: "
                                      f"{str(exc)[:180]} @ {url}")
             return False
+
+    def human_warmup(self) -> None:
+        """Brief human-like feed browsing before the first post (v0.2.33).
+
+        A human doesn't log in and instantly open the create-listing page;
+        they scroll the feed a little first. This closes that behavioral gap
+        behind Facebook's "suspected automated behavior" flag.
+        """
+        self._ensure()
+        page = self._page
+        assert page is not None
+        for _ in range(random.randint(3, 5)):
+            human.human_scroll(page, random.randint(300, 800))
+            # human_scroll already pauses 300-900ms after each scroll
 
     def post_listing(self, payload: dict) -> str | None:
         self._ensure()

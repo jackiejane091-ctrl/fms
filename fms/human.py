@@ -96,13 +96,25 @@ def estimate_speed(cfg: "TypingConfig") -> tuple[float, float]:
     return round(cps, 1), round(seconds_500, 0)
 
 
+def _human_focus(locator) -> None:
+    """Focus a field the human way: move the cursor along a curve and click.
+
+    v0.2.33: a plain locator.click() teleports the mouse to the field, which
+    is a bot signal. This keeps the whole session human from the first click.
+    """
+    try:
+        human_click(locator.page, locator)
+    except Exception:
+        try:
+            locator.click()
+        except Exception:
+            pass
+
+
 def human_type_cfg(locator, text: str, cfg: TypingConfig) -> None:
     """Char-by-char typing honoring a TypingConfig (delays scaled by preset)."""
     d = cfg.scaled()
-    try:
-        locator.click()
-    except Exception:
-        pass
+    _human_focus(locator)
     since_think = 0
     think_at = random.randint(THINK_EVERY_MIN, THINK_EVERY_MAX)
     for ch in text:
@@ -238,10 +250,7 @@ def human_type(
     char_delay: tuple[int, int] = (CHAR_DELAY_MIN_MS, CHAR_DELAY_MAX_MS),
 ) -> None:
     """Type text character-by-character with jitter, thinking & punctuation pauses."""
-    try:
-        locator.click()
-    except Exception:
-        pass
+    _human_focus(locator)
     since_think = 0
     think_at = random.randint(THINK_EVERY_MIN, THINK_EVERY_MAX)
     for ch in text:
@@ -301,13 +310,30 @@ def fill_text(
 
 
 # ------------------------------------------------------------------ mouse ---
+def _last_pos(page):
+    """Last known cursor position (v0.2.33: avoids teleporting the mouse)."""
+    return getattr(page, "_fms_mouse", None)
+
+
+def _save_pos(page, x: float, y: float) -> None:
+    try:
+        page._fms_mouse = (x, y)
+    except Exception:
+        pass
+
+
 def human_move(page, x: float, y: float, steps: int | None = None) -> None:
     """Move the mouse along a slightly curved path (no straight-line jumps)."""
     steps = steps or random.randint(12, 28)
     mouse = page.mouse
-    # Start the curve a little away from the target so the path isn't a line.
-    sx = x + random.uniform(-220, -80)
-    sy = y + random.uniform(-160, 160)
+    # v0.2.33: start the curve from the REAL cursor position when known.
+    # Teleporting to an offset start point is itself a bot signal.
+    start = _last_pos(page)
+    if start:
+        sx, sy = start
+    else:
+        sx = x + random.uniform(-220, -80)
+        sy = y + random.uniform(-160, 160)
     # Control point offset for a gentle curve
     cx = (sx + x) / 2 + random.uniform(-60, 60)
     cy = (sy + y) / 2 + random.uniform(-60, 60)
@@ -321,6 +347,7 @@ def human_move(page, x: float, y: float, steps: int | None = None) -> None:
         except Exception:
             break
         time.sleep(random.uniform(0.004, 0.012))
+    _save_pos(page, x, y)
 
 
 def human_click(page, locator) -> None:
@@ -336,6 +363,7 @@ def human_click(page, locator) -> None:
         rand_delay(60, 220)
         try:
             page.mouse.click(x, y)
+            _save_pos(page, x, y)
             return
         except Exception:
             pass
