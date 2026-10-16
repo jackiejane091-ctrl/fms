@@ -851,8 +851,11 @@ class RunController:
             if listing_id:
                 self._record_posted(account, pid, payload, listing_id)
             else:
-                self._record_failed(account, pid, payload,
-                                    "driver returned no listing id")
+                # v0.2.29: surface the REAL failure reason (error + page URL)
+                # so the per-account logs say where posting actually died.
+                err = (getattr(driver, "_last_error", None)
+                       or "driver returned no listing id")
+                self._record_failed(account, pid, payload, err)
             self._inter_post_delay()
             # v0.2.24: notice Stop/Pause promptly after each listing instead
             # of only before the next one.

@@ -600,15 +600,26 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
             return True
-        except Exception:
+        except Exception as exc:
+            # v0.2.29: keep the real failure reason + page so the run logs
+            # say WHY the form never completed (instead of a silent False).
+            try:
+                url = page.url
+            except Exception:
+                url = "?"
+            self._last_form_error = (f"{type(exc).__name__}: "
+                                     f"{str(exc)[:180]} @ {url}")
             return False
 
     def post_listing(self, payload: dict) -> str | None:
         self._ensure()
         page = self._page
         assert page is not None
+        self._last_error = None  # v0.2.29: surfaced in the run logs on failure
         try:
             if not self._fill_form(page, payload):
+                self._last_error = (getattr(self, "_last_form_error", None)
+                                    or "form fill failed")
                 return None
             # Publish
             human.human_click(page, S.to_playwright(page, S.F_PUBLISH_BUTTON))
@@ -620,7 +631,12 @@ class PlaywrightDriver(BaseDriver):
             if "/marketplace/item/" in url:
                 listing_id = url.rstrip("/").split("/")[-1].split("?")[0]
             return listing_id or "posted"
-        except Exception:
+        except Exception as exc:
+            try:
+                url = page.url
+            except Exception:
+                url = "?"
+            self._last_error = f"{type(exc).__name__}: {str(exc)[:180]} @ {url}"
             return None
 
     # -- Phase 2: drafts --------------------------------------------------------
