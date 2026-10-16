@@ -19,7 +19,7 @@
     </span>
     <span class="cc-field"><b>Select Groups:</b>
       <div id="groupChecks" class="group-checks" style="min-width:220px;max-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px;background:var(--bg)">
-        {% for g in groups %}<label class="check" style="display:block;margin:3px 0"><input type="checkbox" class="gcheck" value="{{ g.id }}" {% if loop.first %}checked{% endif %} onchange="loadBoard()"> {{ g.name }} ({{ g.account_count }})</label>{% endfor %}
+        {% for g in groups %}<label class="check" style="display:block;margin:3px 0"><input type="checkbox" class="gcheck" value="{{ g.id }}" onchange="loadBoard()"> {{ g.name }} ({{ g.account_count }})</label>{% endfor %}
       </div>
     </span>
     <span class="cc-field cc-actions">
@@ -167,7 +167,8 @@ function boardCopyLogs(){
   navigator.clipboard.writeText(t).then(()=>alert('Logs copied.'));
 }
 modeChanged();
-loadBoard();
+// Fresh open: board stays empty until the user selects group(s).
+// Auto-refresh only updates when groups are selected.
 setInterval(loadBoard, 8000);
 </script>
 {% endblock %}

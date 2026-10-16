@@ -623,8 +623,12 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     @app.get("/api/board")
     def api_board(group_id: int):
         """Main-screen status panels: Accounts / Pending / In Progress /
-        Done Posting / Failed (+ exclude list and recent logs), driven by the
-        group's most recent run."""
+        Done Posting / Failed (+ exclude list and recent logs).
+
+        Fresh behavior: if the group's most recent run is LIVE, show its
+        live status. Otherwise show the group's accounts as a "pending
+        preview" (what WOULD run) — never stale data from an old run.
+        """
         accts = accounts_mod.list_accounts(db, group_id)
         board = {
             "accounts": [a["label"] for a in accts],
@@ -635,11 +639,21 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         runs = engine.list_runs(50)
         run = next((r for r in runs if r.get("group_id") == group_id), None)
         if run is None:
+            # No run yet: preview = all accounts ready to go.
+            board["pending"] = [a["label"] for a in accts]
             return board
         full = engine.get_run(run["id"])
         board["run_id"] = run["id"]
-        board["run_live"] = bool(full.get("live"))
         live = bool(full.get("live"))
+        board["run_live"] = live
+        if not live:
+            # Old/completed run: don't show stale data — show fresh preview.
+            board["pending"] = [a["label"] for a in accts]
+            board["logs"] = [
+                f"[{l['created_at']}] {l['level']}: {l['message']}"
+                for l in engine.recent_logs(run["id"], 50)
+            ]
+            return board
         quotas = {int(k): v for k, v in
                   full.get("settings", {}).get("quotas", {}).items()}
         for a in full.get("per_account", []):
