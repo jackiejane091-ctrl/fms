@@ -153,10 +153,12 @@ document.getElementById('agModal').addEventListener('click', e=>{ if(e.target.id
       <input type="hidden" id="speedVal" value="1"></span>
   </div>
   <div class="cc-row">
-    <span class="cc-field"><b>Action:</b>
-      <select id="actionSel" onchange="modeChanged()" style="min-width:180px">
+    <span class="cc-field"><b>Script:</b>
+      <select id="actionSel" onchange="modeChanged()" style="min-width:200px">
+        <option value="">— Select Script —</option>
+        <option disabled>── Actions ──</option>
         {% for mode, label in actions %}<option value="{{ mode }}">{{ label }}</option>{% endfor %}
-        {% if scripts %}<option disabled>────────</option>
+        {% if scripts %}<option disabled>── My Scripts ──</option>
         {% for s in scripts %}<option value="script:{{ s.id }}">📜 {{ s.name }}</option>{% endfor %}{% endif %}
       </select>
     </span>
@@ -209,6 +211,7 @@ async function startRun(){
   const scriptId = actVal.startsWith('script:') ? actVal.slice(7) : '';
   const mode = scriptId ? 'script' : actVal;
   if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
+  if(!actVal){ fmsAlert('Pehle Script box se koi Action ya Script select karein.'); return; }
   // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
   const s = await (await fetch('/api/settings')).json();
   const body = {
