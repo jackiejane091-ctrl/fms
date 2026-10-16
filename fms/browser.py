@@ -340,16 +340,24 @@ class PlaywrightDriver(BaseDriver):
             return False
 
     def _find_login_field(self, page, fallbacks, timeout_each: int = 5000):
-        """Try each login selector in order; return the first visible locator."""
+        """Try each login selector in order; return the first visible locator.
+
+        v0.2.26: fast pass first — every selector gets only a short wait
+        (600ms). A selector that is simply absent used to burn the full
+        5s timeout, which caused the ~10s stall between filling the
+        password and clicking Log in. The full-timeout pass still runs
+        afterwards for slow-loading pages.
+        """
         last_exc = None
-        for sel in fallbacks:
-            try:
-                loc = S.to_playwright(page, sel)
-                loc.wait_for(state="visible", timeout=timeout_each)
-                return loc
-            except Exception as exc:
-                last_exc = exc
-                continue
+        for timeout in (600, timeout_each):
+            for sel in fallbacks:
+                try:
+                    loc = S.to_playwright(page, sel)
+                    loc.wait_for(state="visible", timeout=timeout)
+                    return loc
+                except Exception as exc:
+                    last_exc = exc
+                    continue
         if last_exc:
             raise last_exc
         raise RuntimeError("No login selector matched.")
