@@ -22,20 +22,6 @@
 let _agEditId = null;
 async function openManageGroups(e){ if(e) e.preventDefault(); document.getElementById('mgModal').style.display='flex'; await mgLoad(); }
 function closeManageGroups(){ document.getElementById('mgModal').style.display='none'; location.reload(); }
-async function mgLoad(){
-  const groups = await (await fetch('/api/groups')).json();
-  const tb = document.getElementById('mgBody'); tb.innerHTML='';
-  for(const g of groups){
-    const tr = document.createElement('tr'); tr.style.borderBottom='1px solid var(--line)';
-    const nm = (g.name||'').replace(/'/g,'');
-    tr.innerHTML = '<td style="padding:10px">'+g.id+'</td><td style="padding:10px"><b>'+nm+'</b></td>'
-      +'<td style="padding:10px;text-align:center">'+(g.account_count||0)+'</td>'
-      +'<td style="padding:10px;text-align:center"><a href="/accounts?group_id='+g.id+'" title="Manage Accounts">✏️</a></td>'
-      +'<td style="padding:10px;text-align:center"><button onclick="mgClone('+g.id+',\''+nm+'\')" title="Clone" style="background:none;border:none;cursor:pointer;font-size:17px">📋</button></td>'
-      +'<td style="padding:10px;text-align:center"><button onclick="mgShowAdd('+g.id+',\''+nm+'\')" title="Edit" style="background:none;border:none;cursor:pointer;font-size:17px">✏️</button></td>'
-      +'<td style="padding:10px;text-align:center"><button onclick="mgDelete('+g.id+',\''+nm+'\')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:17px">🗑️</button></td>';
-    tb.appendChild(tr);
-  }
   if(!groups.length) tb.innerHTML='<tr><td colspan="7" style="padding:22px;text-align:center" class="muted">No groups yet — press + to add one.</td></tr>';
 }
 async function mgShowAdd(id, name){ _agEditId = id||null;
@@ -203,6 +189,56 @@ document.getElementById('maModal').addEventListener('click', e=>{ if(e.target.id
 
 {% endblock %}
 {% block content %}
+<h1>Accounts</h1>
+
+<!-- FBM Robo-style Manage Groups popup -->
+<div id="mgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;max-width:900px;width:94%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:#4a5fd0;border-radius:8px 8px 0 0;color:#fff">
+      <b style="font-size:22px">Manage Groups</b>
+      <div style="display:flex;gap:8px">
+        <button onclick="mgShowAdd()" title="Add Group" style="background:#fff;border:none;border-radius:6px;font-size:20px;width:38px;height:38px;cursor:pointer;font-weight:bold">+</button>
+        <button onclick="closeManageGroups()" title="Close" style="background:#e53e3e;color:#fff;border:none;border-radius:6px;font-size:18px;width:38px;height:38px;cursor:pointer">✕</button>
+      </div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;background:#fff;color:#333">
+      <tr style="background:#4a5fd0;color:#fff">
+        <th style="padding:12px;text-align:left">Id</th>
+        <th style="padding:12px;text-align:left">Group Name</th>
+        <th style="padding:12px;text-align:center">Accounts</th>
+        <th style="padding:12px;text-align:center">Product Counts</th>
+        <th style="padding:12px;text-align:center">Manage Accounts</th>
+        <th style="padding:12px;text-align:center">Clone</th>
+        <th style="padding:12px;text-align:center">Edit</th>
+        <th style="padding:12px;text-align:center">Delete</th>
+      </tr>
+      <tbody id="mgBody"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+async function mgLoad(){
+  const groups = await (await fetch('/api/groups')).json();
+  const tb = document.getElementById('mgBody'); tb.innerHTML='';
+  for(const g of groups){
+    const tr = document.createElement('tr'); tr.style.borderBottom='1px solid #eee';
+    const nm = (g.name||'').replace(/'/g,'');
+    tr.innerHTML =
+      '<td style="padding:12px">'+g.id+'</td>'+
+      '<td style="padding:12px">'+(g.name||'')+'</td>'+
+      '<td style="padding:12px;text-align:center">'+(g.account_count||0)+'</td>'+
+      '<td style="padding:12px;text-align:center">'+(g.product_count||0)+'</td>'+
+      '<td style="padding:12px;text-align:center"><button onclick="openManageAccts('+g.id+',\''+nm+'\')" title="Manage Accounts" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
+      '<td style="padding:12px;text-align:center"><button onclick="cloneGroup('+g.id+',\''+nm+'\')" title="Clone" style="background:none;border:none;cursor:pointer;font-size:20px">📋</button></td>'+
+      '<td style="padding:12px;text-align:center"><button onclick="mgShowAdd('+g.id+')" title="Edit" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
+      '<td style="padding:12px;text-align:center"><button onclick="delGroup('+g.id+')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:20px">🗑️</button></td>';
+    tb.appendChild(tr);
+  }
+  if(!groups.length){ tb.innerHTML='<tr><td colspan="8" style="padding:20px;text-align:center;color:#999">No groups yet. Click + to add one.</td></tr>'; }
+}
+document.getElementById('mgModal').addEventListener('click', e=>{ if(e.target.id==='mgModal') closeManageGroups(); });
+</script>
+
 <h1>Accounts</h1>
 
 <h2>Manage Groups</h2>
