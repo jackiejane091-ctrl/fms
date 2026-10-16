@@ -191,6 +191,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             request, "index.html", {"request": request,
                                     "groups": accounts_mod.list_groups(db),
                                     "products": products_mod.list_products(db),
+                                    "product_ids_json": __import__("json").dumps([pr["id"] for pr in products_mod.list_products(db)]),
                                     "scripts": scripts_mod.list_scripts(db),
                                     "actions": engine_mod.ACTIONS})
 

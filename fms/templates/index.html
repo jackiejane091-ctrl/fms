@@ -127,16 +127,18 @@ async function startRun(){
     newline_pause_max_ms: parseInt(s.newline_pause_max_ms) || 900,
     hybrid_threshold_chars: parseInt(s.hybrid_threshold_chars) || 500,
   };
-  let firstRun = null, failed = 0;
+  // Include all products (home page uses all products for posting modes).
+  body.product_ids = {{ product_ids_json|default('[]') }};
+  let firstRun = null, failed = 0, errMsg = '';
   for(const gid of gids){
     body.group_id = parseInt(gid);
     const r = await fetch('/api/runs', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     if(r.ok){ const j = await r.json(); if(!firstRun) firstRun = j.run_id; }
-    else failed++;
+    else { failed++; try{ const e = await r.json(); if(e.detail) errMsg = e.detail; }catch(_){} }
   }
   if(firstRun) location.href = '/runs/' + firstRun;
-  else alert('Failed: koi run start nahi ho saka.');
+  else alert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
 }
 function selectedGroups(){
   return [...document.querySelectorAll('.gcheck:checked')].map(c => c.value);
