@@ -38,8 +38,15 @@ async function mgLoad(){
   }
   if(!groups.length) tb.innerHTML='<tr><td colspan="7" style="padding:22px;text-align:center" class="muted">No groups yet — press + to add one.</td></tr>';
 }
-function mgShowAdd(id, name){ _agEditId = id||null;
+async function mgShowAdd(id, name){ _agEditId = id||null;
   document.getElementById('agTitle').textContent = id ? 'Edit Group' : 'Add Group';
+  if(id && !name){
+    try {
+      const groups = await (await fetch('/api/groups')).json();
+      const g = groups.find(x=>x.id===id);
+      if(g) name = g.name;
+    } catch(e){}
+  }
   document.getElementById('agName').value = name||'';
   document.getElementById('agManageAccts').href = id ? '/accounts?group_id='+id : '/accounts';
   agLoadProducts(id); document.getElementById('agModal').style.display='flex'; }
@@ -211,7 +218,7 @@ document.getElementById('maModal').addEventListener('click', e=>{ if(e.target.id
     <td>{{ g.product_count }}</td>
     <td><a href="/accounts?group_id={{ g.id }}" title="Manage accounts">✏️</a></td>
     <td><button onclick="cloneGroup({{ g.id }}, '{{ g.name|escape }}')" title="Clone group">📋</button></td>
-    <td><button onclick="mgShowAdd({{ g.id }}, '{{ g.name|replace(chr(39), '') }}')" title="Edit">✏️</button></td>
+    <td><button onclick="mgShowAdd({{ g.id }})" title="Edit">✏️</button></td>
     <td><button onclick="delGroup({{ g.id }})" class="danger" title="Delete">🗑️</button></td>
   </tr>
   {% else %}
