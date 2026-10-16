@@ -135,14 +135,20 @@ async function startRun(){
   // Include all products (home page uses all products for posting modes).
   body.product_ids = {{ product_ids_json|default('[]') }};
   let firstRun = null, failed = 0, errMsg = '';
+  const runIds = [];
   for(const gid of gids){
     body.group_id = parseInt(gid);
     const r = await fetch('/api/runs', {method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    if(r.ok){ const j = await r.json(); if(!firstRun) firstRun = j.run_id; }
+    if(r.ok){ const j = await r.json(); runIds.push(j.run_id); if(!firstRun) firstRun = j.run_id; }
     else { failed++; try{ const e = await r.json(); if(e.detail) errMsg = e.detail; }catch(_){} }
   }
-  if(firstRun) location.href = '/runs/' + firstRun;
+  if(firstRun){
+    // v0.2.23: stay on the dashboard — the Pending/In Progress/Done/Failed
+    // board below shows the live run. No more jumping to a run page.
+    fmsAlert('Run started! Neeche board pe live progress dekhein.');
+    loadBoard();
+  }
   else fmsAlert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
 }
 function toggleGdrop(e){ e.stopPropagation(); const p=document.getElementById('gdropPanel'); p.style.display = p.style.display==='none' ? 'block' : 'none'; }
@@ -163,23 +169,79 @@ function toggleSelectAll(cb){
 function selectedGroups(){
   return [...document.querySelectorAll('.gcheck:checked')].map(c => c.value);
 }
-function boardLi(list){ return list.map(l => '<li>'+l+'</li>').join(''); }
+function boardLi(list){
+  return list.map(it => {
+    const label = (it && it.label) || it;
+    const aid = (it && it.id) ? ' data-aid="'+it.id+'"' : '';
+    const esc = String(label).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    return '<li'+aid+'>'+esc+'</li>';
+  }).join('');
+}
+/* group_id -> live run_id (for right-click Restart) */
+const boardRunIds = {};
 async function loadBoard(){
   const gids = selectedGroups();
   if(!gids.length) return;
-  // Board shows the first selected group's progress.
-  const r = await fetch('/api/board?group_id=' + gids[0]);
-  const b = await r.json();
+  // v0.2.23: board aggregates ALL selected groups, not just the first.
+  const merged = {pending:[], in_progress:[], done_posting:[], failed:[]};
+  let anyLive = false, logs = [];
+  for(const gid of gids){
+    try{
+      const r = await fetch('/api/board?group_id=' + gid);
+      const b = await r.json();
+      if(b.run_id) boardRunIds[gid] = b.run_id;
+      if(b.run_live) anyLive = true;
+      for(const k of Object.keys(merged)) merged[k] = merged[k].concat(b[k] || []);
+      if((b.logs || []).length && !logs.length) logs = b.logs;
+    }catch(e){}
+  }
   const set = (n, ul, items) => {
     document.getElementById(n).textContent = items.length;
     document.getElementById(ul).innerHTML = boardLi(items);
   };
-  set('bpPendingN','bpPending', b.pending);
-  set('bpProgN','bpProg', b.in_progress);
-  set('bpDoneN','bpDone', b.done_posting);
-  set('bpFailedN','bpFailed', b.failed);
-  document.getElementById('boardLogs').textContent = (b.logs || []).join('\n');
+  set('bpPendingN','bpPending', merged.pending);
+  set('bpProgN','bpProg', merged.in_progress);
+  set('bpDoneN','bpDone', merged.done_posting);
+  set('bpFailedN','bpFailed', merged.failed);
+  document.getElementById('boardLogs').textContent = logs.join('\n');
+  // Poll faster while a run is live so the board feels alive.
+  if(anyLive && !loadBoard._fast){ loadBoard._fast = true; }
+  if(!anyLive) loadBoard._fast = false;
 }
+/* Right-click -> Restart: send the account back to Pending (v0.2.23). */
+let ctxMenu = null;
+function hideCtxMenu(){ if(ctxMenu){ ctxMenu.remove(); ctxMenu = null; } }
+document.addEventListener('click', hideCtxMenu);
+document.getElementById('boardPanels').addEventListener('contextmenu', async function(e){
+  const li = e.target.closest('li[data-aid]');
+  if(!li) return;
+  e.preventDefault();
+  hideCtxMenu();
+  const aid = li.getAttribute('data-aid');
+  const label = li.textContent;
+  // Find which group's live run owns this account.
+  let runId = null;
+  for(const gid of selectedGroups()){ if(boardRunIds[gid]) runId = boardRunIds[gid]; }
+  ctxMenu = document.createElement('div');
+  ctxMenu.style.cssText = 'position:fixed;z-index:9999;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:6px;min-width:170px';
+  ctxMenu.style.left = e.clientX+'px'; ctxMenu.style.top = e.clientY+'px';
+  const btn = document.createElement('button');
+  btn.textContent = '↻ Restart "' + label.slice(0,24) + '"';
+  btn.style.cssText = 'width:100%;text-align:left;background:none;border:none;padding:9px 12px;cursor:pointer;color:var(--fg);font-size:14px;border-radius:6px';
+  btn.onmouseenter = () => btn.style.background = 'var(--hover,#2a3350)';
+  btn.onmouseleave = () => btn.style.background = 'none';
+  btn.onclick = async () => {
+    hideCtxMenu();
+    if(!runId){ fmsAlert('Koi live run nahi hai.'); return; }
+    const r = await fetch('/api/runs/'+runId+'/restart-account', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_id: parseInt(aid)})});
+    const j = await r.json().catch(()=>({}));
+    if(r.ok && j.ok){ fmsAlert('Restart ho gaya — wapis Pending me bhej diya.'); loadBoard(); }
+    else fmsAlert('Restart nahi ho saka (shayad account abhi In Progress hai).');
+  };
+  ctxMenu.appendChild(btn);
+  document.body.appendChild(ctxMenu);
+});
 function boardToggleLogs(){
   const el = document.getElementById('boardLogs');
   el.style.display = el.style.display === 'none' ? '' : 'none';
@@ -190,7 +252,9 @@ function boardCopyLogs(){
 }
 modeChanged();
 // Fresh open: board stays empty until the user selects group(s).
-// Auto-refresh only updates when groups are selected.
-setInterval(loadBoard, 8000);
+// Adaptive poll: fast (3s) while a run is live, calm (8s) otherwise.
+(function boardPoll(){
+  loadBoard().finally(() => setTimeout(boardPoll, loadBoard._fast ? 3000 : 8000));
+})();
 </script>
 {% endblock %}

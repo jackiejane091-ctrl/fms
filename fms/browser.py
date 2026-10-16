@@ -215,7 +215,11 @@ class PlaywrightDriver(BaseDriver):
         proxy = self._proxy_config()
         # Deterministic-ish fingerprint per account (stable across runs).
         rng = random.Random(self.account["id"])
-        vw, vh = rng.choice(VIEWPORTS)
+        # v0.2.23: fixed large window for every account (the random small
+        # viewports looked broken). Slight cascade so parallel account
+        # browsers don't stack pixel-exact on top of each other.
+        vw, vh = 1440, 900
+        cascade = (self.account.get("id") or 0) % 5
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),
             headless=self.headless,
@@ -225,7 +229,8 @@ class PlaywrightDriver(BaseDriver):
             timezone_id=rng.choice(TIMEZONES),
             viewport={"width": vw, "height": vh},
             args=["--disable-blink-features=AutomationControlled",
-                  f"--window-size={vw},{vh}"],
+                  f"--window-size={vw},{vh}",
+                  f"--window-position={40 * cascade},{30 * cascade}"],
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
@@ -342,9 +347,19 @@ class PlaywrightDriver(BaseDriver):
         raise RuntimeError("No login selector matched.")
 
     def login(self) -> bool:
+        """Email/password login with robust submit + outcome detection.
+
+        On failure, ``self.login_error`` holds a human-readable reason so the
+        run log shows WHY instead of a silent stall (v0.2.23).
+        """
         self._ensure()
+        self.login_error = ""
         page = self._page
         assert page is not None
+
+        def fail(reason: str) -> bool:
+            self.login_error = reason
+            return False
 
         cookie = self.account.get("cookie")
         if cookie:
@@ -377,32 +392,85 @@ class PlaywrightDriver(BaseDriver):
             email = self._find_login_field(page, S.LOGIN_EMAIL_FALLBACKS)
             self._type(email, label)
             human.human_pause(200, 500)
-            self._type(self._find_login_field(page, S.LOGIN_PASS_FALLBACKS),
-                       password)
+            pass_field = self._find_login_field(page, S.LOGIN_PASS_FALLBACKS)
+            self._type(pass_field, password)
             human.human_pause(300, 800)
-            human.human_click(
-                page, self._find_login_field(page, S.LOGIN_BUTTON_FALLBACKS))
-            human.human_pause(2000, 4000)
-        except Exception:
-            return False
+            # Submit: click the Log in button; if we are still on the login
+            # page afterwards, press Enter in the password field as fallback.
+            try:
+                human.human_click(
+                    page, self._find_login_field(page, S.LOGIN_BUTTON_FALLBACKS))
+            except Exception:
+                pass
+            human.human_pause(2500, 4000)
+            if "login" in (page.url or "").lower() and not self._is_logged_in():
+                try:
+                    pass_field.press("Enter")
+                except Exception:
+                    pass
+                human.human_pause(2500, 4000)
+        except Exception as exc:
+            return fail(f"could not fill login form: {type(exc).__name__}")
 
-        # Optional 2FA: if Facebook asks for an authenticator code and we have
-        # a stored secret, generate it.
-        try:
-            code_input = S.to_playwright(page, S.TWOFA_CODE_INPUT)
-            code_input.wait_for(timeout=6000)
-            secret = self.account.get("twofa_secret")
-            if secret:
-                import pyotp
-                self._type(code_input, pyotp.TOTP(secret).now())
-                human.human_click(page, S.to_playwright(page, S.TWOFA_SUBMIT))
-                human.human_pause(2000, 4000)
-            else:
-                return False  # 2FA required but no secret stored
-        except Exception:
-            pass  # no 2FA prompt
-
-        return self._is_logged_in()
+        # Outcome detection: poll for up to ~60s and classify what happened
+        # instead of silently stalling (v0.2.23).
+        deadline = time.time() + 60
+        twofa_handled = False
+        while time.time() < deadline:
+            if self._is_logged_in():
+                return True
+            url = (page.url or "").lower()
+            try:
+                body_text = (page.inner_text("body") or "")[:4000]
+            except Exception:
+                body_text = ""
+            low = body_text.lower()
+            # Wrong credentials
+            if ("the password that you've entered is incorrect" in low
+                    or "wrong credentials" in low
+                    or "the email address or mobile number you entered" in low
+                    or "isn't connected to an account" in low):
+                return fail("Facebook rejected the credentials (wrong email/password)")
+            # Suspicious-login / checkpoint interstitials
+            if ("we noticed an unusual login" in low
+                    or "suspicious login" in low
+                    or "confirm your identity" in low
+                    or "was this you" in low):
+                try:
+                    cont = S.to_playwright(page, S.CHECKPOINT_CONTINUE)
+                    cont.wait_for(state="visible", timeout=4000)
+                    human.human_click(page, cont)
+                    human.human_pause(3000, 5000)
+                    continue
+                except Exception:
+                    return fail("Facebook checkpoint needs manual review "
+                                "(unusual-login screen) — open this account once "
+                                "in a normal browser and approve it")
+            # 2FA code prompt
+            if not twofa_handled:
+                try:
+                    code_input = S.to_playwright(page, S.TWOFA_CODE_INPUT)
+                    code_input.wait_for(state="visible", timeout=3000)
+                    twofa_handled = True
+                    secret = self.account.get("twofa_secret")
+                    if secret:
+                        import pyotp
+                        self._type(code_input, pyotp.TOTP(secret).now())
+                        human.human_click(page, S.to_playwright(page, S.TWOFA_SUBMIT))
+                        human.human_pause(2000, 4000)
+                        continue
+                    return fail("Facebook asks for a 2FA code but no 2FA secret "
+                                "is stored for this account")
+                except Exception:
+                    pass  # no 2FA prompt (yet)
+            # Still sitting on the login page with no error -> submit didn't go through
+            if "login" in url:
+                human.human_pause(3000, 4000)
+                continue
+            human.human_pause(2000, 3000)
+        if self._is_logged_in():
+            return True
+        return fail("login did not complete within 60s (still not logged in)")
 
     # -- posting ----------------------------------------------------------------
     def _select_location(self, page, location: str) -> None:

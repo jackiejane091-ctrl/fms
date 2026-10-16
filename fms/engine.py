@@ -453,6 +453,49 @@ class RunController:
         self._rotator = _Rotator(db)
         self._product_cycle = itertools.cycle(cfg.product_ids)
         self._signals: dict[str, threading.Event] = {}
+        # Slot-refill queue state (v0.2.23, FBM Robo style): batch_size
+        # workers pull accounts from _queue; a freed slot immediately takes
+        # the next pending account. _acct_state maps account_id ->
+        # 'pending' | 'in_progress' | 'done_posting' | 'failed'.
+        self._q_lock = threading.Lock()
+        self._queue: collections.deque = collections.deque()
+        self._acct_state: dict[int, str] = {}
+        self._acct_label: dict[int, str] = {}
+        self._all_accounts: list = []
+
+    def queue_state(self) -> dict:
+        """Live board state for the dashboard (FBM Robo style)."""
+        with self._q_lock:
+            return {
+                "pending": [self._acct_label[i] for i, s in self._acct_state.items()
+                            if s == "pending"],
+                "in_progress": [self._acct_label[i] for i, s in self._acct_state.items()
+                                if s == "in_progress"],
+                "done_posting": [self._acct_label[i] for i, s in self._acct_state.items()
+                                 if s == "done_posting"],
+                "failed": [self._acct_label[i] for i, s in self._acct_state.items()
+                           if s == "failed"],
+                "pending_ids": [i for i, s in self._acct_state.items() if s == "pending"],
+                "in_progress_ids": [i for i, s in self._acct_state.items() if s == "in_progress"],
+                "done_posting_ids": [i for i, s in self._acct_state.items() if s == "done_posting"],
+                "failed_ids": [i for i, s in self._acct_state.items() if s == "failed"],
+            }
+
+    def restart_account(self, account_id: int) -> bool:
+        """Right-click -> Restart: move a done/failed account back to pending."""
+        with self._q_lock:
+            if account_id not in self._acct_state:
+                return False
+            if self._acct_state[account_id] == "in_progress":
+                return False  # already working; stop it first
+            if self._acct_state[account_id] == "pending":
+                return True
+            self._acct_state[account_id] = "pending"
+            # Rebuild queue preserving original order, restarted account last.
+            acc = next((a for a in self._all_accounts if a["id"] == account_id), None)
+            if acc is not None:
+                self._queue.append(acc)
+            return True
 
     # -- public controls -------------------------------------------------------
     def signal(self, name: str) -> None:
@@ -518,8 +561,19 @@ class RunController:
         )
         return row["c"] if row else 0
 
-    def _process_account(self, account: dict, quota: int, account_idx: int) -> None:
-        """Process one account with retries (Retry Count Before Quitting)."""
+    def _failed_count(self, account_id: int) -> int:
+        row = self.db.fetchone(
+            """SELECT COUNT(*) AS c FROM listings
+               WHERE run_id = ? AND account_id = ? AND status = 'failed'""",
+            (self.run_id, account_id),
+        )
+        return row["c"] if row else 0
+
+    def _process_account(self, account: dict, quota: int, account_idx: int) -> str:
+        """Process one account with retries (Retry Count Before Quitting).
+
+        Returns 'done', 'failed', 'login_failed' or 'stopped' (v0.2.23).
+        """
         label = account["label"]
         attempts = 1 + max(0, int(self.cfg.retry_count))
         for attempt in range(1, attempts + 1):
@@ -528,15 +582,16 @@ class RunController:
             try:
                 self._process_account_once(account, driver, quota, account_idx)
                 _persist_ix_profile(self.db, account, driver)
-                return
+                return "done"
             except _LoginFailed:
                 if attempt >= attempts:
+                    reason = getattr(driver, "login_error", "") or "unknown reason"
                     accounts_mod.set_status(self.db, account["id"], "locked",
                                             "login failed during run")
                     self.log(f"[{label}] login FAILED after {attempts} "
-                             f"attempt(s) — marked locked",
+                             f"attempt(s): {reason} — marked locked",
                              level="error", account_id=account["id"])
-                    return
+                    return "login_failed"
                 self.log(f"[{label}] login failed "
                          f"(attempt {attempt}/{attempts}) — retrying",
                          level="warning", account_id=account["id"])
@@ -544,12 +599,12 @@ class RunController:
             except _StopRun:
                 self.log(f"[{label}] stopped by user", level="warning",
                          account_id=account["id"])
-                return
+                return "stopped"
             except Exception as exc:  # never let one account kill the wave
                 if attempt >= attempts:
                     self.log(f"[{label}] ERROR: {type(exc).__name__}: {exc}",
                              level="error", account_id=account["id"])
-                    return
+                    return "failed"
                 self.log(f"[{label}] error on attempt {attempt}/{attempts} "
                          f"({type(exc).__name__}) — retrying",
                          level="warning", account_id=account["id"])
@@ -1178,45 +1233,84 @@ class RunController:
                 "UPDATE runs SET settings_json = ?, total_planned = ?, "
                 "status = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?",
                 (json.dumps(settings), total_planned, utcnow(), self.run_id))
+
+            # ---- SLOT-REFILL QUEUE (v0.2.23, FBM Robo style): batch_size
+            # workers; each freed slot immediately takes the next pending
+            # account instead of waiting for the whole wave to finish.
+            n_workers = cfg.effective_parallelism()
+            gap_s = cfg.account_start_gap_s / max(0.1, cfg.speed)
+            self._all_accounts = list(accounts)
+            acct_index = {a["id"]: i for i, a in enumerate(accounts)}
+            quotas_by_id = {a["id"]: quotas[a["id"]] for a in accounts}
+            with self._q_lock:
+                self._queue = collections.deque(accounts)
+                self._acct_state = {a["id"]: "pending" for a in accounts}
+                self._acct_label = {a["id"]: a["label"] for a in accounts}
+                self._next_start_at = 0.0  # Account Start Gap bookkeeping
             self.log(f"run started: {len(accounts)} account(s), "
-                     f"wave size {cfg.effective_parallelism()}, "
+                     f"{n_workers} slot(s), "
                      f"{total_planned} listing(s) planned")
 
-            # ---- WAVES: N contexts at once; next wave only when this one ends.
-            # Effective wave size = min(batch size, parallel browser cap).
-            wave_size = cfg.effective_parallelism()
-            gap_s = cfg.account_start_gap_s / max(0.1, cfg.speed)
-            idx = 0
-            wave_no = 0
-            while idx < len(accounts):
-                if self.stop_event.is_set():
-                    raise _StopRun()
-                self._wait_if_paused()
-                wave = accounts[idx: idx + wave_size]
-                wave_no += 1
-                self.log(f"wave {wave_no}: "
-                         + ", ".join(a["label"] for a in wave))
-                threads = [
-                    threading.Thread(
-                        target=self._process_account,
-                        args=(acc, quotas[acc["id"]], idx + i),
-                        name=f"fms-run-{self.run_id}-acc-{acc['id']}",
-                        daemon=True,
-                    )
-                    for i, acc in enumerate(wave)
-                ]
-                # Account Start Gap: delay between launching accounts in a wave.
-                for i, t in enumerate(threads):
-                    if i > 0:
-                        self._sleep_interruptible(gap_s)
-                    t.start()
-                for t in threads:
-                    t.join()
-                # A worker-level stop must propagate to the run: otherwise the
-                # wave joins "normally" and the run would be marked completed.
-                if self.stop_event.is_set():
-                    raise _StopRun()
-                idx += wave_size
+            def _worker(wi: int):
+                while not self.stop_event.is_set():
+                    self._wait_if_paused()
+                    with self._q_lock:
+                        acc = self._queue.popleft() if self._queue else None
+                        if acc is not None:
+                            self._acct_state[acc["id"]] = "in_progress"
+                    if acc is None:
+                        return
+                    # Account Start Gap: space out account launches so
+                    # logins never fire simultaneously (anti-detection).
+                    try:
+                        while not self.stop_event.is_set():
+                            self._wait_if_paused()
+                            with self._q_lock:
+                                now = time.time()
+                                wait = self._next_start_at - now
+                                if wait <= 0:
+                                    self._next_start_at = now + gap_s
+                                    wait = 0
+                            if wait <= 0:
+                                break
+                            time.sleep(min(wait, 0.25))
+                    except _StopRun:
+                        pass
+                    if self.stop_event.is_set():
+                        with self._q_lock:
+                            self._acct_state[acc["id"]] = "pending"
+                            self._queue.appendleft(acc)
+                        return
+                    outcome = self._process_account(
+                        acc, quotas_by_id[acc["id"]], acct_index[acc["id"]])
+                    with self._q_lock:
+                        if outcome == "stopped":
+                            self._acct_state[acc["id"]] = "pending"
+                            self._queue.appendleft(acc)
+                        elif outcome == "done":
+                            posted = self._posted_count(acc["id"])
+                            failed = self._failed_count(acc["id"])
+                            # Posted nothing but had failures -> failed panel.
+                            self._acct_state[acc["id"]] = (
+                                "failed" if posted == 0 and failed > 0
+                                else "done_posting")
+                        else:
+                            self._acct_state[acc["id"]] = "failed"
+
+            workers = [
+                threading.Thread(
+                    target=_worker, args=(i,),
+                    name=f"fms-run-{self.run_id}-w{i}", daemon=True)
+                for i in range(n_workers)
+            ]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+            # A worker-level stop must propagate to the run: otherwise the
+            # join returns "normally" and the run would be marked completed.
+            if self.stop_event.is_set():
+                raise _StopRun()
 
             # Run-level expected-vs-found summary for listing verification.
             if cfg.mode == "listing_number_verification":
@@ -1733,7 +1827,8 @@ class ScriptRunController:
             if not driver.login():
                 accounts_mod.set_status(self.db, account["id"], "locked",
                                         "login failed during script run")
-                self.log(f"[{label}] login FAILED — marked locked",
+                reason = getattr(driver, "login_error", "") or "unknown reason"
+                self.log(f"[{label}] login FAILED: {reason} — marked locked",
                          level="error", account_id=account["id"])
                 self._mark_done(account)
                 return

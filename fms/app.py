@@ -543,6 +543,20 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def api_stop_run(run_id: int):
         return {"ok": engine.stop_run(run_id)}
 
+    @app.post("/api/runs/{run_id}/restart-account")
+    def api_restart_account(run_id: int, data: dict):
+        """Right-click -> Restart on the dashboard board: move a
+        done/failed account back to pending so it runs again."""
+        c = engine._controller(run_id)
+        if not c or not hasattr(c, "restart_account"):
+            raise HTTPException(404, "run not live")
+        try:
+            account_id = int(data.get("account_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "account_id required")
+        ok = c.restart_account(account_id)
+        return {"ok": ok}
+
     @app.post("/api/runs/{run_id}/signal")
     def api_signal_run(run_id: int, name: str = Form(...)):
         """Dashboard-initiated signal, e.g. 'download_start' for the
@@ -665,6 +679,21 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         if not live:
             # Old/completed run: don't show stale data — show fresh preview.
             board["pending"] = [a["label"] for a in accts if a.get("active")]
+            board["logs"] = [
+                f"[{l['created_at']}] {l['level']}: {l['message']}"
+                for l in engine.recent_logs(run["id"], 50)
+            ]
+            return board
+        # Live run: prefer the controller's real queue state (v0.2.23 slot
+        # refill). Items carry account ids for right-click Restart.
+        c = engine._controller(run["id"])
+        qs = c.queue_state() if c and hasattr(c, "queue_state") else None
+        if qs:
+            for key in ("pending", "in_progress", "done_posting", "failed"):
+                board[key] = [
+                    {"id": i, "label": l}
+                    for i, l in zip(qs[key + "_ids"], qs[key])]
+            board["exclude"] = full.get("settings", {}).get("exclude_labels", [])
             board["logs"] = [
                 f"[{l['created_at']}] {l['level']}: {l['message']}"
                 for l in engine.recent_logs(run["id"], 50)
