@@ -84,16 +84,15 @@ class _FMSApi:
 
 
 def _maybe_create_desktop_shortcut() -> None:
-    """Create a Desktop shortcut (Windows, frozen only) on first launch."""
+    """Ensure a Desktop shortcut exists (Windows, frozen only)."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return
     try:
-        from fms.config import data_dir
-
-        marker = data_dir() / "desktop_shortcut_created"
-        if marker.exists():
-            return
         exe = sys.executable
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        # If the shortcut already exists, nothing to do (recreated if deleted).
+        if os.path.exists(os.path.join(desktop, "FMS.lnk")):
+            return
         # PowerShell via WScript.Shell — no extra packages needed.
         ps = (
             "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
@@ -105,8 +104,6 @@ def _maybe_create_desktop_shortcut() -> None:
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
                         "-Command", ps],
                        capture_output=True, timeout=30)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
     except Exception:
         pass
 
