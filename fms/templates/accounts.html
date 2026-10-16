@@ -11,7 +11,7 @@
       <div style="margin-bottom:14px"><label><b>Products</b> <span class="muted">(select products for this group)</span></label><br>
         <select id="agProducts" multiple size="6" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px"></select></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-        <a id="agManageAccts" href="/accounts" class="btn">Manage Accounts</a>
+        <button type="button" class="btn" onclick="openManageAcctsFromGroup()">Manage Accounts</button>
         <button class="btn" onclick="closeAddGroup()">Cancel</button>
         <button class="btn" id="agSave" onclick="agSave()" style="background:#22c55e;color:#fff;border:none">Save</button>
       </div>
@@ -44,6 +44,12 @@ function mgShowAdd(id, name){ _agEditId = id||null;
   document.getElementById('agManageAccts').href = id ? '/accounts?group_id='+id : '/accounts';
   agLoadProducts(id); document.getElementById('agModal').style.display='flex'; }
 function closeAddGroup(){ document.getElementById('agModal').style.display='none'; location.reload(); }
+function openManageAcctsFromGroup(){
+  if(!_agEditId){ fmsAlert('Pehle group ko Save karein, phir accounts add karein.'); return; }
+  const gname = document.getElementById('agName').value;
+  document.getElementById('agModal').dataset.wasOpen = '1';
+  openManageAccts(_agEditId, gname);
+}
 async function agLoadProducts(gid){
   const sel = document.getElementById('agProducts'); sel.innerHTML='';
   const prods = await (await fetch('/api/products')).json();
@@ -82,6 +88,113 @@ async function mgDelete(id, name){
 }
 document.getElementById('agModal').addEventListener('click', e=>{ if(e.target.id==='agModal') closeAddGroup(); });
 </script>
+
+<!-- Manage Accounts popup (FBM Robo style) -->
+<div id="maModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center">
+  <div style="background:var(--card);border-radius:12px;max-width:800px;width:95%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#4a5fd0;border-radius:12px 12px 0 0;color:#fff">
+      <b style="font-size:19px" id="maTitle">Manage Accounts</b>
+      <button onclick="closeManageAccts()" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">X</button>
+    </div>
+    <div style="padding:16px;overflow-y:auto">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn" onclick="maShowSingle()">Add Single Account</button>
+        <button class="btn" onclick="maShowBulk()">Add Bulk Accounts</button>
+        <button class="btn" onclick="document.getElementById('maFile').click()">Import from File</button>
+        <input type="file" id="maFile" accept=".txt" style="display:none" onchange="maImportFile(this)">
+      </div>
+      <div id="maSingleForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:8px">
+        <b>Add Single Account</b><br><br>
+        <input id="maEmail" placeholder="Email or phone" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)">
+        <input id="maPass" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)">
+        <button class="btn" onclick="maAddSingle()">Add</button>
+      </div>
+      <div id="maBulkForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:8px">
+        <b>Add Bulk Accounts</b> <span class="muted">(one per line: email:password or email:password:2fa)</span><br><br>
+        <textarea id="maBulkText" rows="5" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)" placeholder="email1:password1&#10;email2:password2"></textarea><br><br>
+        <button class="btn" onclick="maAddBulk()">Add Accounts</button>
+      </div>
+      <div style="margin-bottom:10px"><b>Accounts in this group: <span id="maCount">0</span></b></div>
+      <div id="maList" style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" onclick="closeManageAccts()">Cancel</button>
+        <button class="btn" onclick="closeManageAccts()" style="background:#22c55e;color:#fff;border:none">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+let _maGroupId = null;
+function openManageAccts(gid, gname){
+  _maGroupId = gid;
+  document.getElementById('maTitle').textContent = 'Manage Accounts - ' + (gname||'');
+  document.getElementById('maSingleForm').style.display='none';
+  document.getElementById('maBulkForm').style.display='none';
+  document.getElementById('agModal').style.display='none';
+  document.getElementById('maModal').style.display='flex';
+  maLoadList();
+}
+function closeManageAccts(){
+  document.getElementById('maModal').style.display='none';
+  // Return to Add Group dialog if it was open
+  if(_agEditId !== undefined && document.getElementById('agModal')){
+    const agm = document.getElementById('agModal');
+    if(agm.dataset.wasOpen === '1'){ agm.style.display='flex'; }
+  }
+}
+async function maLoadList(){
+  const accs = await (await fetch('/api/accounts?group_id='+_maGroupId)).json();
+  const list = document.getElementById('maList');
+  document.getElementById('maCount').textContent = accs.length;
+  list.innerHTML = accs.length ? '' : '<p class="muted" style="padding:10px">No accounts yet. Add some above.</p>';
+  accs.forEach((a,i)=>{
+    const d = document.createElement('div');
+    d.style.cssText = 'padding:8px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center';
+    d.innerHTML = '<span>'+(i+1)+'. '+(a.label||a.email||'Account')+'</span><button onclick="maDelete('+a.id+')" style="background:none;border:none;cursor:pointer">🗑️</button>';
+    list.appendChild(d);
+  });
+}
+function maShowSingle(){
+  document.getElementById('maSingleForm').style.display='block';
+  document.getElementById('maBulkForm').style.display='none';
+}
+function maShowBulk(){
+  document.getElementById('maBulkForm').style.display='block';
+  document.getElementById('maSingleForm').style.display='none';
+}
+async function maAddSingle(){
+  const email = document.getElementById('maEmail').value.trim();
+  const pass = document.getElementById('maPass').value;
+  if(!email || !pass){ fmsAlert('Enter email and password.'); return; }
+  await fetch('/api/accounts', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({group_id:_maGroupId, label:email, password:pass})});
+  document.getElementById('maEmail').value=''; document.getElementById('maPass').value='';
+  maLoadList();
+}
+async function maAddBulk(){
+  const text = document.getElementById('maBulkText').value.trim();
+  if(!text){ fmsAlert('Enter at least one account.'); return; }
+  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('text', text);
+  const r = await (await fetch('/api/accounts/bulk', {method:'POST', body:fd})).json();
+  fmsAlert('Added: '+r.added + (r.errors && r.errors.length ? '\nErrors: '+r.errors.length : ''));
+  document.getElementById('maBulkText').value='';
+  maLoadList();
+}
+async function maImportFile(inp){
+  if(!inp.files.length) return;
+  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('file', inp.files[0]);
+  const r = await (await fetch('/api/accounts/import', {method:'POST', body:fd})).json();
+  fmsAlert('Added: '+r.added + (r.errors && r.errors.length ? '\nErrors: '+r.errors.length : ''));
+  inp.value=''; maLoadList();
+}
+async function maDelete(aid){
+  if(!await fmsConfirm('Delete this account?')) return;
+  await fetch('/api/accounts/'+aid, {method:'DELETE'});
+  maLoadList();
+}
+document.getElementById('maModal').addEventListener('click', e=>{ if(e.target.id==='maModal') closeManageAccts(); });
+</script>
+
 {% endblock %}
 {% block content %}
 <h1>Accounts</h1>
