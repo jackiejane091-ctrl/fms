@@ -12,8 +12,17 @@
       </span>
     </span>
     <span class="cc-field"><b>Select Groups:</b>
-      <div id="groupChecks" class="group-checks" style="min-width:220px;max-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px;background:var(--bg)">
-        {% for g in groups %}<label class="check" style="display:block;margin:3px 0"><input type="checkbox" class="gcheck" value="{{ g.id }}" onchange="loadBoard()"> {{ g.name }} ({{ g.account_count }})</label>{% endfor %}
+      <div class="gdrop" style="position:relative;min-width:230px">
+        <div id="gdropBtn" onclick="toggleGdrop(event)" style="border:1px solid var(--line);border-radius:6px;padding:7px 10px;background:var(--bg);cursor:pointer;display:flex;justify-content:space-between;align-items:center">
+          <span id="gdropLabel" class="muted">Select Groups...</span><span>▾</span>
+        </div>
+        <div id="gdropPanel" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--bg);border:1px solid var(--line);border-radius:6px;margin-top:4px;max-height:220px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,.35)">
+          <label class="check" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;font-weight:bold"><input type="checkbox" id="gSelectAll" onchange="toggleSelectAll(this)"> Select All</label>
+          {% for g in groups %}<div style="display:flex;align-items:center;gap:8px;padding:7px 10px">
+            <label class="check" style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1"><input type="checkbox" class="gcheck" value="{{ g.id }}" onchange="gcheckChanged()"> {{ g.name }} ({{ g.account_count }})</label>
+            <a href="/accounts?group_id={{ g.id }}" title="Edit group" style="text-decoration:none" onclick="event.stopPropagation()">✏️</a>
+          </div>{% endfor %}
+        </div>
       </div>
     </span>
     <span class="cc-field cc-actions">
@@ -135,6 +144,21 @@ async function startRun(){
   }
   if(firstRun) location.href = '/runs/' + firstRun;
   else alert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
+}
+function toggleGdrop(e){ e.stopPropagation(); const p=document.getElementById('gdropPanel'); p.style.display = p.style.display==='none' ? 'block' : 'none'; }
+document.addEventListener('click', function(){ const p=document.getElementById('gdropPanel'); if(p) p.style.display='none'; });
+function gcheckChanged(){
+  const boxes = Array.from(document.querySelectorAll('.gcheck'));
+  const checked = boxes.filter(b=>b.checked);
+  const all = document.getElementById('gSelectAll');
+  if(all) all.checked = boxes.length>0 && checked.length===boxes.length;
+  const lbl = document.getElementById('gdropLabel');
+  if(lbl){ lbl.textContent = checked.length ? checked.map(b=>b.parentElement.textContent.trim()).join(', ') : 'Select Groups...'; lbl.classList.toggle('muted', !checked.length); }
+  loadBoard();
+}
+function toggleSelectAll(cb){
+  document.querySelectorAll('.gcheck').forEach(b=>{ b.checked = cb.checked; });
+  gcheckChanged();
 }
 function selectedGroups(){
   return [...document.querySelectorAll('.gcheck:checked')].map(c => c.value);
