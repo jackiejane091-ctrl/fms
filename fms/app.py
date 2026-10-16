@@ -777,16 +777,19 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         old exe file is momentarily locked.
         """
         def _restart():
-            time.sleep(1.0)
-            if getattr(sys, "frozen", False):
-                exe = Path(sys.executable).resolve()
-                try:
+            # Launch the new process FIRST, then die immediately.
+            # No webview destroy here: destroy() from a worker thread can
+            # deadlock and leave the "Restarting..." window stuck forever.
+            # os._exit() kills the process; the OS closes the window.
+            try:
+                if getattr(sys, "frozen", False):
+                    exe = Path(sys.executable).resolve()
                     pid = os.getpid()
                     bat = exe.parent / "_fms_restart.bat"
                     bat.write_text(
                         "@echo off\n"
                         ":fms_wait\n"
-                        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\n'
+                        f'tasklist /FI "PID eq {pid}" 2>nul | findstr /C:"{pid}" >nul\n'
                         "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto fms_wait)\n"
                         f'start "" "{exe}"\n'
                         'del "%~f0"\n',
@@ -801,19 +804,10 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
                         stdin=subprocess.DEVNULL,
                         close_fds=True,
                     )
-                except Exception:
-                    pass
-            # Gracefully close the desktop window first so it doesn't hang.
-            try:
-                import webview as _wv
-                for _w in list(_wv.windows):
-                    try:
-                        _w.destroy()
-                    except Exception:
-                        pass
             except Exception:
                 pass
-            time.sleep(0.5)
+            # Give the helper a moment to detach, then die hard.
+            time.sleep(1.5)
             os._exit(0)
 
         threading.Thread(target=_restart, daemon=True).start()
