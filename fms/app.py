@@ -639,8 +639,9 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         runs = engine.list_runs(50)
         run = next((r for r in runs if r.get("group_id") == group_id), None)
         if run is None:
-            # No run yet: preview = all accounts ready to go.
-            board["pending"] = [a["label"] for a in accts]
+            # No run yet: preview = active accounts ready to go
+            # (inactive/OFF accounts are excluded from runs).
+            board["pending"] = [a["label"] for a in accts if a.get("active")]
             return board
         full = engine.get_run(run["id"])
         board["run_id"] = run["id"]
@@ -648,7 +649,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         board["run_live"] = live
         if not live:
             # Old/completed run: don't show stale data — show fresh preview.
-            board["pending"] = [a["label"] for a in accts]
+            board["pending"] = [a["label"] for a in accts if a.get("active")]
             board["logs"] = [
                 f"[{l['created_at']}] {l['level']}: {l['message']}"
                 for l in engine.recent_logs(run["id"], 50)

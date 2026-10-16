@@ -81,6 +81,22 @@
   </form>
 </div>
 
+<div id="proxyBox" class="wide" style="display:none">
+  <h3>🌐 Proxy for <span id="proxyAccLabel"></span></h3>
+  <div class="grid-form">
+    <label class="wide">One per line — format: <code>IP:port</code> or <code>IP:port:username:password</code>
+      <textarea id="proxyText" rows="4" cols="70" placeholder="192.168.1.1:8080&#10;10.0.0.5:3128:myuser:mypass"></textarea>
+    </label>
+    <span>
+      <button onclick="saveProxy()">💾 Save Proxy</button>
+      <button onclick="checkProxyWorking()">🔍 Check Working Proxy</button>
+      <button onclick="clearProxy()" class="danger">Clear Proxy</button>
+      <button onclick="document.getElementById('proxyBox').style.display='none'">Close</button>
+    </span>
+    <span id="proxyResult" class="muted"></span>
+  </div>
+</div>
+
 <div class="row">
   <label class="check"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"> Select All (<span id="selCount">0</span> selected)</label>
   <input id="searchBox" placeholder="search..." oninput="filterRows()">
@@ -102,6 +118,7 @@
     <td>{% if a.proxy_status is none %}—{% elif a.proxy_status %}<span class="pill active">Working</span>{% else %}<span class="pill failed">Not working</span>{% endif %}</td>
     <td>{{ 'set' if a.has_cookie else '—' }}</td>
     <td class="actions">
+      <button onclick="editProxy({{ a.id }}, '{{ a.label }}')" title="Set/edit proxy">🌐</button>
       <button onclick="editCookie({{ a.id }})" title="Set/edit cookie">🍪</button>
       <button onclick="editIx({{ a.id }}, '{{ a.ix_profile_id or '' }}')" title="Anti-detect Profile ID">🛡️</button>
       <button onclick="delAcc({{ a.id }})" class="danger" title="Delete">🗑️</button>
@@ -217,6 +234,46 @@ async function editCookie(id){
   if(v === null) return;
   const r = await fetch('/api/accounts/'+id, {method:'PUT',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify({cookie: v.trim() || null})});
+  if(r.ok) location.reload(); else alert('Failed: '+await r.text());
+}
+// Per-account proxy dialog: one proxy per line (IP:port or IP:port:user:pass).
+let proxyAccId = null;
+function editProxy(id, label){
+  proxyAccId = id;
+  document.getElementById('proxyAccLabel').textContent = label;
+  document.getElementById('proxyText').value = '';
+  document.getElementById('proxyResult').textContent = '';
+  document.getElementById('proxyBox').style.display = '';
+  document.getElementById('proxyBox').scrollIntoView({behavior:'smooth'});
+}
+async function saveProxy(){
+  const t = document.getElementById('proxyText').value.trim();
+  if(!t){ alert('Pehle proxy likhein (one per line).'); return; }
+  const r = await fetch('/api/accounts/proxies/assign', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({account_ids: [proxyAccId], proxies_text: t})});
+  const msg = document.getElementById('proxyResult');
+  if(r.ok){ msg.textContent = 'Proxy saved ✓'; setTimeout(()=>location.reload(), 800); }
+  else msg.textContent = 'Failed: ' + await r.text();
+}
+async function checkProxyWorking(){
+  const msg = document.getElementById('proxyResult');
+  msg.textContent = 'Checking...';
+  const r = await fetch('/api/accounts/proxies/check', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({account_ids: [proxyAccId]})});
+  const j = await r.json();
+  const x = (j.results || [])[0];
+  if(!x || x.working === null) msg.textContent = 'No proxy set.';
+  else if(x.working) msg.textContent = '✓ Proxy ACTIVE — working!';
+  else msg.textContent = '✗ Proxy INACTIVE — ' + (x.message || 'not working');
+  if(x && x.working !== null) setTimeout(()=>location.reload(), 1500);
+}
+async function clearProxy(){
+  if(!confirm('Remove proxy from this account?')) return;
+  const r = await fetch('/api/accounts/proxies/remove', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({account_ids: [proxyAccId]})});
   if(r.ok) location.reload(); else alert('Failed: '+await r.text());
 }
 async function editIx(id, current){
