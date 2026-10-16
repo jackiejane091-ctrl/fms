@@ -646,7 +646,16 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         return {"ok": True, "product_id": pid}
 
     @app.get("/api/logs")
-    def api_logs(run_id: int | None = None, limit: int = 200):
+    def api_logs(run_id: int | None = None, limit: int = 200,
+                 account_id: int | None = None):
+        # v0.2.24: account_id filters to one account's logs (dashboard
+        # click-to-filter).
+        if account_id is not None and run_id is not None:
+            rows = db.fetchall(
+                "SELECT * FROM logs WHERE run_id = ? AND account_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (run_id, account_id, limit))
+            return [dict(r) for r in rows]
         return engine.recent_logs(run_id, limit)
 
     @app.get("/api/board")
@@ -663,7 +672,8 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             "accounts": [a["label"] for a in accts],
             "pending": [], "in_progress": [],
             "done_posting": [], "failed": [],
-            "exclude": [], "run_id": None, "run_live": False, "logs": [],
+            "exclude": [], "run_id": None, "run_live": False, "run_paused": False,
+            "logs": [],
         }
         runs = engine.list_runs(50)
         run = next((r for r in runs if r.get("group_id") == group_id), None)
@@ -676,6 +686,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         board["run_id"] = run["id"]
         live = bool(full.get("live"))
         board["run_live"] = live
+        board["run_paused"] = bool(full.get("paused"))  # v0.2.24: Pause/Continue toggle
         if not live:
             # Old/completed run: don't show stale data — show fresh preview.
             board["pending"] = [a["label"] for a in accts if a.get("active")]

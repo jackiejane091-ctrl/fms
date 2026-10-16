@@ -600,7 +600,18 @@ class RunController:
                 self.log(f"[{label}] stopped by user", level="warning",
                          account_id=account["id"])
                 return "stopped"
-            except Exception as exc:  # never let one account kill the wave
+            except Exception as exc:  # never let one account kill the run
+                msg = str(exc).lower()
+                # v0.2.24: the user closed the browser window (or it died).
+                # Don't reopen+retry — mark the account failed straight away
+                # so it lands in Failed, not Pending.
+                if ("target closed" in msg
+                        or "browser has been closed" in msg
+                        or "context has been closed" in msg):
+                    self.log(f"[{label}] browser closed — marked failed "
+                             f"(no retry)", level="error",
+                             account_id=account["id"])
+                    return "failed"
                 if attempt >= attempts:
                     self.log(f"[{label}] ERROR: {type(exc).__name__}: {exc}",
                              level="error", account_id=account["id"])
@@ -792,6 +803,9 @@ class RunController:
                 self._record_failed(account, pid, payload,
                                     "driver returned no listing id")
             self._inter_post_delay()
+            # v0.2.24: notice Stop/Pause promptly after each listing instead
+            # of only before the next one.
+            self._wait_if_paused()
 
     # -- mode: draft_publish (full two-phase flow) ----------------------------------
     def _draft_count(self, account_id: int) -> int:
@@ -1277,16 +1291,21 @@ class RunController:
                     except _StopRun:
                         pass
                     if self.stop_event.is_set():
+                        # Run stopped before this account started: Failed,
+                        # not Pending (v0.2.24).
                         with self._q_lock:
-                            self._acct_state[acc["id"]] = "pending"
-                            self._queue.appendleft(acc)
+                            self._acct_state[acc["id"]] = "failed"
                         return
                     outcome = self._process_account(
                         acc, quotas_by_id[acc["id"]], acct_index[acc["id"]])
                     with self._q_lock:
                         if outcome == "stopped":
-                            self._acct_state[acc["id"]] = "pending"
-                            self._queue.appendleft(acc)
+                            # v0.2.24: a user-stopped account goes to Failed,
+                            # never silently back to Pending.
+                            self._acct_state[acc["id"]] = "failed"
+                            self.log(f"[{self._acct_label[acc['id']]}] stopped "
+                                     f"by user — marked failed",
+                                     level="warning", account_id=acc["id"])
                         elif outcome == "done":
                             posted = self._posted_count(acc["id"])
                             failed = self._failed_count(acc["id"])

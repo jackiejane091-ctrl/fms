@@ -36,7 +36,7 @@
       <button type="button" class="btn-start" onclick="startRun()">Start</button>
     </span>
     <span class="cc-field"><b>Pause/Continue:</b>
-      <button type="button" class="btn" onclick="pauseAll()">Pause All</button>
+      <button type="button" class="btn" id="pauseBtn" onclick="togglePause()">Pause All</button>
     </span>
     <span class="cc-field"><b>Schedule At:</b>
       <input type="datetime-local" id="schedAt">
@@ -85,14 +85,24 @@ function cycleSpeed(){
   el.value = order[(order.indexOf(el.value)+1) % order.length];
   document.getElementById('speedBtn').textContent = '⚡' + el.value + 'x';
 }
-async function pauseAll(){
+async function togglePause(){
+  // v0.2.24: Pause All <-> Continue toggle. Pausing freezes every worker
+  // exactly where it is; Continue resumes from the same point.
   const r = await fetch('/api/runs');
   const runs = await r.json();
-  const live = runs.find(x => x.status === 'running' || x.status === 'paused');
-  if(!live){ fmsAlert('No live run to pause.'); return; }
-  await fetch('/api/runs/'+live.id+'/pause', {method:'POST'});
-  fmsAlert('Paused run #' + live.id);
+  const live = runs.filter(x => x.status === 'running' || x.status === 'paused');
+  if(!live.length){ fmsAlert('Koi live run nahi hai.'); return; }
+  const paused = live.filter(x => x.status === 'paused');
+  const targets = paused.length ? paused : live.filter(x => x.status === 'running');
+  const action = paused.length ? 'resume' : 'pause';
+  for(const run of targets){
+    await fetch('/api/runs/'+run.id+'/'+action, {method:'POST'});
+  }
+  fmsAlert(paused.length ? 'Continue — wahin se shuru jahan ruka tha.'
+                         : 'Pause kar diya — sab wahin ruk gaya.');
+  loadBoard();
 }
+async function pauseAll(){ return togglePause(); }
 function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
 }
@@ -174,23 +184,55 @@ function boardLi(list){
     const label = (it && it.label) || it;
     const aid = (it && it.id) ? ' data-aid="'+it.id+'"' : '';
     const esc = String(label).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-    return '<li'+aid+'>'+esc+'</li>';
+    return '<li'+aid+' style="cursor:pointer" title="Click: sirf iski logs dekhein | Right-click: Restart">'+esc+'</li>';
   }).join('');
 }
 /* group_id -> live run_id (for right-click Restart) */
 const boardRunIds = {};
+/* v0.2.24: click an account -> Logs box shows ONLY that account's logs. */
+let logFilter = null;  // {run_id, account_id, label}
+async function filterLogsByAccount(runId, accountId, label){
+  logFilter = {run_id: runId, account_id: accountId, label: label};
+  const r = await fetch('/api/logs?run_id='+runId+'&account_id='+accountId+'&limit=200');
+  const rows = await r.json().catch(()=>[]);
+  document.getElementById('boardLogs').textContent =
+    rows.map(l => '['+l.created_at+'] '+l.level+': '+l.message).join('\n')
+    || '(is account ki koi logs nahi)';
+  renderLogFilterChip();
+}
+function clearLogFilter(){
+  logFilter = null;
+  renderLogFilterChip();
+  loadBoard();
+}
+function renderLogFilterChip(){
+  let chip = document.getElementById('logFilterChip');
+  if(logFilter){
+    if(!chip){
+      chip = document.createElement('span');
+      chip.id = 'logFilterChip';
+      chip.style.cssText = 'margin-left:10px;background:#1d4ed8;border-radius:12px;padding:4px 10px;font-size:13px;cursor:pointer';
+      chip.title = 'Filter hatayein — sab logs dekhein';
+      chip.onclick = clearLogFilter;
+      document.querySelector('h2').appendChild(chip);
+    }
+    chip.textContent = '👁 ' + logFilter.label + ' ✕';
+    chip.style.display = '';
+  } else if(chip){ chip.style.display = 'none'; }
+}
 async function loadBoard(){
   const gids = selectedGroups();
   if(!gids.length) return;
   // v0.2.23: board aggregates ALL selected groups, not just the first.
   const merged = {pending:[], in_progress:[], done_posting:[], failed:[]};
-  let anyLive = false, logs = [];
+  let anyLive = false, anyPaused = false, logs = [];
   for(const gid of gids){
     try{
       const r = await fetch('/api/board?group_id=' + gid);
       const b = await r.json();
       if(b.run_id) boardRunIds[gid] = b.run_id;
       if(b.run_live) anyLive = true;
+      if(b.run_paused) anyPaused = true;
       for(const k of Object.keys(merged)) merged[k] = merged[k].concat(b[k] || []);
       if((b.logs || []).length && !logs.length) logs = b.logs;
     }catch(e){}
@@ -203,11 +245,27 @@ async function loadBoard(){
   set('bpProgN','bpProg', merged.in_progress);
   set('bpDoneN','bpDone', merged.done_posting);
   set('bpFailedN','bpFailed', merged.failed);
-  document.getElementById('boardLogs').textContent = logs.join('\n');
+  // v0.2.24: Pause/Continue button follows the live run's state.
+  document.getElementById('pauseBtn').textContent = anyPaused ? 'Continue' : 'Pause All';
+  // Don't clobber a per-account log filter on every poll.
+  if(!logFilter){
+    document.getElementById('boardLogs').textContent = logs.join('\n');
+  }
   // Poll faster while a run is live so the board feels alive.
   if(anyLive && !loadBoard._fast){ loadBoard._fast = true; }
   if(!anyLive) loadBoard._fast = false;
 }
+/* Left-click an account -> filter logs to just that account (v0.2.24). */
+document.getElementById('boardPanels').addEventListener('click', function(e){
+  const li = e.target.closest('li[data-aid]');
+  if(!li) return;
+  const aid = li.getAttribute('data-aid');
+  const label = li.textContent;
+  let runId = null;
+  for(const gid of selectedGroups()){ if(boardRunIds[gid]) runId = boardRunIds[gid]; }
+  if(!runId){ fmsAlert('Koi live run nahi hai.'); return; }
+  filterLogsByAccount(runId, aid, label);
+});
 /* Right-click -> Restart: send the account back to Pending (v0.2.23). */
 let ctxMenu = null;
 function hideCtxMenu(){ if(ctxMenu){ ctxMenu.remove(); ctxMenu = null; } }
