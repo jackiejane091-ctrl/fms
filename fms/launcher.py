@@ -90,9 +90,16 @@ def _maybe_create_desktop_shortcut() -> None:
     try:
         exe = sys.executable
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        # If the shortcut already exists, nothing to do (recreated if deleted).
-        if os.path.exists(os.path.join(desktop, "FMS.lnk")):
-            return
+        lnk = os.path.join(desktop, "FMS.lnk")
+        # Recreate the shortcut if missing OR if the exe is newer than the
+        # shortcut (e.g. after an update, to refresh a stale/generic icon).
+        if os.path.exists(lnk):
+            try:
+                if os.path.getmtime(lnk) >= os.path.getmtime(exe):
+                    return
+                os.remove(lnk)
+            except OSError:
+                return
         # PowerShell via WScript.Shell — no extra packages needed.
         ps = (
             "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
