@@ -19,18 +19,11 @@ from typing import Any
 from . import config, human, selectors as S
 
 # A small pool of desktop user agents to rotate per account.
-# v0.2.31: ONLY Chrome desktop UAs — the engine really is Chromium, so a
-# Firefox/Edge UA string is a hard mismatch Facebook can spot via
-# navigator.userAgentData (one reason FB served a limited header with no
-# notifications/messages/profile icons).
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-]
+# v0.2.32: NO user-agent override at all. The bundled browser is Chrome for
+# Testing 156 — any UA string we invent (even a Chrome one) risks mismatching
+# navigator.userAgentData, which still reports the REAL version. Facebook
+# compares the two. Letting the browser report its own honest UA keeps the
+# fingerprint self-consistent (UA string <-> client hints <-> platform).
 
 # Screen-friendly sizes: the browser WINDOW is sized to the viewport so it
 # never opens bigger than the laptop screen.
@@ -221,15 +214,16 @@ class PlaywrightDriver(BaseDriver):
         proxy = self._proxy_config()
         # Deterministic-ish fingerprint per account (stable across runs).
         # v0.2.25: the group's "Apply Fingerprint" switch can turn the
-        # randomization off (fixed default fingerprint instead).
-        # v0.2.31: timezone is NEVER randomized anymore — it always follows
-        # the laptop's real system clock (see the note above USER_AGENTS).
+        # randomization off (fixed default instead).
+        # v0.2.31: timezone is NEVER randomized — always the laptop's real
+        # system clock (see the note above).
+        # v0.2.32: user-agent is NEVER overridden — the browser reports its
+        # own honest UA so it matches navigator.userAgentData.
         if self.account.get("apply_fingerprint", True):
             rng = random.Random(self.account["id"])
-            ua = rng.choice(USER_AGENTS)
             loc = rng.choice(LOCALES)
         else:
-            ua, loc = USER_AGENTS[0], "en-GB"
+            loc = "en-GB"
         # v0.2.23: fixed large window for every account (the random small
         # viewports looked broken). Slight cascade so parallel account
         # browsers don't stack pixel-exact on top of each other.
@@ -239,10 +233,10 @@ class PlaywrightDriver(BaseDriver):
             str(profile_dir),
             headless=self.headless,
             proxy=proxy,
-            user_agent=ua,
             locale=loc,
             # v0.2.31: no timezone_id -> the laptop's real system timezone,
-            # so Facebook sees a consistent Pakistani clock on a Pakistani IP.
+            # so Facebook sees a consistent clock for the proxy's location.
+            # v0.2.32: no user_agent override -> honest self-consistent UA.
             viewport={"width": vw, "height": vh},
             args=["--disable-blink-features=AutomationControlled",
                   f"--window-size={vw},{vh}",
