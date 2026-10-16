@@ -100,6 +100,11 @@ class RunConfig:
     download_folder: str | None = None       # download_images_titles target dir
     new_location: str | None = None  # change_location target
     wait_minutes: float = 0          # wait_next_turn mode: guaranteed rest
+    # -- v0.2.25: FBM Robo General Settings per group ---------------------------
+    group_locations: list[str] = field(default_factory=list)
+    group_apply_fingerprint: bool = True
+    group_loc_change_mode: str = "do_not_change"
+    group_loc_change_location: str = ""
     exclude_labels: list[str] = field(default_factory=list)  # skip these accounts
     speed: float = 1.0               # 1x | 1.5x | 2x run speed multiplier
     # -- Alignment pass #2: typing mode + optional IXBrowser -------------------
@@ -308,6 +313,8 @@ def _driver_creds(db: Database, cfg: "RunConfig", account: dict) -> dict:
         "port": cfg.ix_local_api_port,
         "profile_id": creds.get("ix_profile_id"),
     }
+    # v0.2.25: per-group "Apply Fingerprint" (FBM Robo General Settings).
+    creds["apply_fingerprint"] = bool(getattr(cfg, "group_apply_fingerprint", True))
     return creds
 
 
@@ -373,7 +380,9 @@ class _Rotator:
                 descs = product["descriptions"] or [product.get("description") or ""]
                 self._desc_cycles[pid] = itertools.cycle(descs)
             if pid not in self._loc_cycles:
-                locs = product["locations"] or [None]
+                # v0.2.25: the group's General Settings locations take
+                # precedence over the product's own locations.
+                locs = (cfg.group_locations or product["locations"]) or [None]
                 self._loc_cycles[pid] = itertools.cycle(locs)
             title = next(self._title_cycles[pid])
             description = next(self._desc_cycles[pid])
@@ -634,6 +643,16 @@ class RunController:
         self.log(f"[{label}] logging in…", account_id=account["id"])
         if not driver.login():
             raise _LoginFailed(label)
+        # v0.2.25: "Change Marketplace Location Before Listing — Change only
+        # once": set the group's location once right after login.
+        if (self.cfg.group_loc_change_mode == "change_once"
+                and self.cfg.group_loc_change_location):
+            target = self.cfg.group_loc_change_location
+            ok = driver.set_marketplace_location(target)
+            self.log(f"[{label}] marketplace location -> '{target}': "
+                     f"{'OK' if ok else 'FAILED'}",
+                     level="info" if ok else "error",
+                     account_id=account["id"])
         mode = self.cfg.mode
         if mode == "draft_publish":
             self._draft_publish_flow(account, driver, quota, account_idx)
@@ -796,6 +815,12 @@ class RunController:
                          level="warning", account_id=account["id"])
                 continue
             payload = self._rotation(product, account_idx)
+            # v0.2.25: "Change Marketplace Location Before Listing — Change
+            # Everytime": set the group's location before every post.
+            if (self.cfg.group_loc_change_mode == "change_everytime"
+                    and self.cfg.group_loc_change_location):
+                driver.set_marketplace_location(
+                    self.cfg.group_loc_change_location)
             listing_id = driver.post_listing(payload)
             if listing_id:
                 self._record_posted(account, pid, payload, listing_id)

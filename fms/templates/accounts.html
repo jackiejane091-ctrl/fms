@@ -33,22 +33,49 @@
   </div>
 </div>
 
-<!-- ============ Add / Edit Group popup ============ -->
+<!-- ============ Add / Edit Group popup (FBM Robo "General Settings" style) ============ -->
 <div id="agModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
-  <div style="background:var(--card);border-radius:12px;max-width:640px;width:94%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#4a5fd0;border-radius:12px 12px 0 0;color:#fff">
+  <div style="background:#fff;border-radius:8px;max-width:560px;width:94%;max-height:92vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5);color:#333">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#2e3da3;border-radius:8px 8px 0 0;color:#fff">
       <b style="font-size:19px" id="agTitle">Add Group</b>
       <button id="agCloseBtn" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">✕</button>
     </div>
-    <div style="padding:18px">
-      <div style="margin-bottom:14px"><label><b>Group Name</b></label><br>
-        <input id="agName" style="width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px" placeholder="e.g. Plush 4"></div>
-      <div style="margin-bottom:14px"><label><b>Products</b> <span class="muted">(select products for this group)</span></label><br>
-        <select id="agProducts" multiple size="6" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px"></select></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap">
-        <button type="button" class="btn" id="agManageAcctsBtn">Manage Accounts</button>
-        <button type="button" class="btn" id="agCancelBtn">Cancel</button>
-        <button type="button" class="btn" id="agSaveBtn" style="background:#22c55e;color:#fff;border:none">Save</button>
+    <div style="padding:20px 22px">
+      <div style="margin-bottom:14px">
+        <label style="font-weight:600">Group Name</label><br>
+        <input id="agName" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222">
+      </div>
+      <div style="margin-bottom:14px">
+        <label style="font-weight:600">Locations</label><br>
+        <textarea id="agLocations" rows="3" placeholder="Enter locations (one per line)" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;resize:vertical;font-size:14px;font-family:inherit;background:#fff;color:#222"></textarea>
+      </div>
+      <div style="margin-bottom:14px;display:flex;align-items:center;gap:14px">
+        <label style="font-weight:600">Accounts</label>
+        <button type="button" id="agManageAcctsBtn" style="padding:8px 18px;border:1px solid #999;border-radius:4px;background:#f5f5f5;cursor:pointer;font-size:14px;color:#333">Manage Accounts</button>
+        <span id="agAccountCount" style="color:#555;font-size:14px">0 accounts</span>
+      </div>
+      <div style="margin-bottom:14px">
+        <label style="font-weight:600">Products</label><br>
+        <select id="agProducts" multiple size="5" style="width:100%;padding:6px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222"></select>
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-weight:600;cursor:pointer;font-size:14px"><input type="checkbox" id="agFingerprint" checked style="margin-right:6px;vertical-align:middle">Apply Fingerprint</label>
+      </div>
+      <div style="border-top:1px dashed #bbb;margin:16px 0"></div>
+      <div style="margin-bottom:12px;font-weight:600;font-size:14px">Change Marketplace Location Before Listing:</div>
+      <div style="margin-bottom:12px;display:flex;gap:18px;flex-wrap:wrap;font-size:14px">
+        <label style="cursor:pointer"><input type="radio" name="agLocMode" value="do_not_change" checked style="margin-right:5px;vertical-align:middle">Do not change</label>
+        <label style="cursor:pointer"><input type="radio" name="agLocMode" value="change_once" style="margin-right:5px;vertical-align:middle">Change only once</label>
+        <label style="cursor:pointer"><input type="radio" name="agLocMode" value="change_everytime" style="margin-right:5px;vertical-align:middle">Change Everytime</label>
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-weight:600;font-size:14px">Location:</label><br>
+        <input id="agLocLocation" placeholder="Enter location" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222">
+      </div>
+      <div style="border-top:1px dashed #bbb;margin:16px 0"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" id="agSaveBtn" style="padding:9px 34px;background:#22c55e;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer;font-weight:600">Save</button>
+        <button type="button" id="agCancelBtn" style="padding:9px 30px;background:#9aa0a6;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer">Cancel</button>
       </div>
     </div>
   </div>
@@ -173,19 +200,23 @@ el('mgAddBtn').addEventListener('click', function(){ mgShowAdd(); });
 el('mgCloseBtn').addEventListener('click', closeManageGroups);
 el('mgModal').addEventListener('click', function(e){ if(e.target===el('mgModal')) closeManageGroups(); });
 
-/* ================= Add / Edit Group ================= */
+/* ================= Add / Edit Group (FBM Robo General Settings style) ================= */
 async function mgShowAdd(id){
   _agEditId = id||null;
   el('agTitle').textContent = id ? 'Edit Group' : 'Add Group';
-  let name = '';
+  let g = null;
   if(id){
-    try {
-      const groups = await getJSON('/api/groups');
-      const g = groups.find(function(x){return x.id===id;});
-      if(g) name = g.name;
-    } catch(e){}
+    try { g = await getJSON('/api/groups/'+id); } catch(e){}
   }
-  el('agName').value = name;
+  el('agName').value = g ? (g.name||'') : '';
+  el('agLocations').value = g ? (g.locations||[]).join('\n') : '';
+  el('agAccountCount').textContent = ((g && g.account_count) || 0) + ' accounts';
+  el('agFingerprint').checked = g ? !!g.apply_fingerprint : true;
+  const mode = g ? (g.loc_change_mode||'do_not_change') : 'do_not_change';
+  document.querySelectorAll('input[name="agLocMode"]').forEach(function(r){
+    r.checked = (r.value===mode);
+  });
+  el('agLocLocation').value = g ? (g.loc_change_location||'') : '';
   await agLoadProducts(id);
   el('mgModal').style.display='none';
   el('agModal').style.display='flex';
@@ -210,16 +241,21 @@ async function agEnsureSaved(){
   /* Make sure the group exists in the DB (draft save) so Manage Accounts can attach to it. */
   const name = el('agName').value.trim();
   if(!name){ fmsAlert('Please enter a group name first.'); return null; }
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('locations', el('agLocations').value);
+  fd.append('apply_fingerprint', el('agFingerprint').checked ? 'true' : 'false');
+  const modeEl = document.querySelector('input[name="agLocMode"]:checked');
+  fd.append('loc_change_mode', modeEl ? modeEl.value : 'do_not_change');
+  fd.append('loc_change_location', el('agLocLocation').value.trim());
   let gid = _agEditId;
   if(!gid){
-    const fd = new FormData(); fd.append('name', name);
     await fetch('/api/groups', {method:'POST', body:fd, redirect:'manual'});
     const groups = await getJSON('/api/groups');
     const g = groups.find(function(x){return x.name===name;});
     gid = g ? g.id : null;
     _agEditId = gid;
   } else {
-    const fd = new FormData(); fd.append('name', name);
     await fetch('/api/groups/'+gid, {method:'PUT', body:fd});
   }
   if(gid){

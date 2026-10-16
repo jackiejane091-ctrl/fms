@@ -296,9 +296,26 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def api_list_groups():
         return accounts_mod.list_groups(db)
 
+    @app.get("/api/groups/{group_id}")
+    def api_get_group(group_id: int):
+        g = accounts_mod.get_group(db, group_id)
+        if not g:
+            raise HTTPException(404, "Unknown group")
+        return g
+
     @app.post("/api/groups")
-    def api_create_group(name: str = Form(...)):
-        gid = accounts_mod.create_group(db, name)
+    def api_create_group(name: str = Form(...),
+                         locations: str | None = Form(None),
+                         apply_fingerprint: bool = Form(True),
+                         loc_change_mode: str | None = Form(None),
+                         loc_change_location: str | None = Form(None)):
+        gid = accounts_mod.create_group(
+            db, name, locations=locations,
+            apply_fingerprint=apply_fingerprint,
+            loc_change_mode=loc_change_mode,
+            loc_change_location=loc_change_location)
+        # JSON callers (Add Group dialog) want the id; the old HTML form
+        # still gets its redirect.
         return RedirectResponse("/accounts", status_code=303)
 
     @app.delete("/api/groups/{group_id}")
@@ -316,8 +333,16 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         return {"ok": True, "id": new_id}
 
     @app.put("/api/groups/{group_id}")
-    def api_rename_group(group_id: int, name: str = Form(...)):
-        accounts_mod.rename_group(db, group_id, name)
+    def api_update_group(group_id: int, name: str | None = Form(None),
+                         locations: str | None = Form(None),
+                         apply_fingerprint: bool | None = Form(None),
+                         loc_change_mode: str | None = Form(None),
+                         loc_change_location: str | None = Form(None)):
+        accounts_mod.update_group(
+            db, group_id, name=name, locations=locations,
+            apply_fingerprint=apply_fingerprint,
+            loc_change_mode=loc_change_mode,
+            loc_change_location=loc_change_location)
         return {"ok": True}
 
     @app.post("/api/groups/{group_id}/products")
@@ -521,6 +546,16 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def api_start_run(data: RunIn):
         cfg = RunConfig(**{k: v for k, v in data.model_dump().items()
                            if k != "fresh"})
+        # v0.2.25: fold the group's General Settings into the run config.
+        try:
+            g = accounts_mod.get_group(db, data.group_id)
+        except Exception:
+            g = None
+        if g:
+            cfg.group_locations = g.get("locations") or []
+            cfg.group_apply_fingerprint = g.get("apply_fingerprint", True)
+            cfg.group_loc_change_mode = g.get("loc_change_mode") or "do_not_change"
+            cfg.group_loc_change_location = g.get("loc_change_location") or ""
         run_id = engine.start_run(cfg, fresh=data.fresh)
         return {"ok": True, "run_id": run_id}
 

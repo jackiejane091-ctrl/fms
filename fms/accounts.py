@@ -12,27 +12,101 @@ from .db import Database, utcnow
 
 
 # ---------------------------------------------------------------- groups ---
-def create_group(db: Database, name: str) -> int:
+LOC_CHANGE_MODES = ("do_not_change", "change_once", "change_everytime")
+
+
+def _norm_locations(locations) -> list[str]:
+    if locations is None:
+        return []
+    if isinstance(locations, str):
+        # one per line, like the FBM Robo dialog (commas are kept — they are
+        # part of real locations like "Manchester, United Kingdom")
+        items = [l.strip() for l in locations.splitlines()]
+    else:
+        items = [str(l).strip() for l in locations]
+    return [l for l in items if l]
+
+
+def _norm_loc_mode(mode: str | None) -> str:
+    mode = (mode or "do_not_change").strip()
+    return mode if mode in LOC_CHANGE_MODES else "do_not_change"
+
+
+def create_group(db: Database, name: str, locations=None,
+                 apply_fingerprint: bool = True,
+                 loc_change_mode: str | None = None,
+                 loc_change_location: str | None = None) -> int:
     name = name.strip()
     if not name:
         raise ValueError("Group name cannot be empty.")
+    import json as _json
     cur = db.execute(
-        "INSERT INTO groups (name, created_at) VALUES (?, ?)", (name, utcnow())
+        "INSERT INTO groups (name, created_at, locations, apply_fingerprint,"
+        " loc_change_mode, loc_change_location) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, utcnow(), _json.dumps(_norm_locations(locations)),
+         1 if apply_fingerprint else 0, _norm_loc_mode(loc_change_mode),
+         (loc_change_location or "").strip()),
     )
     return cur.lastrowid
 
 
+def get_group(db: Database, group_id: int) -> dict | None:
+    row = db.fetchone("SELECT * FROM groups WHERE id = ?", (group_id,))
+    if not row:
+        return None
+    return _group_dict(db, row)
+
+
+def _group_dict(db: Database, row) -> dict:
+    import json as _json
+    d = dict(row)
+    try:
+        d["locations"] = _json.loads(d.get("locations") or "[]")
+    except Exception:
+        d["locations"] = []
+    d["apply_fingerprint"] = bool(d.get("apply_fingerprint", 1))
+    d["loc_change_mode"] = _norm_loc_mode(d.get("loc_change_mode"))
+    d["loc_change_location"] = d.get("loc_change_location") or ""
+    d["account_count"] = db.fetchone(
+        "SELECT COUNT(*) AS c FROM accounts WHERE group_id = ?", (row["id"],)
+    )["c"]
+    d["product_count"] = group_product_count(db, row["id"])
+    return d
+
+
+def update_group(db: Database, group_id: int, name: str | None = None,
+                 locations=None, apply_fingerprint: bool | None = None,
+                 loc_change_mode: str | None = None,
+                 loc_change_location: str | None = None) -> None:
+    """Update any subset of a group's General Settings fields."""
+    import json as _json
+    sets, vals = [], []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Group name cannot be empty.")
+        sets.append("name = ?")
+        vals.append(name)
+    if locations is not None:
+        sets.append("locations = ?")
+        vals.append(_json.dumps(_norm_locations(locations)))
+    if apply_fingerprint is not None:
+        sets.append("apply_fingerprint = ?")
+        vals.append(1 if apply_fingerprint else 0)
+    if loc_change_mode is not None:
+        sets.append("loc_change_mode = ?")
+        vals.append(_norm_loc_mode(loc_change_mode))
+    if loc_change_location is not None:
+        sets.append("loc_change_location = ?")
+        vals.append(loc_change_location.strip())
+    if sets:
+        vals.append(group_id)
+        db.execute(f"UPDATE groups SET {', '.join(sets)} WHERE id = ?", vals)
+
+
 def list_groups(db: Database) -> list[dict]:
     rows = db.fetchall("SELECT * FROM groups ORDER BY name")
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["account_count"] = db.fetchone(
-            "SELECT COUNT(*) AS c FROM accounts WHERE group_id = ?", (r["id"],)
-        )["c"]
-        d["product_count"] = group_product_count(db, r["id"])
-        out.append(d)
-    return out
+    return [_group_dict(db, r) for r in rows]
 
 
 def group_product_count(db: Database, group_id: int) -> int:
@@ -78,7 +152,18 @@ def clone_group(db: Database, group_id: int, new_name: str | None = None) -> int
     while db.fetchone("SELECT id FROM groups WHERE name = ?", (name,)):
         name = f"{base} {n}"
         n += 1
-    new_gid = create_group(db, name)
+    import json as _json
+    try:
+        _locs = _json.loads(src["locations"] or "[]")
+    except Exception:
+        _locs = []
+    new_gid = create_group(
+        db, name,
+        locations=_locs,
+        apply_fingerprint=bool(src["apply_fingerprint"]),
+        loc_change_mode=src["loc_change_mode"],
+        loc_change_location=src["loc_change_location"],
+    )
     proxy_map: dict[int, int] = {}
     for acc in db.fetchall("SELECT * FROM accounts WHERE group_id = ?",
                            (group_id,)):

@@ -214,7 +214,15 @@ class PlaywrightDriver(BaseDriver):
         profile_dir = config.profiles_dir() / f"account_{self.account['id']}"
         proxy = self._proxy_config()
         # Deterministic-ish fingerprint per account (stable across runs).
-        rng = random.Random(self.account["id"])
+        # v0.2.25: the group's "Apply Fingerprint" switch can turn the
+        # randomization off (fixed default fingerprint instead).
+        if self.account.get("apply_fingerprint", True):
+            rng = random.Random(self.account["id"])
+            ua = rng.choice(USER_AGENTS)
+            loc = rng.choice(LOCALES)
+            tz = rng.choice(TIMEZONES)
+        else:
+            ua, loc, tz = USER_AGENTS[0], "en-US", "America/New_York"
         # v0.2.23: fixed large window for every account (the random small
         # viewports looked broken). Slight cascade so parallel account
         # browsers don't stack pixel-exact on top of each other.
@@ -224,9 +232,9 @@ class PlaywrightDriver(BaseDriver):
             str(profile_dir),
             headless=self.headless,
             proxy=proxy,
-            user_agent=rng.choice(USER_AGENTS),
-            locale=rng.choice(LOCALES),
-            timezone_id=rng.choice(TIMEZONES),
+            user_agent=ua,
+            locale=loc,
+            timezone_id=tz,
             viewport={"width": vw, "height": vh},
             args=["--disable-blink-features=AutomationControlled",
                   f"--window-size={vw},{vh}",

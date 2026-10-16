@@ -20,7 +20,11 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    locations TEXT NOT NULL DEFAULT '[]',
+    apply_fingerprint INTEGER NOT NULL DEFAULT 1,
+    loc_change_mode TEXT NOT NULL DEFAULT 'do_not_change',
+    loc_change_location TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS proxies (
@@ -206,6 +210,15 @@ class Database:
                    use_count INTEGER NOT NULL DEFAULT 0,
                    PRIMARY KEY (product_id, image_path))"""
         )
+        # v0.2.25: FBM Robo-style General Settings per group.
+        for _col, _ddl in [
+            ("locations", "ALTER TABLE groups ADD COLUMN locations TEXT NOT NULL DEFAULT '[]'"),
+            ("apply_fingerprint", "ALTER TABLE groups ADD COLUMN apply_fingerprint INTEGER NOT NULL DEFAULT 1"),
+            ("loc_change_mode", "ALTER TABLE groups ADD COLUMN loc_change_mode TEXT NOT NULL DEFAULT 'do_not_change'"),
+            ("loc_change_location", "ALTER TABLE groups ADD COLUMN loc_change_location TEXT NOT NULL DEFAULT ''"),
+        ]:
+            if not _has_column("groups", _col):
+                self._conn.execute(_ddl)
         # Alignment pass #5: per-account listing-number verification results.
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS listing_counts (
