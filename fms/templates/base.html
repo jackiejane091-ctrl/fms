@@ -75,14 +75,43 @@ document.addEventListener('click', (e)=>{
   if(!e.target.closest('.dropdown')) document.querySelectorAll('.dropdown.open')
     .forEach(d => d.classList.remove('open'));
 });
+// Custom FMS confirm dialog (replaces ugly browser "127.0.0.1:8000 says" popup).
+function fmsConfirm(msg){
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+    ov.innerHTML = '<div style="background:var(--card,#1e2430);border:1px solid var(--line,#334);border-radius:12px;padding:24px 28px;max-width:380px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.5)">'
+      + '<div style="font-size:20px;font-weight:bold;margin-bottom:12px">🏪 FMS</div>'
+      + '<div style="margin-bottom:20px;color:var(--fg,#dbe2f0)">' + msg + '</div>'
+      + '<div style="display:flex;gap:10px;justify-content:center">'
+      + '<button id="fmsOk" class="btn" style="background:#22c55e;color:#fff;border:none;padding:9px 28px;border-radius:8px;font-size:15px;cursor:pointer">OK</button>'
+      + '<button id="fmsCancel" class="btn" style="padding:9px 28px;border-radius:8px;font-size:15px;cursor:pointer">Cancel</button>'
+      + '</div></div>';
+    document.body.appendChild(ov);
+    ov.querySelector('#fmsOk').onclick = () => { ov.remove(); resolve(true); };
+    ov.querySelector('#fmsCancel').onclick = () => { ov.remove(); resolve(false); };
+    ov.onclick = e => { if(e.target === ov){ ov.remove(); resolve(false); } };
+  });
+}
+function fmsAlert(msg){
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+  ov.innerHTML = '<div style="background:var(--card,#1e2430);border:1px solid var(--line,#334);border-radius:12px;padding:24px 28px;max-width:380px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.5)">'
+    + '<div style="font-size:20px;font-weight:bold;margin-bottom:12px">🏪 FMS</div>'
+    + '<div style="margin-bottom:20px;color:var(--fg,#dbe2f0)">' + msg + '</div>'
+    + '<button id="fmsOk2" class="btn" style="background:#2f7cf6;color:#fff;border:none;padding:9px 32px;border-radius:8px;font-size:15px;cursor:pointer">OK</button></div>';
+  document.body.appendChild(ov);
+  ov.querySelector('#fmsOk2').onclick = () => ov.remove();
+  ov.onclick = e => { if(e.target === ov) ov.remove(); };
+}
 async function quitFms(){
-  if(!confirm('Quit FMS? Any running listings will stop.')) return;
+  if(!await fmsConfirm('Quit FMS? Any running listings will stop.')) return;
   try { await fetch('/api/shutdown', {method:'POST'}); } catch(e) {}
   document.body.innerHTML = '<p style="padding:40px">FMS is closing… you can close this tab.</p>';
 }
 // After an update downloads: restart FMS so the new version opens automatically.
 async function restartFms(){
-  if(!confirm('Restart FMS now? It will reopen with the new update.')) return;
+  if(!await fmsConfirm('Restart FMS now? It will reopen with the new update.')) return;
   document.body.innerHTML = '<p style="padding:40px">Restarting FMS with the new update…</p>';
   try { await fetch('/api/restart', {method:'POST'}); } catch(e) {}
 }
@@ -105,7 +134,7 @@ async function checkUpdate(){
   btn.disabled = true; btn.textContent = '⟳ Checking…';
   try {
     const r = await (await fetch('/api/update/check')).json();
-    if(!r.ok){ alert('Update check failed: ' + (r.error || 'unknown error')); return; }
+    if(!r.ok){ fmsAlert('Update check failed: ' + (r.error || 'unknown error')); return; }
     if(r.update_available){
       updateInfo = r;
       document.getElementById('updateTitle').textContent =
@@ -116,9 +145,9 @@ async function checkUpdate(){
       document.getElementById('updateDlBtn').classList.remove('hidden');
       document.getElementById('updateRestartBtn').classList.add('hidden');
     } else {
-      alert('FMS is up to date (v' + r.current + ').');
+      fmsAlert('FMS is up to date (v' + r.current + ').');
     }
-  } catch(e){ alert('Update check failed: network error.'); }
+  } catch(e){ fmsAlert('Update check failed: network error.'); }
   finally { btn.disabled = false; btn.textContent = '⟳ Update'; }
 }
 function hideUpdateBanner(){
@@ -131,7 +160,7 @@ async function downloadUpdate(){
   try {
     const r = await fetch('/api/update/download', {method:'POST'});
     if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'download failed'); }
-  } catch(e){ alert('Download failed: ' + e.message); return; }
+  } catch(e){ fmsAlert('Download failed: ' + e.message); return; }
   const t = setInterval(async ()=>{
     try {
       const p = await (await fetch('/api/update/progress')).json();
@@ -145,7 +174,7 @@ async function downloadUpdate(){
         document.getElementById('updateMsg').textContent =
           'Download complete! Press "Restart FMS" — it will reopen automatically with the new update.';
         document.getElementById('updateRestartBtn').classList.remove('hidden');
-      } else if(p.state === 'error'){ clearInterval(t); alert('Download failed: ' + p.message); }
+      } else if(p.state === 'error'){ clearInterval(t); fmsAlert('Download failed: ' + p.message); }
     } catch(e){ /* keep polling */ }
   }, 1000);
 }

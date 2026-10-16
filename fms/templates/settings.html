@@ -87,8 +87,8 @@ document.getElementById('settingsForm').addEventListener('submit', async (e) => 
   for (const k of ['shuffle','hide_from_friends','use_human_behaviour','ix_browser_enabled'])
     if (!fd.has(k)) fd.append(k, '0');
   const r = await fetch('/api/settings', {method:'POST', body: fd});
-  if (r.ok) { alert('Settings saved! Ye ab har run pe apply hongi.'); location.href = '/'; }
-  else alert('Save failed: ' + await r.text());
+  if (r.ok) { fmsAlert('Settings saved! Ye ab har run pe apply hongi.'); location.href = '/'; }
+  else fmsAlert('Save failed: ' + await r.text());
 });
 </script>
 {% endblock %}

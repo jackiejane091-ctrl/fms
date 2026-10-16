@@ -57,7 +57,7 @@ document.getElementById('newScript').addEventListener('submit', async (e)=>{
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({name: f.get('name'), shuffle: !!f.get('shuffle'), blocks: []})});
   if(r.ok){ const j = await r.json(); location.href = '/scripts/' + j.id; }
-  else alert('Failed: ' + await r.text());
+  else fmsAlert('Failed: ' + await r.text());
 });
 async function delScript(id){
   if(!confirm('Delete script #' + id + '?')) return;

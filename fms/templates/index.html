@@ -90,9 +90,9 @@ async function pauseAll(){
   const r = await fetch('/api/runs');
   const runs = await r.json();
   const live = runs.find(x => x.status === 'running' || x.status === 'paused');
-  if(!live){ alert('No live run to pause.'); return; }
+  if(!live){ fmsAlert('No live run to pause.'); return; }
   await fetch('/api/runs/'+live.id+'/pause', {method:'POST'});
-  alert('Paused run #' + live.id);
+  fmsAlert('Paused run #' + live.id);
 }
 function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
@@ -102,7 +102,7 @@ async function startRun(){
   const actVal = document.getElementById('actionSel').value;
   const scriptId = actVal.startsWith('script:') ? actVal.slice(7) : '';
   const mode = scriptId ? 'script' : actVal;
-  if(!gids.length){ alert('Pehle kam az kam ek group select karein.'); return; }
+  if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
   // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
   const s = await (await fetch('/api/settings')).json();
   const body = {
@@ -143,7 +143,7 @@ async function startRun(){
     else { failed++; try{ const e = await r.json(); if(e.detail) errMsg = e.detail; }catch(_){} }
   }
   if(firstRun) location.href = '/runs/' + firstRun;
-  else alert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
+  else fmsAlert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
 }
 function toggleGdrop(e){ e.stopPropagation(); const p=document.getElementById('gdropPanel'); p.style.display = p.style.display==='none' ? 'block' : 'none'; }
 document.addEventListener('click', function(){ const p=document.getElementById('gdropPanel'); if(p) p.style.display='none'; });
@@ -186,7 +186,7 @@ function boardToggleLogs(){
 }
 function boardCopyLogs(){
   const t = document.getElementById('boardLogs').textContent;
-  navigator.clipboard.writeText(t).then(()=>alert('Logs copied.'));
+  navigator.clipboard.writeText(t).then(()=>fmsAlert('Logs copied.'));
 }
 modeChanged();
 // Fresh open: board stays empty until the user selects group(s).

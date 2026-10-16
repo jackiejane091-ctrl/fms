@@ -185,9 +185,9 @@ async function pauseAll(){
   const r = await fetch('/api/runs');
   const runs = await r.json();
   const live = runs.find(x => x.status === 'running' || x.status === 'paused');
-  if(!live){ alert('No live run to pause.'); return; }
+  if(!live){ fmsAlert('No live run to pause.'); return; }
   await fetch('/api/runs/'+live.id+'/pause', {method:'POST'});
-  alert('Paused run #' + live.id);
+  fmsAlert('Paused run #' + live.id);
 }
 function modeChanged(){
   const useScript = document.getElementById('scriptSel').value !== '';
@@ -285,15 +285,15 @@ document.getElementById('runForm').addEventListener('submit', async (e)=>{
     ix_local_api_port: parseInt(f.get('ix_local_api_port')) || 53200
   };
   if(!useScript && POSTING_MODES.includes(body.mode) && !body.product_ids.length){
-    alert('Tick at least one product.'); return;
+    fmsAlert('Tick at least one product.'); return;
   }
   if(!useScript && !body.mode){
-    alert('Select a script (action) first.'); return;
+    fmsAlert('Select a script (action) first.'); return;
   }
   const r = await fetch('/api/runs', {method:'POST',
     headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if(r.ok){ const j = await r.json(); location.href = '/runs/' + j.run_id; }
-  else alert('Failed: ' + await r.text());
+  else fmsAlert('Failed: ' + await r.text());
 });
 // -- run board ---------------------------------------------------------------
 function boardLi(list){ return list.map(l => '<li>'+l+'</li>').join(''); }
@@ -327,7 +327,7 @@ function boardToggleLogs(){
 }
 function boardCopyLogs(){
   const t = document.getElementById('boardLogs').textContent;
-  navigator.clipboard.writeText(t).then(()=>alert('Logs copied.'));
+  navigator.clipboard.writeText(t).then(()=>fmsAlert('Logs copied.'));
 }
 loadBoard();
 setInterval(loadBoard, 8000);

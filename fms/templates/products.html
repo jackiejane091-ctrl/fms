@@ -133,7 +133,7 @@ $('cancelProdBtn').onclick = () => dlg.classList.add('hidden');
 
 async function editProd(id){
   const r = await fetch('/api/products/' + id);
-  if(!r.ok){ alert('Load failed'); return; }
+  if(!r.ok){ fmsAlert('Load failed'); return; }
   const p = await r.json();
   openDialog(p.listing_type || 'item', 'Edit Product');
   $('f_id').value = p.id;
@@ -175,16 +175,16 @@ $('prodForm').addEventListener('submit', async (e)=>{
     delivery_options: [...document.querySelectorAll('input[name="delivery_options"]:checked')].map(c => c.value),
     descriptions: [...document.querySelectorAll('#descList textarea')].map(t => t.value.trim()).filter(Boolean),
   };
-  if(!body.name){ alert('Product Name is required'); return; }
+  if(!body.name){ fmsAlert('Product Name is required'); return; }
   const url = id ? '/api/products/' + id : '/api/products';
   const r = await fetch(url, {method: id ? 'PUT' : 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  if(r.ok) location.reload(); else alert('Save failed: ' + await r.text());
+  if(r.ok) location.reload(); else fmsAlert('Save failed: ' + await r.text());
 });
 
 async function cloneProd(id){
   const r = await fetch('/api/products/' + id + '/clone', {method: 'POST'});
-  if(r.ok) location.reload(); else alert('Clone failed: ' + await r.text());
+  if(r.ok) location.reload(); else fmsAlert('Clone failed: ' + await r.text());
 }
 async function delProd(id){
   if(!confirm('Delete product #' + id + '?')) return;
@@ -198,7 +198,7 @@ async function pickFolder(fieldId){
       const p = await window.pywebview.api.pick_folder();
       if(p) $(fieldId).value = p;
     }else{
-      alert('Browse sirf FMS desktop app me kaam karta hai — path copy karke paste kar dein.');
+      fmsAlert('Browse sirf FMS desktop app me kaam karta hai — path copy karke paste kar dein.');
     }
   }catch(e){ /* dialog cancelled */ }
 }
