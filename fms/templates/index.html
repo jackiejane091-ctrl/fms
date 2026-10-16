@@ -11,12 +11,6 @@
         <button type="button" onclick="stepBatch(-1)">−</button>
       </span>
     </span>
-    <span class="cc-field"><b>Script:</b>
-      <select id="scriptSel" onchange="modeChanged()" style="min-width:180px">
-        <option value="">— Select Script —</option>
-        {% for s in scripts %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
-      </select>
-    </span>
     <span class="cc-field"><b>Select Groups:</b>
       <div id="groupChecks" class="group-checks" style="min-width:220px;max-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px;background:var(--bg)">
         {% for g in groups %}<label class="check" style="display:block;margin:3px 0"><input type="checkbox" class="gcheck" value="{{ g.id }}" onchange="loadBoard()"> {{ g.name }} ({{ g.account_count }})</label>{% endfor %}
@@ -45,8 +39,10 @@
   </div>
   <div class="cc-row">
     <span class="cc-field"><b>Action:</b>
-      <select id="actionSel" style="min-width:180px">
+      <select id="actionSel" onchange="modeChanged()" style="min-width:180px">
         {% for mode, label in actions %}<option value="{{ mode }}">{{ label }}</option>{% endfor %}
+        {% if scripts %}<option disabled>────────</option>
+        {% for s in scripts %}<option value="script:{{ s.id }}">📜 {{ s.name }}</option>{% endfor %}{% endif %}
       </select>
     </span>
     <span class="cc-field"><b>Products:</b>
@@ -90,13 +86,13 @@ async function pauseAll(){
   alert('Paused run #' + live.id);
 }
 function modeChanged(){
-  document.getElementById('actionSel').disabled =
-    document.getElementById('scriptSel').value !== '';
+  // Scripts now live inside the Action dropdown (value="script:ID").
 }
 async function startRun(){
   const gids = selectedGroups();
-  const scriptId = document.getElementById('scriptSel').value;
-  const mode = scriptId ? 'script' : document.getElementById('actionSel').value;
+  const actVal = document.getElementById('actionSel').value;
+  const scriptId = actVal.startsWith('script:') ? actVal.slice(7) : '';
+  const mode = scriptId ? 'script' : actVal;
   if(!gids.length){ alert('Pehle kam az kam ek group select karein.'); return; }
   // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
   const s = await (await fetch('/api/settings')).json();
