@@ -772,17 +772,28 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
 
         The relaunched process runs apply_pending_update() at startup,
         so FMS.new.exe (if present) is swapped in automatically.
+        Uses a helper batch file that waits for THIS process (by PID) to
+        fully exit before starting the exe again — reliable even if the
+        old exe file is momentarily locked.
         """
         def _restart():
-            time.sleep(0.8)
+            time.sleep(1.0)
             if getattr(sys, "frozen", False):
                 exe = Path(sys.executable).resolve()
                 try:
-                    # Detached helper: wait 2s for this process to die,
-                    # then start FMS.exe again.
+                    pid = os.getpid()
+                    bat = exe.parent / "_fms_restart.bat"
+                    bat.write_text(
+                        "@echo off\n"
+                        ":fms_wait\n"
+                        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul\n'
+                        "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto fms_wait)\n"
+                        f'start "" "{exe}"\n'
+                        'del "%~f0"\n',
+                        encoding="utf-8",
+                    )
                     subprocess.Popen(
-                        ["cmd", "/c",
-                         f'timeout /t 2 /nobreak >nul & start "" "{exe}"'],
+                        ["cmd", "/c", str(bat)],
                         creationflags=(subprocess.DETACHED_PROCESS |
                                        subprocess.CREATE_NEW_PROCESS_GROUP),
                         stdout=subprocess.DEVNULL,
@@ -792,6 +803,17 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
                     )
                 except Exception:
                     pass
+            # Gracefully close the desktop window first so it doesn't hang.
+            try:
+                import webview as _wv
+                for _w in list(_wv.windows):
+                    try:
+                        _w.destroy()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            time.sleep(0.5)
             os._exit(0)
 
         threading.Thread(target=_restart, daemon=True).start()
