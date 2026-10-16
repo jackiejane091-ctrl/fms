@@ -363,6 +363,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             d = {k: v for k, v in r.items() if not k.endswith("_enc")}
             d["has_password"] = bool(r.get("password_enc"))
             d["has_cookie"] = bool(r.get("cookie_enc"))
+            d["has_2fa"] = bool(r.get("twofa_secret_enc"))
             d["proxy_text"] = None
             d["proxy_status"] = None  # True working / False dead / None unknown
             if r.get("proxy_id"):
@@ -443,6 +444,24 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def api_delete_account(account_id: int):
         accounts_mod.delete_account(db, account_id)
         return {"ok": True}
+
+    @app.get("/api/accounts/{account_id}/copy-line")
+    def api_account_copy_line(account_id: int):
+        """Return the account's import line (label;password;active;browser)
+        for the row copy button. Local app only — the user copying their
+        own credentials to their own clipboard."""
+        from . import crypto
+        row = db.fetchone("SELECT * FROM accounts WHERE id = ?",
+                          (account_id,))
+        if not row:
+            raise HTTPException(404, "Unknown account")
+        label = row["label"] or ""
+        try:
+            password = crypto.decrypt_str(row["password_enc"]) or ""
+        except Exception:
+            password = ""
+        line = f"{label};{password};{'True' if row['active'] else 'False'};{row['browser'] or 'Chrome'}"
+        return {"ok": True, "line": line}
 
     @app.get("/api/accounts/{account_id}/2fa")
     def api_twofa(account_id: int):

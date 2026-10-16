@@ -4,7 +4,7 @@
 <h1>Accounts</h1>
 <p class="muted">Your account groups, FBM Robo style. The Manage Groups window opens automatically.</p>
 <div class="row" style="margin-top:12px">
-  <button class="btn" onclick="openManageGroups()" style="font-size:16px">📁 Manage Groups</button>
+  <button class="btn" id="mgToolbarBtn" style="font-size:16px">📁 Manage Groups</button>
 </div>
 
 <!-- ============ Manage Groups popup (FBM Robo style) ============ -->
@@ -123,6 +123,8 @@
           <th style="padding:10px;text-align:left">Anti-detect Profile ID</th><th style="padding:10px">Active</th>
           <th style="padding:10px;text-align:left">Proxy</th><th style="padding:10px;text-align:left">Proxy Status</th>
           <th style="padding:10px;text-align:left">Cookie</th>
+          <th style="padding:10px;text-align:left">2FA</th>
+          <th style="padding:10px;text-align:center">Actions</th>
         </tr></thead>
         <tbody id="maBody"></tbody>
       </table>
@@ -130,6 +132,34 @@
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
         <button class="btn" id="maCancelBtn" style="border:1px solid #ccc;background:#fff;border-radius:6px;padding:10px 26px;cursor:pointer">Cancel</button>
         <button class="btn" id="maSaveBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 26px;cursor:pointer">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Edit Account popup (FBM Robo style) ============ -->
+<div id="eaModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10001;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;max-width:520px;width:94%;max-height:90vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5);color:#333">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#2e3da3;border-radius:8px 8px 0 0;color:#fff">
+      <b style="font-size:19px">Edit Account</b>
+      <button id="eaCloseBtn" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:20px 22px">
+      <div style="margin-bottom:12px"><label style="font-weight:600;font-size:14px">Email or phone</label><br>
+        <input id="eaLabel" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222"></div>
+      <div style="margin-bottom:12px"><label style="font-weight:600;font-size:14px">Password</label> <span class="muted" style="font-size:12px;color:#888">(blank = keep current)</span><br>
+        <input id="eaPass" type="text" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222" placeholder="••••••"></div>
+      <div style="margin-bottom:12px"><label style="font-weight:600;font-size:14px">Cookie</label> <span style="font-size:12px;color:#888">(blank = keep current)</span><br>
+        <textarea id="eaCookie" rows="2" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222;font-family:inherit" placeholder="name=value; name2=value2"></textarea></div>
+      <div style="margin-bottom:12px"><label style="font-weight:600;font-size:14px">2FA secret</label> <span style="font-size:12px;color:#888">(blank = keep current)</span><br>
+        <input id="ea2fa" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222" placeholder="—"></div>
+      <div style="margin-bottom:6px"><label style="font-weight:600;font-size:14px">Browser</label><br>
+        <select id="eaBrowser" style="width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:4px;margin-top:6px;box-sizing:border-box;font-size:14px;background:#fff;color:#222">
+          <option value="chrome">Chrome</option>
+        </select></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px">
+        <button type="button" id="eaSaveBtn" style="padding:9px 34px;background:#22c55e;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer;font-weight:600">Save</button>
+        <button type="button" id="eaCancelBtn" style="padding:9px 30px;background:#9aa0a6;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer">Cancel</button>
       </div>
     </div>
   </div>
@@ -340,7 +370,13 @@ async function maRefresh(){
         '<span style="position:absolute;top:2px;'+knob+';width:20px;height:20px;border-radius:50%;background:#fff"></span></button></td>'+
       '<td style="padding:10px">'+esc(px)+'</td>'+
       '<td style="padding:10px">'+pxs+'</td>'+
-      '<td style="padding:10px">'+(a.has_cookie?'set':'—')+'</td>';
+      '<td style="padding:10px">'+(a.has_cookie?'set':'—')+'</td>'+
+      '<td style="padding:10px">'+(a.has_2fa?'set':'—')+'</td>'+
+      '<td style="padding:10px;text-align:center;white-space:nowrap">'+
+        '<button data-rowact="copy" data-id="'+a.id+'" title="Copy login line" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px;margin-right:4px">📋</button>'+
+        '<button data-rowact="edit" data-id="'+a.id+'" title="Edit account" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px;margin-right:4px">✏️</button>'+
+        '<button data-rowact="del" data-id="'+a.id+'" title="Delete account" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px">🗑️</button>'+
+      '</td>';
     tb.appendChild(tr);
   });
   maUpdateSelCount();
@@ -359,6 +395,48 @@ el('maBody').addEventListener('click', async function(e){
   const b = e.target.closest('button[data-tgl]'); if(!b) return;
   const r = await fetch('/api/accounts/'+b.dataset.tgl+'/toggle', {method:'POST'});
   if(r.ok) maRefresh(); else fmsAlert('Toggle failed: '+await r.text());
+});
+/* ---- per-row Actions: copy / edit / delete (FBM Robo style) ---- */
+let _eaEditId = null;
+el('maBody').addEventListener('click', async function(e){
+  const b = e.target.closest('button[data-rowact]'); if(!b) return;
+  const aid = b.dataset.id, act = b.dataset.rowact;
+  if(act==='copy'){
+    try{
+      const d = await getJSON('/api/accounts/'+aid+'/copy-line');
+      await navigator.clipboard.writeText(d.line);
+      fmsAlert('Copied: '+d.line.split(';')[0]);
+    }catch(err){ fmsAlert('Copy failed: '+err.message); }
+  } else if(act==='del'){
+    if(!await fmsConfirm('Delete this account?')) return;
+    const r = await fetch('/api/accounts/'+aid, {method:'DELETE'});
+    if(r.ok) maRefresh(); else fmsAlert('Delete failed: '+await r.text());
+  } else if(act==='edit'){
+    _eaEditId = aid;
+    try{
+      const accs = await getJSON('/api/accounts?group_id='+_maGroupId);
+      const a = accs.find(function(x){return String(x.id)===String(aid);});
+      el('eaLabel').value = a ? (a.label||'') : '';
+      el('eaBrowser').value = (a && a.browser) || 'chrome';
+    }catch(err){}
+    el('eaPass').value=''; el('eaCookie').value=''; el('ea2fa').value='';
+    el('eaModal').style.display='flex';
+  }
+});
+function closeEditAccount(){ el('eaModal').style.display='none'; _eaEditId=null; }
+el('eaCloseBtn').addEventListener('click', closeEditAccount);
+el('eaCancelBtn').addEventListener('click', closeEditAccount);
+el('eaModal').addEventListener('click', function(e){ if(e.target===el('eaModal')) closeEditAccount(); });
+el('eaSaveBtn').addEventListener('click', async function(){
+  if(!_eaEditId) return;
+  const body = {label: el('eaLabel').value.trim(), browser: el('eaBrowser').value};
+  if(el('eaPass').value) body.password = el('eaPass').value;
+  if(el('eaCookie').value.trim()) body.cookie = el('eaCookie').value.trim();
+  if(el('ea2fa').value.trim()) body.twofa_secret = el('ea2fa').value.trim();
+  const r = await fetch('/api/accounts/'+_eaEditId, {method:'PUT',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if(r.ok){ closeEditAccount(); maRefresh(); }
+  else fmsAlert('Save failed: '+await r.text());
 });
 el('maSelectAll').addEventListener('change', function(){
   const on = this.checked;
@@ -445,6 +523,7 @@ el('maModal').addEventListener('click', function(e){ if(e.target===el('maModal')
 
 /* auto-open Manage Groups when the Accounts page is opened */
 openManageGroups();
+el('mgToolbarBtn').addEventListener('click', openManageGroups);
 })();
 </script>
 {% endblock %}
