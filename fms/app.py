@@ -332,9 +332,23 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     @app.get("/api/accounts")
     def api_list_accounts(group_id: int | None = None):
         rows = accounts_mod.list_accounts(db, group_id)
-        # Never expose encrypted blobs via the API.
-        return [{k: v for k, v in r.items() if not k.endswith("_enc")}
-                for r in rows]
+        out = []
+        for r in rows:
+            # Never expose encrypted blobs via the API.
+            d = {k: v for k, v in r.items() if not k.endswith("_enc")}
+            d["has_password"] = bool(r.get("password_enc"))
+            d["has_cookie"] = bool(r.get("cookie_enc"))
+            d["proxy_text"] = None
+            d["proxy_status"] = None  # True working / False dead / None unknown
+            if r.get("proxy_id"):
+                prow = db.fetchone("SELECT host, port, working FROM proxies"
+                                   " WHERE id = ?", (r["proxy_id"],))
+                if prow:
+                    d["proxy_text"] = f"{prow['host']}:{prow['port']}"
+                    d["proxy_status"] = (None if prow["working"] is None
+                                         else bool(prow["working"]))
+            out.append(d)
+        return out
 
     @app.post("/api/accounts")
     def api_add_account(data: AccountIn):

@@ -33,14 +33,6 @@
   {% endfor %}
 </table>
 
-<h2>Block types</h2>
-<table>
-  <tr><th>Type</th><th>Parameters</th></tr>
-  {% for t, params in block_types.items() %}
-  <tr><td><code>{{ t }}</code></td>
-      <td>{% for p, d in params.items() %}<code>{{ p }}</code>={{ d[0] }} {% endfor %}</td></tr>
-  {% endfor %}
-</table>
 {% endblock %}
 {% block scripts %}
 <script>

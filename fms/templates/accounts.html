@@ -1,208 +1,24 @@
 {% extends "base.html" %}
-{% block title %}— Accounts<div id="agModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
-  <div style="background:var(--card);border-radius:12px;max-width:640px;width:94%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#4a5fd0;border-radius:12px 12px 0 0;color:#fff">
-      <b style="font-size:19px" id="agTitle">Add Group</b>
-      <button onclick="closeAddGroup()" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">X</button>
-    </div>
-    <div style="padding:18px">
-      <div style="margin-bottom:14px"><label><b>Group Name</b></label><br>
-        <input id="agName" style="width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px" placeholder="e.g. Plush 4"></div>
-      <div style="margin-bottom:14px"><label><b>Products</b> <span class="muted">(select products for this group)</span></label><br>
-        <select id="agProducts" multiple size="6" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px"></select></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-        <button type="button" class="btn" onclick="openManageAcctsFromGroup()">Manage Accounts</button>
-        <button class="btn" onclick="closeAddGroup()">Cancel</button>
-        <button class="btn" id="agSave" onclick="agSave()" style="background:#22c55e;color:#fff;border:none">Save</button>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-let _agEditId = null;
-async function openManageGroups(e){ if(e) e.preventDefault(); document.getElementById('mgModal').style.display='flex'; await mgLoad(); }
-function closeManageGroups(){ document.getElementById('mgModal').style.display='none'; location.reload(); }
-  if(!groups.length) tb.innerHTML='<tr><td colspan="7" style="padding:22px;text-align:center" class="muted">No groups yet — press + to add one.</td></tr>';
-}
-async function mgShowAdd(id, name){ _agEditId = id||null;
-  document.getElementById('agTitle').textContent = id ? 'Edit Group' : 'Add Group';
-  if(id && !name){
-    try {
-      const groups = await (await fetch('/api/groups')).json();
-      const g = groups.find(x=>x.id===id);
-      if(g) name = g.name;
-    } catch(e){}
-  }
-  document.getElementById('agName').value = name||'';
-  agLoadProducts(id); document.getElementById('agModal').style.display='flex'; }
-function closeAddGroup(){ document.getElementById('agModal').style.display='none'; location.reload(); }
-function openManageAcctsFromGroup(){
-  if(!_agEditId){ fmsAlert('Pehle group ko Save karein, phir accounts add karein.'); return; }
-  const gname = document.getElementById('agName').value;
-  document.getElementById('agModal').dataset.wasOpen = '1';
-  openManageAccts(_agEditId, gname);
-}
-async function agLoadProducts(gid){
-  const sel = document.getElementById('agProducts'); sel.innerHTML='';
-  const prods = await (await fetch('/api/products')).json();
-  let assigned = [];
-  if(gid){ try{ assigned = await (await fetch('/api/groups/'+gid+'/products')).json(); }catch(e){} }
-  const aset = new Set((assigned||[]).map(p=>p.id));
-  for(const pr of prods){ const o=document.createElement('option'); o.value=pr.id; o.textContent=pr.name||('Product '+pr.id); if(aset.has(pr.id)) o.selected=true; sel.appendChild(o); }
-}
-async function agSave(){
-  const name = document.getElementById('agName').value.trim();
-  if(!name){ fmsAlert('Please enter a group name.'); return; }
-  let gid = _agEditId;
-  if(!gid){
-    const fd = new FormData(); fd.append('name', name);
-    const r = await fetch('/api/groups', {method:'POST', body:fd, redirect:'manual'});
-    const groups = await (await fetch('/api/groups')).json();
-    const g = groups.find(x=>x.name===name); gid = g ? g.id : null;
-  } else {
-    const fd = new FormData(); fd.append('name', name);
-    await fetch('/api/groups/'+gid, {method:'PUT', body:fd});
-  }
-  if(gid){
-    const pids = Array.from(document.getElementById('agProducts').selectedOptions).map(o=>parseInt(o.value));
-    await fetch('/api/groups/'+gid+'/products', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({product_ids:pids})});
-  }
-  closeAddGroup();
-}
-async function mgClone(id, name){
-  const nn = prompt('Clone group name:', name+' (copy)'); if(nn===null) return;
-  const fd = new FormData(); if(nn) fd.append('new_name', nn);
-  await fetch('/api/groups/'+id+'/clone', {method:'POST', body:fd}); mgLoad();
-}
-async function mgDelete(id, name){
-  if(!await fmsConfirm('Delete group "'+name+'"? Its accounts will be removed.')) return;
-  await fetch('/api/groups/'+id, {method:'DELETE'}); mgLoad();
-}
-document.getElementById('agModal').addEventListener('click', e=>{ if(e.target.id==='agModal') closeAddGroup(); });
-</script>
-
-<!-- Manage Accounts popup (FBM Robo style) -->
-<div id="maModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center">
-  <div style="background:var(--card);border-radius:12px;max-width:800px;width:95%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,.5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#4a5fd0;border-radius:12px 12px 0 0;color:#fff">
-      <b style="font-size:19px" id="maTitle">Manage Accounts</b>
-      <button onclick="closeManageAccts()" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">X</button>
-    </div>
-    <div style="padding:16px;overflow-y:auto">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-        <button class="btn" onclick="maShowSingle()">Add Single Account</button>
-        <button class="btn" onclick="maShowBulk()">Add Bulk Accounts</button>
-        <button class="btn" onclick="document.getElementById('maFile').click()">Import from File</button>
-        <input type="file" id="maFile" accept=".txt" style="display:none" onchange="maImportFile(this)">
-      </div>
-      <div id="maSingleForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:8px">
-        <b>Add Single Account</b><br><br>
-        <input id="maEmail" placeholder="Email or phone" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)">
-        <input id="maPass" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)">
-        <button class="btn" onclick="maAddSingle()">Add</button>
-      </div>
-      <div id="maBulkForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:8px">
-        <b>Add Bulk Accounts</b> <span class="muted">(one per line: email:password or email:password:2fa)</span><br><br>
-        <textarea id="maBulkText" rows="5" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)" placeholder="email1:password1&#10;email2:password2"></textarea><br><br>
-        <button class="btn" onclick="maAddBulk()">Add Accounts</button>
-      </div>
-      <div style="margin-bottom:10px"><b>Accounts in this group: <span id="maCount">0</span></b></div>
-      <div id="maList" style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px"></div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
-        <button class="btn" onclick="closeManageAccts()">Cancel</button>
-        <button class="btn" onclick="closeManageAccts()" style="background:#22c55e;color:#fff;border:none">Save</button>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-let _maGroupId = null;
-function openManageAccts(gid, gname){
-  _maGroupId = gid;
-  document.getElementById('maTitle').textContent = 'Manage Accounts - ' + (gname||'');
-  document.getElementById('maSingleForm').style.display='none';
-  document.getElementById('maBulkForm').style.display='none';
-  document.getElementById('agModal').style.display='none';
-  document.getElementById('maModal').style.display='flex';
-  maLoadList();
-}
-function closeManageAccts(){
-  document.getElementById('maModal').style.display='none';
-  // Return to Add Group dialog if it was open
-  if(_agEditId !== undefined && document.getElementById('agModal')){
-    const agm = document.getElementById('agModal');
-    if(agm.dataset.wasOpen === '1'){ agm.style.display='flex'; }
-  }
-}
-async function maLoadList(){
-  const accs = await (await fetch('/api/accounts?group_id='+_maGroupId)).json();
-  const list = document.getElementById('maList');
-  document.getElementById('maCount').textContent = accs.length;
-  list.innerHTML = accs.length ? '' : '<p class="muted" style="padding:10px">No accounts yet. Add some above.</p>';
-  accs.forEach((a,i)=>{
-    const d = document.createElement('div');
-    d.style.cssText = 'padding:8px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center';
-    d.innerHTML = '<span>'+(i+1)+'. '+(a.label||a.email||'Account')+'</span><button onclick="maDelete('+a.id+')" style="background:none;border:none;cursor:pointer">🗑️</button>';
-    list.appendChild(d);
-  });
-}
-function maShowSingle(){
-  document.getElementById('maSingleForm').style.display='block';
-  document.getElementById('maBulkForm').style.display='none';
-}
-function maShowBulk(){
-  document.getElementById('maBulkForm').style.display='block';
-  document.getElementById('maSingleForm').style.display='none';
-}
-async function maAddSingle(){
-  const email = document.getElementById('maEmail').value.trim();
-  const pass = document.getElementById('maPass').value;
-  if(!email || !pass){ fmsAlert('Enter email and password.'); return; }
-  await fetch('/api/accounts', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({group_id:_maGroupId, label:email, password:pass})});
-  document.getElementById('maEmail').value=''; document.getElementById('maPass').value='';
-  maLoadList();
-}
-async function maAddBulk(){
-  const text = document.getElementById('maBulkText').value.trim();
-  if(!text){ fmsAlert('Enter at least one account.'); return; }
-  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('text', text);
-  const r = await (await fetch('/api/accounts/bulk', {method:'POST', body:fd})).json();
-  fmsAlert('Added: '+r.added + (r.errors && r.errors.length ? '\nErrors: '+r.errors.length : ''));
-  document.getElementById('maBulkText').value='';
-  maLoadList();
-}
-async function maImportFile(inp){
-  if(!inp.files.length) return;
-  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('file', inp.files[0]);
-  const r = await (await fetch('/api/accounts/import', {method:'POST', body:fd})).json();
-  fmsAlert('Added: '+r.added + (r.errors && r.errors.length ? '\nErrors: '+r.errors.length : ''));
-  inp.value=''; maLoadList();
-}
-async function maDelete(aid){
-  if(!await fmsConfirm('Delete this account?')) return;
-  await fetch('/api/accounts/'+aid, {method:'DELETE'});
-  maLoadList();
-}
-document.getElementById('maModal').addEventListener('click', e=>{ if(e.target.id==='maModal') closeManageAccts(); });
-</script>
-
-{% endblock %}
+{% block title %}— Accounts{% endblock %}
 {% block content %}
 <h1>Accounts</h1>
+<p class="muted">Your account groups, FBM Robo style. The Manage Groups window opens automatically.</p>
+<div class="row" style="margin-top:12px">
+  <button class="btn" onclick="openManageGroups()" style="font-size:16px">📁 Manage Groups</button>
+</div>
 
-<!-- FBM Robo-style Manage Groups popup -->
+<!-- ============ Manage Groups popup (FBM Robo style) ============ -->
 <div id="mgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:8px;max-width:900px;width:94%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5)">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:#4a5fd0;border-radius:8px 8px 0 0;color:#fff">
       <b style="font-size:22px">Manage Groups</b>
       <div style="display:flex;gap:8px">
-        <button onclick="mgShowAdd()" title="Add Group" style="background:#fff;border:none;border-radius:6px;font-size:20px;width:38px;height:38px;cursor:pointer;font-weight:bold">+</button>
-        <button onclick="closeManageGroups()" title="Close" style="background:#e53e3e;color:#fff;border:none;border-radius:6px;font-size:18px;width:38px;height:38px;cursor:pointer">✕</button>
+        <button id="mgAddBtn" title="Add Group" style="background:#fff;border:none;border-radius:6px;font-size:22px;width:38px;height:38px;cursor:pointer;font-weight:bold;color:#333">+</button>
+        <button id="mgCloseBtn" title="Close" style="background:#e53e3e;color:#fff;border:none;border-radius:6px;font-size:18px;width:38px;height:38px;cursor:pointer">✕</button>
       </div>
     </div>
     <table style="width:100%;border-collapse:collapse;background:#fff;color:#333">
-      <tr style="background:#4a5fd0;color:#fff">
+      <thead><tr style="background:#4a5fd0;color:#fff">
         <th style="padding:12px;text-align:left">Id</th>
         <th style="padding:12px;text-align:left">Group Name</th>
         <th style="padding:12px;text-align:center">Accounts</th>
@@ -211,345 +27,388 @@ document.getElementById('maModal').addEventListener('click', e=>{ if(e.target.id
         <th style="padding:12px;text-align:center">Clone</th>
         <th style="padding:12px;text-align:center">Edit</th>
         <th style="padding:12px;text-align:center">Delete</th>
-      </tr>
+      </tr></thead>
       <tbody id="mgBody"></tbody>
     </table>
   </div>
 </div>
-<script>
-async function mgLoad(){
-  const groups = await (await fetch('/api/groups')).json();
-  const tb = document.getElementById('mgBody'); tb.innerHTML='';
-  for(const g of groups){
-    const tr = document.createElement('tr'); tr.style.borderBottom='1px solid #eee';
-    const nm = (g.name||'').replace(/'/g,'');
-    tr.innerHTML =
-      '<td style="padding:12px">'+g.id+'</td>'+
-      '<td style="padding:12px">'+(g.name||'')+'</td>'+
-      '<td style="padding:12px;text-align:center">'+(g.account_count||0)+'</td>'+
-      '<td style="padding:12px;text-align:center">'+(g.product_count||0)+'</td>'+
-      '<td style="padding:12px;text-align:center"><button onclick="openManageAccts('+g.id+',\''+nm+'\')" title="Manage Accounts" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
-      '<td style="padding:12px;text-align:center"><button onclick="cloneGroup('+g.id+',\''+nm+'\')" title="Clone" style="background:none;border:none;cursor:pointer;font-size:20px">📋</button></td>'+
-      '<td style="padding:12px;text-align:center"><button onclick="mgShowAdd('+g.id+')" title="Edit" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
-      '<td style="padding:12px;text-align:center"><button onclick="delGroup('+g.id+')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:20px">🗑️</button></td>';
-    tb.appendChild(tr);
-  }
-  if(!groups.length){ tb.innerHTML='<tr><td colspan="8" style="padding:20px;text-align:center;color:#999">No groups yet. Click + to add one.</td></tr>'; }
-}
-document.getElementById('mgModal').addEventListener('click', e=>{ if(e.target.id==='mgModal') closeManageGroups(); });
-</script>
 
-<h1>Accounts</h1>
-
-<h2>Manage Groups</h2>
-<table>
-  <tr><th>Id</th><th>Group Name</th><th>Accounts</th><th>Product Counts</th>
-      <th>Manage Accounts</th><th>Clone</th><th>Edit</th><th>Delete</th></tr>
-  {% for g in groups %}
-  <tr>
-    <td>{{ g.id }}</td>
-    <td>{{ g.name }}</td>
-    <td>{{ g.account_count }}</td>
-    <td>{{ g.product_count }}</td>
-    <td><a href="/accounts?group_id={{ g.id }}" title="Manage accounts">✏️</a></td>
-    <td><button onclick="cloneGroup({{ g.id }}, '{{ g.name|escape }}')" title="Clone group">📋</button></td>
-    <td><button onclick="mgShowAdd({{ g.id }})" title="Edit">✏️</button></td>
-    <td><button onclick="delGroup({{ g.id }})" class="danger" title="Delete">🗑️</button></td>
-  </tr>
-  {% else %}
-  <tr><td colspan="8" class="muted">No groups yet.</td></tr>
-  {% endfor %}
-</table>
-<div class="row">
-  <button class="btn" onclick="mgShowAdd()" style="font-size:16px">+ Add Group</button>
-</div>
-
-{% if group_id %}
-<h2>Group products <span class="muted">— {{ groups|selectattr('id','equalto',group_id)|map(attribute='name')|first }}</span></h2>
-<div class="wide">
-  <div class="checklist" id="groupProducts">
-    {% for p in products %}
-    <label class="check"><input type="checkbox" value="{{ p.id }}"
-      {% if p.id in group_products|map(attribute='id') %}checked{% endif %}> {{ p.name }}</label>
-    {% endfor %}
-  </div>
-  <button onclick="saveGroupProducts({{ group_id }})">Save group products</button>
-</div>
-
-<h2>Accounts <span class="muted">— {{ groups|selectattr('id','equalto',group_id)|map(attribute='name')|first }}</span></h2>
-<div class="row wrap">
-  <button onclick="showSingle()">Add Single Account</button>
-  <button onclick="showBulk()">Add Bulk Accounts</button>
-  <button onclick="document.getElementById('importFile').click()">Import from File</button>
-  <input type="file" id="importFile" accept=".txt" style="display:none" onchange="importFile(this)">
-  <button onclick="removeSelected()" class="danger">Remove Selected</button>
-  <button onclick="proxiesToSelected()">Add Proxies to Selected</button>
-  <button onclick="removeProxiesSelected()">Remove Proxies from Selected</button>
-  <button onclick="checkProxyStatus()">Check Proxy Status</button>
-  <button onclick="removeDeadProxies()">Remove Not Working Proxies</button>
-</div>
-
-<div id="singleBox" class="wide" style="display:none">
-  <h3>Add Single Account</h3>
-  <form id="singleForm" class="grid-form">
-    <input type="hidden" name="group_id" value="{{ group_id }}">
-    <label>Email / phone <input name="label" required></label>
-    <label>Password <input name="password" type="password"></label>
-    <label>Browser <input name="browser" value="chrome"></label>
-    <label>Cookie (optional) <input name="cookie"></label>
-    <label>2FA secret (optional) <input name="twofa_secret"></label>
-    <label>Anti-detect Profile ID (optional) <input name="ix_profile_id" placeholder="empty = auto-create on first launch"></label>
-    <button type="submit">Add account</button>
-  </form>
-</div>
-
-<div id="bulkBox" class="wide" style="display:none">
-  <h3>Add Bulk Accounts</h3>
-  <form id="bulkForm" class="grid-form">
-    <input type="hidden" name="group_id" value="{{ group_id }}">
-    <label class="wide">One per line: <code>login;password;True|False;Browser</code>
-      <textarea name="text" rows="5" cols="70" placeholder="user@gmail.com;secret123;True;Chrome&#10;+447700900123;pass456;False;Chrome"></textarea>
-    </label>
-    <span class="muted">True/False = active flag — <b>False</b> keeps the ID inactive (never opened). Login can be email or phone number. Browser defaults to Chrome.</span>
-    <button type="submit">Add accounts</button>
-    <span id="bulkResult" class="muted"></span>
-  </form>
-</div>
-
-<div id="proxyBox" class="wide" style="display:none">
-  <h3>🌐 Proxy for <span id="proxyAccLabel"></span></h3>
-  <div class="grid-form">
-    <label class="wide">One per line — format: <code>IP:port</code> or <code>IP:port:username:password</code>
-      <textarea id="proxyText" rows="4" cols="70" placeholder="192.168.1.1:8080&#10;10.0.0.5:3128:myuser:mypass"></textarea>
-    </label>
-    <span>
-      <button onclick="saveProxy()">💾 Save Proxy</button>
-      <button onclick="checkProxyWorking()">🔍 Check Working Proxy</button>
-      <button onclick="clearProxy()" class="danger">Clear Proxy</button>
-      <button onclick="document.getElementById('proxyBox').style.display='none'">Close</button>
-    </span>
-    <span id="proxyResult" class="muted"></span>
+<!-- ============ Add / Edit Group popup ============ -->
+<div id="agModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--card);border-radius:12px;max-width:640px;width:94%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,.5)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:#4a5fd0;border-radius:12px 12px 0 0;color:#fff">
+      <b style="font-size:19px" id="agTitle">Add Group</b>
+      <button id="agCloseBtn" style="background:#e53e3e;color:#fff;border:none;border-radius:8px;font-size:16px;width:34px;height:34px;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:18px">
+      <div style="margin-bottom:14px"><label><b>Group Name</b></label><br>
+        <input id="agName" style="width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px" placeholder="e.g. Plush 4"></div>
+      <div style="margin-bottom:14px"><label><b>Products</b> <span class="muted">(select products for this group)</span></label><br>
+        <select id="agProducts" multiple size="6" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin-top:5px"></select></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn" id="agManageAcctsBtn">Manage Accounts</button>
+        <button type="button" class="btn" id="agCancelBtn">Cancel</button>
+        <button type="button" class="btn" id="agSaveBtn" style="background:#22c55e;color:#fff;border:none">Save</button>
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="row">
-  <label class="check"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)"> Select All (<span id="selCount">0</span> selected)</label>
-  <input id="searchBox" placeholder="search..." oninput="filterRows()">
+<!-- ============ Manage Accounts popup (FBM Robo style) ============ -->
+<div id="maModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:8px;max-width:980px;width:96%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,.5);color:#333">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#4a5fd0;border-radius:8px 8px 0 0;color:#fff">
+      <b style="font-size:20px" id="maTitle">Manage Accounts</b>
+      <button id="maCloseBtn" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:16px 20px;overflow-y:auto">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn" id="maSingleBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Add Single Account</button>
+        <button class="btn" id="maBulkBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Add Bulk Accounts</button>
+        <button class="btn" id="maImportBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Import from File</button>
+        <button class="btn" id="maRemoveSelBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Remove Selected</button>
+        <button class="btn" id="maAddProxyBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Add Proxies to Selected</button>
+        <button class="btn" id="maRemProxyBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Remove Proxies from Selected</button>
+        <button class="btn" id="maCheckProxyBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Check Proxy Status</button>
+        <button class="btn" id="maRemDeadBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 18px;cursor:pointer">Remove Not Working Proxies</button>
+        <input type="file" id="maFile" accept=".txt" style="display:none">
+      </div>
+      <div id="maSingleForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
+        <b>Add Single Account</b><br><br>
+        <input id="maEmail" placeholder="Email or phone" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ccc;border-radius:6px">
+        <input id="maPass" type="password" placeholder="Password" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ccc;border-radius:6px">
+        <button class="btn" id="maAddSingleGo" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer">Add</button>
+      </div>
+      <div id="maBulkForm" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #ddd;border-radius:8px;background:#fafafa">
+        <b>Add Bulk Accounts</b> <span class="muted">(one per line: <code>login;password;True|False;Browser</code>)</span><br><br>
+        <textarea id="maBulkText" rows="5" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="user@gmail.com;secret123;True;Chrome"></textarea><br><br>
+        <button class="btn" id="maAddBulkGo" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer">Add Accounts</button>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;border:1px solid #eee;border-radius:8px;padding:10px 12px">
+        <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="maSelectAll"> Select All (<span id="maSelCount">0</span> selected)</label>
+        <input id="maSearch" placeholder="search..." style="flex:1;padding:8px;border:1px solid #ccc;border-radius:6px;max-width:420px">
+      </div>
+      <div style="overflow:auto;max-height:340px;border:1px solid #eee;border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;background:#fff;color:#333;min-width:900px">
+        <thead><tr style="background:#f5f6fa">
+          <th style="padding:10px"></th><th style="padding:10px">#</th><th style="padding:10px;text-align:left">Email</th>
+          <th style="padding:10px;text-align:left">Password</th><th style="padding:10px;text-align:left">Browser</th>
+          <th style="padding:10px;text-align:left">Anti-detect Profile ID</th><th style="padding:10px">Active</th>
+          <th style="padding:10px;text-align:left">Proxy</th><th style="padding:10px;text-align:left">Proxy Status</th>
+          <th style="padding:10px;text-align:left">Cookie</th>
+        </tr></thead>
+        <tbody id="maBody"></tbody>
+      </table>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" id="maCancelBtn" style="border:1px solid #ccc;background:#fff;border-radius:6px;padding:10px 26px;cursor:pointer">Cancel</button>
+        <button class="btn" id="maSaveBtn" style="background:#4a5fd0;color:#fff;border:none;border-radius:6px;padding:10px 26px;cursor:pointer">Save</button>
+      </div>
+    </div>
+  </div>
 </div>
-
-<table id="acctTable">
-  <tr><th></th><th>#</th><th>Email</th><th>Password</th><th>Browser</th>
-      <th>Anti-detect Profile ID</th><th>Active</th><th>Proxy</th><th>Proxy Status</th><th>Cookie</th><th></th></tr>
-  {% for a in accounts %}
-  <tr data-label="{{ a.label|lower }}">
-    <td><input type="checkbox" class="rowSel" value="{{ a.id }}" onchange="updateSelCount()"></td>
-    <td>{{ a.id }}</td>
-    <td>{{ a.label }}</td>
-    <td title="Password is stored encrypted">{{ '••••••' if a.has_password else '—' }}</td>
-    <td>{{ a.browser or 'chrome' }}</td>
-    <td>{{ a.ix_profile_id or '—' }}</td>
-    <td><label class="switch"><input type="checkbox" {% if a.active %}checked{% endif %} onchange="toggleAcc({{ a.id }})"><span class="slider"></span></label></td>
-    <td>{{ a.proxy_text or '—' }}</td>
-    <td>{% if a.proxy_status is none %}—{% elif a.proxy_status %}<span class="pill active">Working</span>{% else %}<span class="pill failed">Not working</span>{% endif %}</td>
-    <td>{{ 'set' if a.has_cookie else '—' }}</td>
-    <td class="actions">
-      <button onclick="editProxy({{ a.id }}, '{{ a.label }}')" title="Set/edit proxy">🌐</button>
-      <button onclick="editCookie({{ a.id }})" title="Set/edit cookie">🍪</button>
-      <button onclick="editIx({{ a.id }}, '{{ a.ix_profile_id or '' }}')" title="Anti-detect Profile ID">🛡️</button>
-      <button onclick="delAcc({{ a.id }})" class="danger" title="Delete">🗑️</button>
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="11" class="muted">No accounts in this group yet.</td></tr>
-  {% endfor %}
-</table>
-<p class="muted">Login is email/phone + password by default. Cookie login and 2FA are optional extras per account.</p>
-{% endif %}
 {% endblock %}
 {% block scripts %}
 <script>
-const GID = {{ group_id or 'null' }};
-function selectedIds(){
-  return [...document.querySelectorAll('.rowSel:checked')].map(c => parseInt(c.value));
+(function(){
+"use strict";
+/* ---------- helpers ---------- */
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function el(id){ return document.getElementById(id); }
+async function getJSON(url){ const r = await fetch(url); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+
+let groupsCache = [];
+let _agEditId = null;      /* group being added/edited (null = new) */
+let _maGroupId = null;     /* group open in Manage Accounts */
+let _maReturnToAg = false; /* Manage Accounts opened from Add Group -> return there */
+
+/* ================= Manage Groups ================= */
+function openManageGroups(){ el('mgModal').style.display='flex'; mgLoad(); }
+function closeManageGroups(){ el('mgModal').style.display='none'; }
+
+async function mgLoad(){
+  try { groupsCache = await getJSON('/api/groups'); }
+  catch(e){ fmsAlert('Could not load groups: '+e.message); return; }
+  const tb = el('mgBody'); tb.innerHTML='';
+  if(!groupsCache.length){
+    tb.innerHTML='<tr><td colspan="8" style="padding:20px;text-align:center;color:#999">No groups yet. Click + to add one.</td></tr>';
+    return;
+  }
+  for(const g of groupsCache){
+    const tr = document.createElement('tr');
+    tr.style.borderBottom='1px solid #eee';
+    tr.innerHTML =
+      '<td style="padding:12px">'+g.id+'</td>'+
+      '<td style="padding:12px">'+esc(g.name)+'</td>'+
+      '<td style="padding:12px;text-align:center">'+(g.account_count||0)+'</td>'+
+      '<td style="padding:12px;text-align:center">'+(g.product_count||0)+'</td>'+
+      '<td style="padding:12px;text-align:center"><button data-act="ma" data-id="'+g.id+'" title="Manage Accounts" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
+      '<td style="padding:12px;text-align:center"><button data-act="clone" data-id="'+g.id+'" title="Clone" style="background:none;border:none;cursor:pointer;font-size:20px">📋</button></td>'+
+      '<td style="padding:12px;text-align:center"><button data-act="edit" data-id="'+g.id+'" title="Edit" style="background:none;border:none;cursor:pointer;font-size:20px">✏️</button></td>'+
+      '<td style="padding:12px;text-align:center"><button data-act="del" data-id="'+g.id+'" title="Delete" style="background:none;border:none;cursor:pointer;font-size:20px">🗑️</button></td>';
+    tb.appendChild(tr);
+  }
 }
-function updateSelCount(){
-  document.getElementById('selCount').textContent = selectedIds().length;
+function groupName(id){ const g = groupsCache.find(function(x){return x.id===id;}); return g ? g.name : ''; }
+
+el('mgBody').addEventListener('click', async function(e){
+  const b = e.target.closest('button[data-act]'); if(!b) return;
+  const id = parseInt(b.dataset.id, 10), act = b.dataset.act;
+  if(act==='ma'){ openManageAccts(id, groupName(id)); }
+  else if(act==='edit'){ mgShowAdd(id); }
+  else if(act==='clone'){
+    const nn = prompt('Clone group name:', groupName(id)+' (copy)');
+    if(nn===null) return;
+    const fd = new FormData(); if(nn.trim()) fd.append('new_name', nn.trim());
+    const r = await fetch('/api/groups/'+id+'/clone', {method:'POST', body:fd});
+    if(r.ok) mgLoad(); else fmsAlert('Clone failed: '+await r.text());
+  }
+  else if(act==='del'){
+    if(!await fmsConfirm('Delete group "'+groupName(id)+'"? Its accounts will be removed.')) return;
+    const r = await fetch('/api/groups/'+id, {method:'DELETE'});
+    if(r.ok) mgLoad(); else fmsAlert('Delete failed: '+await r.text());
+  }
+});
+el('mgAddBtn').addEventListener('click', function(){ mgShowAdd(); });
+el('mgCloseBtn').addEventListener('click', closeManageGroups);
+el('mgModal').addEventListener('click', function(e){ if(e.target===el('mgModal')) closeManageGroups(); });
+
+/* ================= Add / Edit Group ================= */
+async function mgShowAdd(id){
+  _agEditId = id||null;
+  el('agTitle').textContent = id ? 'Edit Group' : 'Add Group';
+  let name = '';
+  if(id){
+    try {
+      const groups = await getJSON('/api/groups');
+      const g = groups.find(function(x){return x.id===id;});
+      if(g) name = g.name;
+    } catch(e){}
+  }
+  el('agName').value = name;
+  await agLoadProducts(id);
+  el('mgModal').style.display='none';
+  el('agModal').style.display='flex';
 }
-function toggleSelectAll(box){
-  document.querySelectorAll('.rowSel').forEach(c => c.checked = box.checked);
-  updateSelCount();
+async function agLoadProducts(gid){
+  const sel = el('agProducts'); sel.innerHTML='';
+  const prods = await getJSON('/api/products');
+  let assigned = [];
+  if(gid){ try{ assigned = await getJSON('/api/groups/'+gid+'/products'); }catch(e){} }
+  const aset = new Set((assigned||[]).map(function(p){return p.id;}));
+  for(const pr of prods){
+    const o=document.createElement('option');
+    o.value=pr.id; o.textContent=pr.name||('Product '+pr.id);
+    if(aset.has(pr.id)) o.selected=true;
+    sel.appendChild(o);
+  }
 }
-function filterRows(){
-  const q = document.getElementById('searchBox').value.toLowerCase();
-  document.querySelectorAll('#acctTable tr[data-label]').forEach(r => {
+function agSelectedPids(){
+  return Array.from(el('agProducts').selectedOptions).map(function(o){return parseInt(o.value,10);});
+}
+async function agEnsureSaved(){
+  /* Make sure the group exists in the DB (draft save) so Manage Accounts can attach to it. */
+  const name = el('agName').value.trim();
+  if(!name){ fmsAlert('Please enter a group name first.'); return null; }
+  let gid = _agEditId;
+  if(!gid){
+    const fd = new FormData(); fd.append('name', name);
+    await fetch('/api/groups', {method:'POST', body:fd, redirect:'manual'});
+    const groups = await getJSON('/api/groups');
+    const g = groups.find(function(x){return x.name===name;});
+    gid = g ? g.id : null;
+    _agEditId = gid;
+  } else {
+    const fd = new FormData(); fd.append('name', name);
+    await fetch('/api/groups/'+gid, {method:'PUT', body:fd});
+  }
+  if(gid){
+    await fetch('/api/groups/'+gid+'/products', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({product_ids: agSelectedPids()})});
+  }
+  return gid;
+}
+async function agSave(){
+  const gid = await agEnsureSaved();
+  if(!gid) return;
+  closeAddGroup();
+  openManageGroups();
+}
+function closeAddGroup(){ el('agModal').style.display='none'; }
+el('agSaveBtn').addEventListener('click', agSave);
+el('agCancelBtn').addEventListener('click', function(){ closeAddGroup(); openManageGroups(); });
+el('agCloseBtn').addEventListener('click', function(){ closeAddGroup(); openManageGroups(); });
+el('agModal').addEventListener('click', function(e){ if(e.target===el('agModal')){ closeAddGroup(); openManageGroups(); } });
+el('agManageAcctsBtn').addEventListener('click', async function(){
+  const gid = await agEnsureSaved();
+  if(!gid) return;
+  _maReturnToAg = true;
+  el('agModal').style.display='none';
+  openManageAccts(gid, el('agName').value.trim());
+});
+
+/* ================= Manage Accounts ================= */
+function openManageAccts(gid, gname){
+  _maGroupId = gid;
+  el('maTitle').textContent = 'Manage Accounts - '+(gname||'');
+  el('maSingleForm').style.display='none';
+  el('maBulkForm').style.display='none';
+  el('maSearch').value='';
+  el('maSelectAll').checked=false;
+  el('mgModal').style.display='none';
+  el('maModal').style.display='flex';
+  maRefresh();
+}
+function closeManageAccts(){
+  el('maModal').style.display='none';
+  _maGroupId = null;
+  if(_maReturnToAg){
+    _maReturnToAg = false;
+    mgShowAdd(_agEditId); /* return to Add Group with state preserved */
+  } else {
+    openManageGroups();
+  }
+}
+function maSelectedIds(){
+  return Array.from(document.querySelectorAll('#maBody .rowSel:checked')).map(function(c){return parseInt(c.value,10);});
+}
+function maUpdateSelCount(){ el('maSelCount').textContent = maSelectedIds().length; }
+async function maRefresh(){
+  if(!_maGroupId) return;
+  let accs = [];
+  try { accs = await getJSON('/api/accounts?group_id='+_maGroupId); }
+  catch(e){ fmsAlert('Could not load accounts: '+e.message); return; }
+  const tb = el('maBody'); tb.innerHTML='';
+  if(!accs.length){
+    tb.innerHTML='<tr><td colspan="10" style="padding:18px;text-align:center;color:#999">No accounts yet. Add some above.</td></tr>';
+  }
+  accs.forEach(function(a, i){
+    const tr = document.createElement('tr');
+    tr.style.borderBottom='1px solid #eee';
+    tr.dataset.label = String(a.label||'').toLowerCase();
+    const pw = a.has_password ? '••••••' : '—';
+    const px = a.proxy_text || '—';
+    const pxs = (a.proxy_status===null||a.proxy_status===undefined) ? '—'
+      : (a.proxy_status ? '<span style="background:#e6f7e6;color:#1a7f1a;border-radius:10px;padding:3px 10px;font-size:12px">Working</span>'
+                        : '<span style="background:#fde8e8;color:#b91c1c;border-radius:10px;padding:3px 10px;font-size:12px">Not working</span>');
+    const knob = a.active ? 'right:2px' : 'left:2px';
+    tr.innerHTML =
+      '<td style="padding:10px;text-align:center"><input type="checkbox" class="rowSel" value="'+a.id+'"></td>'+
+      '<td style="padding:10px;text-align:center">'+(i+1)+'</td>'+
+      '<td style="padding:10px">'+esc(a.label)+'</td>'+
+      '<td style="padding:10px">'+pw+'</td>'+
+      '<td style="padding:10px">'+esc(a.browser||'chrome')+'</td>'+
+      '<td style="padding:10px">'+esc(a.ix_profile_id||'—')+'</td>'+
+      '<td style="padding:10px;text-align:center"><button data-tgl="'+a.id+'" title="Toggle active" style="border:none;cursor:pointer;border-radius:12px;width:44px;height:24px;background:'+(a.active?'#22c55e':'#ccc')+';position:relative">'+
+        '<span style="position:absolute;top:2px;'+knob+';width:20px;height:20px;border-radius:50%;background:#fff"></span></button></td>'+
+      '<td style="padding:10px">'+esc(px)+'</td>'+
+      '<td style="padding:10px">'+pxs+'</td>'+
+      '<td style="padding:10px">'+(a.has_cookie?'set':'—')+'</td>';
+    tb.appendChild(tr);
+  });
+  maUpdateSelCount();
+  maFilter();
+}
+function maFilter(){
+  const q = el('maSearch').value.toLowerCase();
+  document.querySelectorAll('#maBody tr[data-label]').forEach(function(r){
     r.style.display = r.dataset.label.includes(q) ? '' : 'none';
   });
 }
-function showSingle(){ document.getElementById('singleBox').style.display=''; document.getElementById('bulkBox').style.display='none'; }
-function showBulk(){ document.getElementById('bulkBox').style.display=''; document.getElementById('singleBox').style.display='none'; }
-async function cloneGroup(id, name){
-  if(!confirm('Clone group "'+name+'" (accounts + products)?')) return;
-  const r = await fetch('/api/groups/'+id+'/clone', {method:'POST'});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function renameGroup(id, name){
-  const v = prompt('Rename group:', name);
-  if(v === null || !v.trim()) return;
-  const f = new FormData(); f.append('name', v.trim());
-  const r = await fetch('/api/groups/'+id, {method:'PUT', body: f});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function delGroup(id){
-  if(!confirm('Delete group and ALL its accounts?')) return;
-  const r = await fetch('/api/groups/'+id, {method:'DELETE'});
-  if(r.ok) location.href = '/accounts'; else fmsAlert('Failed: '+await r.text());
-}
-async function saveGroupProducts(gid){
-  const ids = [...document.querySelectorAll('#groupProducts input:checked')].map(c => parseInt(c.value));
-  const r = await fetch('/api/groups/'+gid+'/products', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({product_ids: ids})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function toggleAcc(id){
-  const r = await fetch('/api/accounts/'+id+'/toggle', {method:'POST'});
-  if(!r.ok){ fmsAlert('Failed: '+await r.text()); location.reload(); }
-}
-async function delAcc(id){
-  if(!confirm('Delete account #'+id+'?')) return;
-  await fetch('/api/accounts/'+id, {method:'DELETE'});
-  location.reload();
-}
-async function removeSelected(){
-  const ids = selectedIds();
+el('maBody').addEventListener('change', function(e){
+  if(e.target.classList.contains('rowSel')) maUpdateSelCount();
+});
+el('maBody').addEventListener('click', async function(e){
+  const b = e.target.closest('button[data-tgl]'); if(!b) return;
+  const r = await fetch('/api/accounts/'+b.dataset.tgl+'/toggle', {method:'POST'});
+  if(r.ok) maRefresh(); else fmsAlert('Toggle failed: '+await r.text());
+});
+el('maSelectAll').addEventListener('change', function(){
+  const on = this.checked;
+  document.querySelectorAll('#maBody .rowSel').forEach(function(c){c.checked=on;});
+  maUpdateSelCount();
+});
+el('maSearch').addEventListener('input', maFilter);
+el('maSingleBtn').addEventListener('click', function(){ el('maSingleForm').style.display='block'; el('maBulkForm').style.display='none'; });
+el('maBulkBtn').addEventListener('click', function(){ el('maBulkForm').style.display='block'; el('maSingleForm').style.display='none'; });
+el('maImportBtn').addEventListener('click', function(){ el('maFile').click(); });
+el('maFile').addEventListener('change', async function(){
+  if(!this.files.length) return;
+  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('file', this.files[0]);
+  const r = await fetch('/api/accounts/import', {method:'POST', body:fd});
+  const j = await r.json();
+  fmsAlert('Added: '+j.added+(j.errors&&j.errors.length?'\nErrors: '+j.errors.length:''));
+  this.value=''; maRefresh();
+});
+el('maAddSingleGo').addEventListener('click', async function(){
+  const email = el('maEmail').value.trim(), pass = el('maPass').value;
+  if(!email || !pass){ fmsAlert('Enter email and password.'); return; }
+  const r = await fetch('/api/accounts', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({group_id:_maGroupId, label:email, password:pass})});
+  if(r.ok){ el('maEmail').value=''; el('maPass').value=''; maRefresh(); }
+  else fmsAlert('Add failed: '+await r.text());
+});
+el('maAddBulkGo').addEventListener('click', async function(){
+  const text = el('maBulkText').value.trim();
+  if(!text){ fmsAlert('Enter at least one account.'); return; }
+  const fd = new FormData(); fd.append('group_id', _maGroupId); fd.append('text', text);
+  const j = await (await fetch('/api/accounts/bulk', {method:'POST', body:fd})).json();
+  fmsAlert('Added: '+j.added+(j.errors&&j.errors.length?'\nErrors:\n'+j.errors.join('\n'):''));
+  el('maBulkText').value=''; maRefresh();
+});
+el('maRemoveSelBtn').addEventListener('click', async function(){
+  const ids = maSelectedIds();
   if(!ids.length){ fmsAlert('Select at least one account.'); return; }
-  if(!confirm('Delete '+ids.length+' selected account(s)?')) return;
+  if(!await fmsConfirm('Delete '+ids.length+' selected account(s)?')) return;
   const r = await fetch('/api/accounts/delete-selected', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function proxiesToSelected(){
-  const ids = selectedIds();
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids:ids})});
+  if(r.ok) maRefresh(); else fmsAlert('Delete failed: '+await r.text());
+});
+el('maAddProxyBtn').addEventListener('click', async function(){
+  const ids = maSelectedIds();
   if(!ids.length){ fmsAlert('Select at least one account.'); return; }
   const t = prompt('Paste proxies (one per line, host:port or host:port:user:pass):');
-  if(t === null || !t.trim()) return;
+  if(t===null || !t.trim()) return;
   const r = await fetch('/api/accounts/proxies/assign', {method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({account_ids: ids, proxies_text: t})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function removeProxiesSelected(){
-  const ids = selectedIds();
+    body: JSON.stringify({account_ids:ids, proxies_text:t})});
+  if(r.ok) maRefresh(); else fmsAlert('Failed: '+await r.text());
+});
+el('maRemProxyBtn').addEventListener('click', async function(){
+  const ids = maSelectedIds();
   if(!ids.length){ fmsAlert('Select at least one account.'); return; }
   const r = await fetch('/api/accounts/proxies/remove', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function checkProxyStatus(){
-  const ids = selectedIds();
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids:ids})});
+  if(r.ok) maRefresh(); else fmsAlert('Failed: '+await r.text());
+});
+el('maCheckProxyBtn').addEventListener('click', async function(){
+  const ids = maSelectedIds();
   if(!ids.length){ fmsAlert('Select at least one account.'); return; }
-  const r = await fetch('/api/accounts/proxies/check', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
-  const j = await r.json();
-  const lines = j.results.map(x => x.label+': '+(x.working===null?'no proxy':(x.working?'Working':'NOT WORKING — '+x.message)));
-  fmsAlert(lines.join('\n'));
-  location.reload();
-}
-async function removeDeadProxies(){
-  const ids = selectedIds();
+  const j = await (await fetch('/api/accounts/proxies/check', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids:ids})})).json();
+  const lines = (j.results||[]).map(function(x){
+    return x.label+': '+(x.working===null?'no proxy':(x.working?'Working':'NOT WORKING — '+x.message));
+  });
+  fmsAlert(lines.join('\n')||'No results.');
+  maRefresh();
+});
+el('maRemDeadBtn').addEventListener('click', async function(){
+  const ids = maSelectedIds();
   if(!ids.length){ fmsAlert('Select at least one account.'); return; }
-  if(!confirm('Remove not-working proxies from selected accounts?')) return;
-  const r = await fetch('/api/accounts/proxies/remove-dead', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids: ids})});
-  const j = await r.json();
+  if(!await fmsConfirm('Remove not-working proxies from selected accounts?')) return;
+  const j = await (await fetch('/api/accounts/proxies/remove-dead', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({account_ids:ids})})).json();
   fmsAlert('Accounts cleared: '+j.accounts_cleared+' · Proxies deleted: '+j.proxies_deleted);
-  location.reload();
-}
-async function editCookie(id){
-  const v = prompt('Cookie for account #'+id+' (empty = clear, cancel = keep):');
-  if(v === null) return;
-  const r = await fetch('/api/accounts/'+id, {method:'PUT',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({cookie: v.trim() || null})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-// Per-account proxy dialog: one proxy per line (IP:port or IP:port:user:pass).
-let proxyAccId = null;
-function editProxy(id, label){
-  proxyAccId = id;
-  document.getElementById('proxyAccLabel').textContent = label;
-  document.getElementById('proxyText').value = '';
-  document.getElementById('proxyResult').textContent = '';
-  document.getElementById('proxyBox').style.display = '';
-  document.getElementById('proxyBox').scrollIntoView({behavior:'smooth'});
-}
-async function saveProxy(){
-  const t = document.getElementById('proxyText').value.trim();
-  if(!t){ fmsAlert('Pehle proxy likhein (one per line).'); return; }
-  const r = await fetch('/api/accounts/proxies/assign', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({account_ids: [proxyAccId], proxies_text: t})});
-  const msg = document.getElementById('proxyResult');
-  if(r.ok){ msg.textContent = 'Proxy saved ✓'; setTimeout(()=>location.reload(), 800); }
-  else msg.textContent = 'Failed: ' + await r.text();
-}
-async function checkProxyWorking(){
-  const msg = document.getElementById('proxyResult');
-  msg.textContent = 'Checking...';
-  const r = await fetch('/api/accounts/proxies/check', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({account_ids: [proxyAccId]})});
-  const j = await r.json();
-  const x = (j.results || [])[0];
-  if(!x || x.working === null) msg.textContent = 'No proxy set.';
-  else if(x.working) msg.textContent = '✓ Proxy ACTIVE — working!';
-  else msg.textContent = '✗ Proxy INACTIVE — ' + (x.message || 'not working');
-  if(x && x.working !== null) setTimeout(()=>location.reload(), 1500);
-}
-async function clearProxy(){
-  if(!confirm('Remove proxy from this account?')) return;
-  const r = await fetch('/api/accounts/proxies/remove', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({account_ids: [proxyAccId]})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function editIx(id, current){
-  const v = prompt('Anti-detect Profile ID for account #'+id+' (empty = auto-create on first launch):', current || '');
-  if(v === null) return;
-  const r = await fetch('/api/accounts/'+id, {method:'PUT',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({ix_profile_id: v.trim() || ''})});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
-}
-async function importFile(input){
-  const f = input.files[0];
-  if(!f) return;
-  const fd = new FormData();
-  fd.append('group_id', GID);
-  fd.append('file', f);
-  const r = await fetch('/api/accounts/import', {method:'POST', body: fd});
-  const j = await r.json();
-  fmsAlert('Imported: '+j.added+' · Errors: '+j.errors.length+(j.errors.length?'\n'+j.errors.join('\n'):''));
-  location.reload();
-}
-document.getElementById('singleForm').addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const f = new FormData(e.target);
-  const body = {group_id: parseInt(f.get('group_id')), label: f.get('label'),
-    password: f.get('password')||null, cookie: f.get('cookie')||null,
-    twofa_secret: f.get('twofa_secret')||null, browser: f.get('browser')||'chrome',
-    ix_profile_id: f.get('ix_profile_id')||null};
-  const r = await fetch('/api/accounts', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  if(r.ok) location.reload(); else fmsAlert('Failed: '+await r.text());
+  maRefresh();
 });
-document.getElementById('bulkForm').addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const f = new FormData(e.target);
-  const r = await fetch('/api/accounts/bulk', {method:'POST', body: new URLSearchParams(f)});
-  const j = await r.json();
-  document.getElementById('bulkResult').textContent =
-    'Added: '+j.added+' · Errors: '+j.errors.length;
-  if(j.errors.length) fmsAlert(j.errors.join('\n'));
-  if(j.added) setTimeout(()=>location.reload(), 800);
-});
-updateSelCount();
+el('maSaveBtn').addEventListener('click', closeManageAccts);
+el('maCancelBtn').addEventListener('click', closeManageAccts);
+el('maCloseBtn').addEventListener('click', closeManageAccts);
+el('maModal').addEventListener('click', function(e){ if(e.target===el('maModal')) closeManageAccts(); });
+
+/* auto-open Manage Groups when the Accounts page is opened */
+openManageGroups();
+})();
 </script>
 {% endblock %}
