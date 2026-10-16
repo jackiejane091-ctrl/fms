@@ -248,8 +248,11 @@ async function loadBoard(){
   // v0.2.24: Pause/Continue button follows the live run's state.
   document.getElementById('pauseBtn').textContent = anyPaused ? 'Continue' : 'Pause All';
   // Don't clobber a per-account log filter on every poll.
+  // v0.2.28: never show combined logs automatically — the user asked for
+  // account-specific logs only. Prompt to click an account instead.
   if(!logFilter){
-    document.getElementById('boardLogs').textContent = logs.join('\n');
+    document.getElementById('boardLogs').textContent =
+      'Kisi account pe click karein — Logs me sirf uski details ayengi.';
   }
   // Poll faster while a run is live so the board feels alive.
   if(anyLive && !loadBoard._fast){ loadBoard._fast = true; }

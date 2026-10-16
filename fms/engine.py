@@ -64,6 +64,27 @@ class _LoginFailed(Exception):
     """Raised when an account's login fails (drives the retry loop)."""
 
 
+# v0.2.28: real Playwright wordings for a dead/closed browser vary
+# ("Browser closed", "Target closed", "Browser has been closed",
+#  "Target crashed", ...). A closed browser must mark the account Failed
+# immediately — never reopen+retry.
+_BROWSER_CLOSED_HINTS = (
+    "target closed",
+    "browser closed",
+    "browser has been closed",
+    "context closed",
+    "context has been closed",
+    "target crashed",
+    "browser crashed",
+    "browser disconnected",
+)
+
+
+def _browser_closed_msg(msg: str | None) -> bool:
+    m = (msg or "").lower()
+    return any(h in m for h in _BROWSER_CLOSED_HINTS)
+
+
 @dataclass
 class RunConfig:
     group_id: int
@@ -593,8 +614,15 @@ class RunController:
                 _persist_ix_profile(self.db, account, driver)
                 return "done"
             except _LoginFailed:
+                reason = getattr(driver, "login_error", "") or "unknown reason"
+                # v0.2.28: browser closed during login -> Failed at once,
+                # no reopen+retry loop.
+                if _browser_closed_msg(reason):
+                    self.log(f"[{label}] browser closed during login — "
+                             f"marked failed (no retry)", level="error",
+                             account_id=account["id"])
+                    return "failed"
                 if attempt >= attempts:
-                    reason = getattr(driver, "login_error", "") or "unknown reason"
                     accounts_mod.set_status(self.db, account["id"], "locked",
                                             "login failed during run")
                     self.log(f"[{label}] login FAILED after {attempts} "
@@ -610,13 +638,11 @@ class RunController:
                          account_id=account["id"])
                 return "stopped"
             except Exception as exc:  # never let one account kill the run
-                msg = str(exc).lower()
-                # v0.2.24: the user closed the browser window (or it died).
-                # Don't reopen+retry — mark the account failed straight away
-                # so it lands in Failed, not Pending.
-                if ("target closed" in msg
-                        or "browser has been closed" in msg
-                        or "context has been closed" in msg):
+                msg = str(exc)
+                # v0.2.24/v0.2.28: the user closed the browser window (or it
+                # died). Don't reopen+retry — mark the account failed straight
+                # away so it lands in Failed, not Pending.
+                if _browser_closed_msg(msg):
                     self.log(f"[{label}] browser closed — marked failed "
                              f"(no retry)", level="error",
                              account_id=account["id"])

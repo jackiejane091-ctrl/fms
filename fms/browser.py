@@ -426,7 +426,9 @@ class PlaywrightDriver(BaseDriver):
                     pass
                 human.human_pause(2500, 4000)
         except Exception as exc:
-            return fail(f"could not fill login form: {type(exc).__name__}")
+            # v0.2.28: keep the real error text so the engine can tell a
+            # closed browser apart from a bad form.
+            return fail(f"could not fill login form: {type(exc).__name__}: {exc}")
 
         # Outcome detection: poll for up to ~60s and classify what happened
         # instead of silently stalling (v0.2.23).
