@@ -5,6 +5,7 @@ HTML pages for humans + /api/* JSON endpoints for scripting.
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -747,6 +748,37 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             os._exit(0)
 
         threading.Thread(target=_quit, daemon=True).start()
+        return {"ok": True}
+
+    @app.post("/api/restart")
+    def api_restart():
+        """Restart FMS after an update: relaunch the exe, then quit.
+
+        The relaunched process runs apply_pending_update() at startup,
+        so FMS.new.exe (if present) is swapped in automatically.
+        """
+        def _restart():
+            time.sleep(0.8)
+            if getattr(sys, "frozen", False):
+                exe = Path(sys.executable).resolve()
+                try:
+                    # Detached helper: wait 2s for this process to die,
+                    # then start FMS.exe again.
+                    subprocess.Popen(
+                        ["cmd", "/c",
+                         f'timeout /t 2 /nobreak >nul & start "" "{exe}"'],
+                        creationflags=(subprocess.DETACHED_PROCESS |
+                                       subprocess.CREATE_NEW_PROCESS_GROUP),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                    )
+                except Exception:
+                    pass
+            os._exit(0)
+
+        threading.Thread(target=_restart, daemon=True).start()
         return {"ok": True}
 
     return app

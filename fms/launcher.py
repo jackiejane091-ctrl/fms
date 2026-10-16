@@ -129,9 +129,9 @@ def main() -> None:
                 app, host="127.0.0.1", port=port, log_level="warning"),
             daemon=True).start()
         if _wait_for_server(url):
-            # Professional desktop size (like FBM Robo) — NOT fullscreen.
-            webview.create_window("FMS", url, width=1120, height=780,
-                                  min_size=(960, 600), js_api=_FMSApi())
+            # Compact professional size — fits on smaller laptop screens.
+            webview.create_window("FMS", url, width=1024, height=680,
+                                  min_size=(900, 560), js_api=_FMSApi())
             webview.start()
         return
     except ImportError:

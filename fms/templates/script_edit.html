@@ -107,14 +107,18 @@ function updateCount(){
 }
 
 const dropArea = document.getElementById('dropArea');
-dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.classList.add('over'); });
-dropArea.addEventListener('dragleave', () => dropArea.classList.remove('over'));
-dropArea.addEventListener('drop', e => {
-  e.preventDefault();
-  dropArea.classList.remove('over');
-  const t = e.dataTransfer.getData('text/x-fms-block');
-  if(t && BTYPES[t]) addBlock(t);
-});
+const blocksEl = document.getElementById('blocks');
+// Both the hint area AND the blocks list accept drops (so 2nd, 3rd... actions work too).
+for (const dz of [dropArea, blocksEl]) {
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('over');
+    const t = e.dataTransfer.getData('text/x-fms-block');
+    if(t && BTYPES[t]) addBlock(t);
+  });
+}
 
 function paramInput(b, pname, pdef, phelp){
   const val = b.params[pname];
@@ -147,7 +151,11 @@ function render(){
   updateCount();
   const el = document.getElementById('blocks');
   el.innerHTML = '';
-  dropArea.style.display = blocks.length ? 'none' : '';
+  // Keep the drop hint visible so users know they can add MORE actions.
+  dropArea.style.display = '';
+  dropArea.innerHTML = blocks.length
+    ? '↓ Drop more actions here or click from the left panel ↓'
+    : 'Drop actions anywhere in this area or click from the left panel';
   blocks.forEach((b, i) => {
     const card = document.createElement('div');
     card.className = 'block-card';

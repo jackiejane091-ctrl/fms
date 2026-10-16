@@ -53,7 +53,7 @@
   </div>
   <span>
     <button type="button" class="btn-primary" id="updateDlBtn" onclick="downloadUpdate()">Download</button>
-    <button type="button" class="btn-primary hidden" id="updateRestartBtn" onclick="quitFms()">Restart FMS</button>
+    <button type="button" class="btn-primary hidden" id="updateRestartBtn" onclick="restartFms()">Restart FMS</button>
     <button type="button" onclick="hideUpdateBanner()">Later</button>
   </span>
 </div>
@@ -79,6 +79,12 @@ async function quitFms(){
   if(!confirm('Quit FMS? Any running listings will stop.')) return;
   try { await fetch('/api/shutdown', {method:'POST'}); } catch(e) {}
   document.body.innerHTML = '<p style="padding:40px">FMS is closing… you can close this tab.</p>';
+}
+// After an update downloads: restart FMS so the new version opens automatically.
+async function restartFms(){
+  if(!confirm('Restart FMS now? It will reopen with the new update.')) return;
+  document.body.innerHTML = '<p style="padding:40px">Restarting FMS with the new update…</p>';
+  try { await fetch('/api/restart', {method:'POST'}); } catch(e) {}
 }
 /* ---- version + self-update ---- */
 let updateInfo = null;
@@ -137,7 +143,7 @@ async function downloadUpdate(){
       if(p.state === 'done'){
         clearInterval(t);
         document.getElementById('updateMsg').textContent =
-          'Download complete. Restart FMS to apply the update.';
+          'Download complete! Press "Restart FMS" — it will reopen automatically with the new update.';
         document.getElementById('updateRestartBtn').classList.remove('hidden');
       } else if(p.state === 'error'){ clearInterval(t); alert('Download failed: ' + p.message); }
     } catch(e){ /* keep polling */ }

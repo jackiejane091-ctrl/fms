@@ -18,9 +18,9 @@
       </select>
     </span>
     <span class="cc-field"><b>Select Groups:</b>
-      <select id="groupSel" onchange="loadBoard()" style="min-width:220px">
-        {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.account_count }} accounts)</option>{% endfor %}
-      </select>
+      <div id="groupChecks" class="group-checks" style="min-width:220px;max-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:6px;padding:6px;background:var(--bg)">
+        {% for g in groups %}<label class="check" style="display:block;margin:3px 0"><input type="checkbox" class="gcheck" value="{{ g.id }}" {% if loop.first %}checked{% endif %} onchange="loadBoard()"> {{ g.name }} ({{ g.account_count }})</label>{% endfor %}
+      </div>
     </span>
     <span class="cc-field cc-actions">
       <a href="/settings" class="btn">⚙️ Settings</a>
@@ -94,14 +94,14 @@ function modeChanged(){
     document.getElementById('scriptSel').value !== '';
 }
 async function startRun(){
-  const gid = document.getElementById('groupSel').value;
+  const gids = selectedGroups();
   const scriptId = document.getElementById('scriptSel').value;
   const mode = scriptId ? 'script' : document.getElementById('actionSel').value;
-  if(!gid){ alert('Pehle ek group select karein.'); return; }
+  if(!gids.length){ alert('Pehle kam az kam ek group select karein.'); return; }
   // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
   const s = await (await fetch('/api/settings')).json();
   const body = {
-    group_id: parseInt(gid),
+    group_id: parseInt(gids[0]),
     mode: mode,
     script_id: scriptId ? parseInt(scriptId) : null,
     batch_size: parseInt(document.getElementById('batchSize').value) || 3,
@@ -127,16 +127,26 @@ async function startRun(){
     newline_pause_max_ms: parseInt(s.newline_pause_max_ms) || 900,
     hybrid_threshold_chars: parseInt(s.hybrid_threshold_chars) || 500,
   };
-  const r = await fetch('/api/runs', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  if(r.ok){ const j = await r.json(); location.href = '/runs/' + j.run_id; }
-  else alert('Failed: ' + await r.text());
+  let firstRun = null, failed = 0;
+  for(const gid of gids){
+    body.group_id = parseInt(gid);
+    const r = await fetch('/api/runs', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if(r.ok){ const j = await r.json(); if(!firstRun) firstRun = j.run_id; }
+    else failed++;
+  }
+  if(firstRun) location.href = '/runs/' + firstRun;
+  else alert('Failed: koi run start nahi ho saka.');
+}
+function selectedGroups(){
+  return [...document.querySelectorAll('.gcheck:checked')].map(c => c.value);
 }
 function boardLi(list){ return list.map(l => '<li>'+l+'</li>').join(''); }
 async function loadBoard(){
-  const gid = document.getElementById('groupSel').value;
-  if(!gid) return;
-  const r = await fetch('/api/board?group_id=' + gid);
+  const gids = selectedGroups();
+  if(!gids.length) return;
+  // Board shows the first selected group's progress.
+  const r = await fetch('/api/board?group_id=' + gids[0]);
   const b = await r.json();
   const set = (n, ul, items) => {
     document.getElementById(n).textContent = items.length;
