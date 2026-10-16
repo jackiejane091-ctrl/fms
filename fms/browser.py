@@ -19,21 +19,27 @@ from typing import Any
 from . import config, human, selectors as S
 
 # A small pool of desktop user agents to rotate per account.
+# v0.2.31: ONLY Chrome desktop UAs — the engine really is Chromium, so a
+# Firefox/Edge UA string is a hard mismatch Facebook can spot via
+# navigator.userAgentData (one reason FB served a limited header with no
+# notifications/messages/profile icons).
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
 ]
 
 # Screen-friendly sizes: the browser WINDOW is sized to the viewport so it
 # never opens bigger than the laptop screen.
 VIEWPORTS = [(1280, 720), (1366, 768), (1440, 900)]
 LOCALES = ["en-GB", "en-US"]
-TIMEZONES = ["Europe/London", "America/New_York"]
+# v0.2.31: no more random timezones. London/New York clocks on a Pakistani IP
+# made Facebook flag the session and serve a limited header (missing
+# notifications/messages/profile icons). The browser now always uses the
+# laptop's REAL system timezone (timezone_id is simply not overridden).
 
 
 class BaseDriver(ABC):
@@ -216,13 +222,14 @@ class PlaywrightDriver(BaseDriver):
         # Deterministic-ish fingerprint per account (stable across runs).
         # v0.2.25: the group's "Apply Fingerprint" switch can turn the
         # randomization off (fixed default fingerprint instead).
+        # v0.2.31: timezone is NEVER randomized anymore — it always follows
+        # the laptop's real system clock (see the note above USER_AGENTS).
         if self.account.get("apply_fingerprint", True):
             rng = random.Random(self.account["id"])
             ua = rng.choice(USER_AGENTS)
             loc = rng.choice(LOCALES)
-            tz = rng.choice(TIMEZONES)
         else:
-            ua, loc, tz = USER_AGENTS[0], "en-US", "America/New_York"
+            ua, loc = USER_AGENTS[0], "en-GB"
         # v0.2.23: fixed large window for every account (the random small
         # viewports looked broken). Slight cascade so parallel account
         # browsers don't stack pixel-exact on top of each other.
@@ -234,7 +241,8 @@ class PlaywrightDriver(BaseDriver):
             proxy=proxy,
             user_agent=ua,
             locale=loc,
-            timezone_id=tz,
+            # v0.2.31: no timezone_id -> the laptop's real system timezone,
+            # so Facebook sees a consistent Pakistani clock on a Pakistani IP.
             viewport={"width": vw, "height": vh},
             args=["--disable-blink-features=AutomationControlled",
                   f"--window-size={vw},{vh}",
