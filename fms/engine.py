@@ -16,6 +16,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import accounts as accounts_mod
@@ -83,6 +84,19 @@ _BROWSER_CLOSED_HINTS = (
 def _browser_closed_msg(msg: str | None) -> bool:
     m = (msg or "").lower()
     return any(h in m for h in _BROWSER_CLOSED_HINTS)
+
+
+def _local_time(iso: str | None) -> str:
+    """Render a UTC ISO timestamp in the laptop's local time (v0.2.30)."""
+    if not iso:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%d %b, %H:%M")
+    except Exception:
+        return iso
 
 
 @dataclass
@@ -612,6 +626,7 @@ class RunController:
             try:
                 self._process_account_once(account, driver, quota, account_idx)
                 _persist_ix_profile(self.db, account, driver)
+                self._log_account_summary(account, quota)
                 return "done"
             except _LoginFailed:
                 reason = getattr(driver, "login_error", "") or "unknown reason"
@@ -621,6 +636,7 @@ class RunController:
                     self.log(f"[{label}] browser closed during login — "
                              f"marked failed (no retry)", level="error",
                              account_id=account["id"])
+                    self._log_account_summary(account, quota)
                     return "failed"
                 if attempt >= attempts:
                     accounts_mod.set_status(self.db, account["id"], "locked",
@@ -628,6 +644,7 @@ class RunController:
                     self.log(f"[{label}] login FAILED after {attempts} "
                              f"attempt(s): {reason} — marked locked",
                              level="error", account_id=account["id"])
+                    self._log_account_summary(account, quota)
                     return "login_failed"
                 self.log(f"[{label}] login failed "
                          f"(attempt {attempt}/{attempts}) — retrying",
@@ -636,6 +653,7 @@ class RunController:
             except _StopRun:
                 self.log(f"[{label}] stopped by user", level="warning",
                          account_id=account["id"])
+                self._log_account_summary(account, quota)
                 return "stopped"
             except Exception as exc:  # never let one account kill the run
                 msg = str(exc)
@@ -646,10 +664,12 @@ class RunController:
                     self.log(f"[{label}] browser closed — marked failed "
                              f"(no retry)", level="error",
                              account_id=account["id"])
+                    self._log_account_summary(account, quota)
                     return "failed"
                 if attempt >= attempts:
                     self.log(f"[{label}] ERROR: {type(exc).__name__}: {exc}",
                              level="error", account_id=account["id"])
+                    self._log_account_summary(account, quota)
                     return "failed"
                 self.log(f"[{label}] error on attempt {attempt}/{attempts} "
                          f"({type(exc).__name__}) — retrying",
@@ -806,6 +826,41 @@ class RunController:
         )
         self.log(f"[{label}] FAILED '{payload['title']}': {error}",
                  level="error", account_id=account["id"])
+
+    def _log_account_summary(self, account: dict, quota: int) -> None:
+        """Per-account run summary in the Logs box (v0.2.30).
+
+        The user asked: when an ID is clicked, the logs must show how many
+        listings succeeded (ad title, location name, time posted), how many
+        failed (with the error/reason), and how many remain.
+        """
+        label = account["label"]
+        aid = account["id"]
+        rows = self.db.fetchall(
+            """SELECT title_used, location_used, fb_listing_id, error,
+                      posted_at, status
+               FROM listings WHERE run_id = ? AND account_id = ?
+               ORDER BY id""",
+            (self.run_id, aid),
+        )
+        posted = [r for r in rows if r["status"] == "posted"]
+        failed = [r for r in rows if r["status"] == "failed"]
+        self.log(f"[{label}] ===== SUMMARY =====", account_id=aid)
+        self.log(f"[{label}] Successful: {len(posted)}", account_id=aid)
+        for r in posted:
+            self.log(f"[{label}]   + '{r['title_used']}' | location: "
+                     f"{r['location_used'] or '-'} | listing: "
+                     f"{r['fb_listing_id'] or '-'} | time: "
+                     f"{_local_time(r['posted_at'])}", account_id=aid)
+        self.log(f"[{label}] Failed: {len(failed)}",
+                 level="error" if failed else "info", account_id=aid)
+        for r in failed:
+            self.log(f"[{label}]   x '{r['title_used']}' | wajah: "
+                     f"{r['error'] or '?'}", level="error", account_id=aid)
+        if self.cfg.mode == "complete":
+            remaining = max(0, quota - len(posted) - len(failed))
+            self.log(f"[{label}] Baqi (remaining): {remaining}", account_id=aid)
+        self.log(f"[{label}] ===================", account_id=aid)
 
     def _inter_post_delay(self) -> None:
         # Run speed multiplies the pace: 2x halves every delay.
