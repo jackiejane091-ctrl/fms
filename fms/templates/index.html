@@ -274,12 +274,13 @@ async function loadBoard(){
       } else if(st === 'completed'){
         // v0.2.38: a "completed" run that did nothing must say so.
         if(lastRun.error && /no active accounts/i.test(lastRun.error)){
-          lr.textContent = '⚠️ Aakhri run #' + lastRun.id + ': koi eligible account nahi tha (locked?). Accounts page pe check karein.';
+          lr.textContent = '⚠️ Aakhri run #' + lastRun.id + ': koi eligible account nahi tha. Accounts page pe check karein.';
           lr.className = 'lastrun bad';
         } else {
           lr.textContent = '✓ Aakhri run #' + lastRun.id + ' mukammal hui.';
           lr.className = 'lastrun ok';
-        } else if(st === 'stopped'){
+        }
+      } else if(st === 'stopped'){
         lr.textContent = '⏹ Aakhri run #' + lastRun.id + ' roki gayi thi.';
         lr.className = 'lastrun';
       } else { lr.textContent = ''; lr.className = 'lastrun'; }
