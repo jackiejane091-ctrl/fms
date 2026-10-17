@@ -223,6 +223,55 @@ class PlaywrightDriver(BaseDriver):
         # v0.2.49: set by the engine — called the instant the browser window
         # is closed so the account flips to Failed immediately.
         self._on_close_callback = None
+        # v0.2.56: path of the most recent self-diagnosis screenshot (None
+        # when no failure was captured yet). Never sensitive: it's a page
+        # picture inside the user's own data dir, surfaced in their Logs.
+        self._last_screenshot: str | None = None
+
+    # -- self-diagnosis ---------------------------------------------------------
+    def _snap(self, page, reason: str) -> str | None:
+        """Save a page screenshot when a form field fails (v0.2.56).
+
+        The user asked FMS to be self-reporting: instead of them taking a
+        screenshot of the Logs every time, FMS saves a picture of the page
+        the moment a field fails, and the Logs point at the file. Never
+        raises — a failed screenshot must never break the run.
+        """
+        try:
+            shot_dir = config.data_dir() / "screenshots"
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            label = str(self.account.get("label") or "account")
+            label = "".join(c if (c.isalnum() or c in "-_") else "_"
+                            for c in label)[:24] or "account"
+            safe = "".join(c if (c.isalnum() or c in "-_") else "_"
+                           for c in reason)[:32] or "field"
+            path = shot_dir / f"{stamp}_{label}_{safe}.png"
+            page.screenshot(path=str(path))
+            self._last_screenshot = str(path)
+            # Keep the folder bounded: newest 50 only (non-technical user,
+            # never needs to clean this by hand).
+            try:
+                shots = sorted(shot_dir.glob("*.png"),
+                               key=lambda p: p.stat().st_mtime)
+                for old in shots[:-50]:
+                    old.unlink()
+            except Exception:
+                pass
+            return str(path)
+        except Exception:
+            return None
+
+    def _note_field_error(self, page, reason: str, msg: str) -> None:
+        """Record a form-field failure AND save a screenshot of the page.
+
+        Replaces bare ``self._last_form_error = msg`` assignments so every
+        failure the user sees in the Logs comes with a picture they can
+        forward instead of taking one themselves (v0.2.56).
+        """
+        shot = self._snap(page, reason)
+        suffix = f" | Screenshot: {shot}" if shot else " | Screenshot: (failed)"
+        self._last_form_error = msg + suffix
 
     def _handle_context_close(self) -> None:
         """Fires the moment the browser window/context closes (user ×)."""
@@ -596,7 +645,8 @@ class PlaywrightDriver(BaseDriver):
         try:
             loc.wait_for(timeout=10000)
         except Exception as exc_l:
-            self._last_form_error = (
+            self._note_field_error(
+                page, "location-field",
                 f"Location field not found: {type(exc_l).__name__}")
             return
         # Clear then type the full text.
@@ -617,7 +667,8 @@ class PlaywrightDriver(BaseDriver):
                 sug_text = (first.inner_text() or "").strip().lower()
                 want = location.split(",")[0].strip().lower()
                 if want and want not in sug_text and sug_text not in want:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, "location-mismatch",
                         f"Location suggestion mismatch: wanted '{location}', "
                         f"got '{sug_text[:60]}' — skipped to avoid wrong pick")
                     return
@@ -626,7 +677,8 @@ class PlaywrightDriver(BaseDriver):
             human.human_click(page, first)
             human.human_pause(200, 500)
         except Exception as exc_s:
-            self._last_form_error = (
+            self._note_field_error(
+                page, "location-select",
                 f"Location '{location}' suggestion not selected: "
                 f"{type(exc_s).__name__}")
 
@@ -754,7 +806,10 @@ class PlaywrightDriver(BaseDriver):
         try:
             ok, detail = self._open_create_item_form(page)
             if not ok:
-                self._last_form_error = detail
+                # v0.2.56: the form never opened — still snap so the user
+                # sees what the page showed instead.
+                self._note_field_error(page, "form-open", detail or
+                                       "create-item form did not open")
                 return False
 
             # 1. Expand "More details" first (v0.2.55: try several
@@ -792,14 +847,46 @@ class PlaywrightDriver(BaseDriver):
                     pass
 
             # 3. Title, 4. Price.
+            # v0.2.56: verify each field actually got its value. If the
+            # price locator wrongly matches the title field, we'd append
+            # the price to the title — catch it here instead.
             title = S.to_playwright(page, S.F_TITLE)
             # (already waited visible inside _open_create_item_form)
             self._type(title, payload.get("title", ""), hybrid_ok=True)
             human.human_pause(200, 500)
 
-            price = S.to_playwright(page, S.F_PRICE)
-            self._type(price, str(payload.get("price", "")))
-            human.human_pause(200, 500)
+            price_val = str(payload.get("price", ""))
+            if price_val:
+                price = S.to_playwright(page, S.F_PRICE)
+                try:
+                    price.wait_for(timeout=8000)
+                    # Sanity: price field must NOT be the title field.
+                    try:
+                        t_id = title.evaluate("e => e.id || e.outerHTML.slice(0,50)")
+                        p_id = price.evaluate("e => e.id || e.outerHTML.slice(0,50)")
+                        if t_id and t_id == p_id:
+                            raise RuntimeError("price selector matched the title field!")
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        pass  # couldn't compare; proceed cautiously
+                    price.click()
+                    human.human_pause(200, 400)
+                    price.fill(price_val)
+                    human.human_pause(200, 500)
+                    # Verify the price field actually holds the price.
+                    try:
+                        got = price.input_value() or ""
+                        if price_val not in got:
+                            self._last_form_error = (
+                                f"Price verification failed: wanted '{price_val}', "
+                                f"field has '{got[:40]}'")
+                    except Exception:
+                        pass
+                except Exception as exc_p:
+                    self._last_form_error = (
+                        f"Price '{price_val}' not filled: {type(exc_p).__name__}: "
+                        f"{str(exc_p)[:100]}")
 
             # Category: CLICK the field, then SELECT from the dropdown list.
             # v0.2.54: user confirmed these are lists, not type-in fields.
@@ -826,7 +913,8 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, opt)
                     human.human_pause(200, 500)
                 except Exception as exc_c:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, "category",
                         f"Category '{category}' not selected: "
                         f"{type(exc_c).__name__}")
                     # Don't return False yet — try the rest, Next check
@@ -855,10 +943,10 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, opt)
                     human.human_pause(200, 500)
                 except Exception as exc_co:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, "condition",
                         f"Condition '{condition}' not selected: "
                         f"{type(exc_co).__name__}")
-
             # Description: COPY-PASTE, not typing (v0.2.55 — user's
             # explicit instruction: simple and easy, no character-by-character).
             desc = payload.get("description") or ""
@@ -872,7 +960,8 @@ class PlaywrightDriver(BaseDriver):
                     dloc.fill(desc)
                     human.human_pause(200, 500)
                 except Exception as exc_d:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, "description",
                         f"Description not pasted: {type(exc_d).__name__}")
 
             # Location
@@ -887,9 +976,9 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, hff)
                     human.human_pause(200, 500)
                 except Exception as exc_h:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, "hide-from-friends",
                         f"Hide-from-friends not set: {type(exc_h).__name__}")
-
             # Delivery options (v0.2.55: log failures, don't silently pass).
             _delivery_sel = {
                 "public_meetup": S.F_DELIVERY_MEETUP,
@@ -906,9 +995,9 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, dloc)
                     human.human_pause(200, 500)
                 except Exception as exc_do:
-                    self._last_form_error = (
+                    self._note_field_error(
+                        page, f"delivery-{_opt}",
                         f"Delivery '{_opt}' not set: {type(exc_do).__name__}")
-
             # (Photos/video already attached at the top — v0.2.50 order.)
             return True
         except Exception as exc:
@@ -918,8 +1007,9 @@ class PlaywrightDriver(BaseDriver):
                 url = page.url
             except Exception:
                 url = "?"
-            self._last_form_error = (f"{type(exc).__name__}: "
-                                     f"{str(exc)[:180]} @ {url}")
+            self._note_field_error(
+                page, "form-fatal",
+                f"{type(exc).__name__}: {str(exc)[:180]} @ {url}")
             return False
 
     def human_warmup(self) -> None:
@@ -971,23 +1061,47 @@ class PlaywrightDriver(BaseDriver):
                             missing.append(errs[:200])
                     except Exception:
                         pass
+                    # v0.2.56: dump the form's field structure so we stop
+                    # guessing selectors. Lists every labeled control.
+                    try:
+                        formdump = page.evaluate(
+                            """() => Array.from(document.querySelectorAll(
+                                'input, textarea, [role=\"combobox\"], '
+                                + '[role=\"listbox\"], button')).slice(0, 40)
+                                .map(e => [
+                                e.tagName,
+                                (e.getAttribute('aria-label') || '').slice(0,30),
+                                (e.getAttribute('placeholder') || '').slice(0,20),
+                                (e.innerText || '').slice(0,30).replace(/\\n/g,' ')
+                                ].join('|')).join(' ;; ')""")
+                    except Exception:
+                        formdump = "?"
                     raise RuntimeError(
                         "Next is disabled (form incomplete). " +
                         ("Errors: " + missing[0] if missing else
-                         "Check category/condition/location."))
+                         "Check category/condition/location.") +
+                        f" | Form fields: {formdump[:800]}")
                 human.human_click(page, nxt)
                 human.human_pause(2000, 3500)
             except Exception as exc_n:
+                # v0.2.56: self-diagnosis — save a screenshot so the user
+                # gets a picture of the stuck form without taking one.
+                shot = self._snap(page, "next-disabled")
                 self._last_error = (f"Next button: "
-                                    f"{str(exc_n)[:200]} @ {page.url[:80]}")
+                                    f"{str(exc_n)[:200]} @ {page.url[:80]}"
+                                    + (f" | Screenshot: {shot}" if shot
+                                       else ""))
                 return None
             try:
                 pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
                 pub.wait_for(timeout=15000)
                 human.human_click(page, pub)
             except Exception as exc_p:
+                shot = self._snap(page, "publish")
                 self._last_error = (f"Publish button not found/clickable: "
-                                    f"{type(exc_p).__name__} @ {page.url[:80]}")
+                                    f"{type(exc_p).__name__} @ {page.url[:80]}"
+                                    + (f" | Screenshot: {shot}" if shot
+                                       else ""))
                 return None
             human.human_pause(3000, 6000)
 
@@ -1013,6 +1127,10 @@ class PlaywrightDriver(BaseDriver):
         assert page is not None
         try:
             if not self._fill_form(page, payload):
+                # v0.2.56: surface the real reason (with screenshot path)
+                # like post_listing does, instead of a silent None.
+                self._last_error = (getattr(self, "_last_form_error", None)
+                                    or "form fill failed")
                 return None
             human.human_click(page, S.to_playwright(page, S.F_SAVE_DRAFT_BUTTON))
             human.human_pause(2000, 4000)
