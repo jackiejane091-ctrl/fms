@@ -460,6 +460,13 @@ class PlaywrightDriver(BaseDriver):
             return False
         page.goto(S.LOGIN_URL, wait_until="domcontentloaded")
         human.human_pause()
+        # v0.2.42: the browser profile may ALREADY be logged in (persistent
+        # session) — facebook.com/login then redirects straight to the feed
+        # and no login form ever appears. Check first; only fill the form
+        # when we are genuinely logged out. Without this, an already-logged-in
+        # account fails 4x with "could not fill login form" and never posts.
+        if self._is_logged_in():
+            return True
         try:
             email = self._find_login_field(page, S.LOGIN_EMAIL_FALLBACKS)
             self._type(email, label)
