@@ -471,6 +471,12 @@ class _Rotator:
             "video_path": product.get("video_path"),
             "as_draft": as_draft,
             "hide_from_friends": cfg.hide_from_friends,
+            # v0.2.59: per-listing timing (user: 45-60 sec from browser open
+            # to publish — not too fast, not slower than manual).
+            "min_seconds_to_post": int(getattr(
+                cfg, "min_seconds_to_post", 45) or 45),
+            "max_seconds_to_post": int(getattr(
+                cfg, "max_seconds_to_post", 60) or 60),
         }
 
 

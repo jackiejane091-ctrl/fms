@@ -66,11 +66,11 @@ MORE_DETAILS = ("text", "More details")
 # wrapped labels). The old CSS aria-label* selectors stopped matching
 # Facebook's current markup — the form renders but the Title input was
 # never found (20s timeout on a visibly-loaded page).
-# v0.2.58: Facebook uses PLACEHOLDER text (not <label>/aria-label) for the
-# form fields — confirmed from the user's screenshots. get_by_label was
-# failing/mismatching; get_by_placeholder is the correct strategy.
-F_TITLE = ("placeholder", "Title")
-F_PRICE = ("placeholder", "Price")
+# v0.2.59: REVERTED from placeholder — the floating "Title"/"Price" text is
+# NOT a placeholder attribute (it's a Material-style floating label).
+# get_by_label worked in v0.2.57; placeholder broke everything in v0.2.58.
+F_TITLE = ("label", "Title")
+F_PRICE = ("label", "Price")
 # v0.2.58: Category is a dropdown DIV (screenshot shows ▼ arrow), not an input.
 F_CATEGORY = ("text", "Category")
 F_CONDITION_NEW = ("text", "New")
@@ -78,13 +78,14 @@ F_CONDITION_USED_LIKE_NEW = ("text", "Used - like new")
 # v0.2.54: the Condition dropdown field itself (click to open the list).
 # v0.2.58: it's a dropdown DIV with placeholder-like text, not a labeled input.
 F_CONDITION_FIELD = ("text", "Condition")
-F_DESCRIPTION = ("placeholder", "Description")
+# v0.2.59: reverted — Description floating label is not a placeholder attr.
+F_DESCRIPTION = ("label", "Description")
 # v0.2.58: Availability dropdown (in More details). Options: "List as single
 # item" / "List as in stock". User's product saves "list as stock".
 F_AVAILABILITY_FIELD = ("text", "Availability")
 F_AVAILABILITY = ("css", "[aria-label*='Availability' i]")
-# v0.2.58: Location is also a placeholder-style input (per screenshots).
-F_LOCATION = ("placeholder", "Location")
+# v0.2.59: reverted — Location floating label is not a placeholder attr.
+F_LOCATION = ("label", "Location")
 F_LOCATION_FIRST_RESULT = ("css", "[role='listbox'] [role='option']:first-child")
 F_TAGS = ("css", "input[aria-label*='tag' i], input[placeholder*='tag' i]")
 

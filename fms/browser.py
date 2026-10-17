@@ -553,7 +553,7 @@ class PlaywrightDriver(BaseDriver):
         try:
             email = self._find_login_field(page, S.LOGIN_EMAIL_FALLBACKS)
             self._type(email, label)
-            human.human_pause(200, 500)
+            human.human_pause(100, 250)
             pass_field = self._find_login_field(page, S.LOGIN_PASS_FALLBACKS)
             self._type(pass_field, password)
             # v0.2.43: user asked for fast login — submit via Enter the moment
@@ -675,7 +675,7 @@ class PlaywrightDriver(BaseDriver):
             except Exception:
                 pass
             human.human_click(page, first)
-            human.human_pause(200, 500)
+            human.human_pause(100, 250)
         except Exception as exc_s:
             self._note_field_error(
                 page, "location-select",
@@ -740,35 +740,23 @@ class PlaywrightDriver(BaseDriver):
                 human.human_pause(2000, 3000)
             except Exception:
                 pass
-            # 5. The Title field = the form is ready.
-            def _wait_title():
+            # 5. Form ready check (v0.2.59: FBM Robo style — NO GATE).
+            # The old code REQUIRED the Title field; if missing, the whole
+            # form fill was skipped (no pictures, nothing!). Now we just
+            # verify the page URL; each field filler tries independently.
+            def _wait_form_ready():
                 try:
-                    S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+                    url = page.url or ""
                 except Exception:
-                    # v0.2.48 diagnostic: dump what inputs ARE on the page so
-                    # the logs reveal Facebook's real markup (no more guessing).
-                    # v0.2.51: more defensive — also capture URL.
-                    try:
-                        url_now = page.url
-                    except Exception:
-                        url_now = "?"
-                    try:
-                        dump = page.evaluate(
-                            """() => Array.from(document.querySelectorAll(
-                                'input, textarea')).slice(0, 25).map(el => [
-                                el.tagName,
-                                el.getAttribute('type') || '',
-                                el.getAttribute('aria-label') || '',
-                                el.getAttribute('placeholder') || '',
-                                el.id || ''].join('|')).join(' ;; ')}""")
-                        if not dump:
-                            dump = "(no inputs found)"
-                    except Exception as exc_e:
-                        dump = f"(evaluate failed: {type(exc_e).__name__})"
-                    raise TimeoutError(
-                        f"Title not found @ {url_now[:80]}. "
-                        f"Page inputs: {dump[:600]}")
-            err = step("Title field wait", _wait_title)
+                    url = ""
+                if "/marketplace/create" not in url:
+                    raise TimeoutError(f"not on create page: {url[:60]}")
+                # Best-effort: Title present is a bonus, not a requirement.
+                try:
+                    S.to_playwright(page, S.F_TITLE).wait_for(timeout=8000)
+                except Exception:
+                    pass
+            err = step("form ready check", _wait_form_ready)
         if not err:
             return True, "click-through flow OK"
         detail = f"click-through failed at [{err}]"
@@ -777,20 +765,11 @@ class PlaywrightDriver(BaseDriver):
             page.goto(S.MKT_CREATE_ITEM_URL, wait_until="domcontentloaded")
             human.human_pause(1500, 3000)
             try:
-                S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+                url2 = page.url or ""
             except Exception:
-                try:
-                    dump = page.evaluate(
-                        """() => Array.from(document.querySelectorAll(
-                            'input, textarea')).slice(0, 25).map(el => [
-                            el.tagName,
-                            el.getAttribute('type') || '',
-                            el.getAttribute('aria-label') || '',
-                            el.getAttribute('placeholder') || '',
-                            el.id || ''].join('|')).join(' ;; ')}""")
-                except Exception:
-                    dump = "?"
-                raise TimeoutError(f"Title not found. Page inputs: {dump[:600]}")
+                url2 = ""
+            if "/marketplace/create" not in url2:
+                raise TimeoutError(f"direct URL did not land: {url2[:60]}")
             return True, detail + " | direct URL worked"
         except Exception as exc2:
             return False, (detail +
@@ -838,14 +817,19 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
 
-            # 3. Title, 4. Price.
-            # v0.2.56: verify each field actually got its value. If the
-            # price locator wrongly matches the title field, we'd append
-            # the price to the title — catch it here instead.
-            title = S.to_playwright(page, S.F_TITLE)
-            # (already waited visible inside _open_create_item_form)
-            self._type(title, payload.get("title", ""), hybrid_ok=True)
-            human.human_pause(200, 500)
+            # 3. Title (v0.2.59: INDEPENDENT — a Title failure must NOT
+            # block pictures/price/category/etc. FBM Robo style: try it,
+            # log the result, move on to the next field).
+            try:
+                title = S.to_playwright(page, S.F_TITLE)
+                title.wait_for(timeout=8000)
+                self._type(title, payload.get("title", ""), hybrid_ok=True)
+                human.human_pause(100, 300)
+            except Exception as exc_t:
+                self._note_field_error(
+                    page, "title",
+                    f"Title not filled: {type(exc_t).__name__}")
+            # 4. Price (v0.2.59: independent, with verification).
 
             price_val = str(payload.get("price", ""))
             if price_val:
@@ -865,7 +849,7 @@ class PlaywrightDriver(BaseDriver):
                     price.click()
                     human.human_pause(200, 400)
                     price.fill(price_val)
-                    human.human_pause(200, 500)
+                    human.human_pause(100, 250)
                     # Verify the price field actually holds the price.
                     try:
                         got = price.input_value() or ""
@@ -889,7 +873,7 @@ class PlaywrightDriver(BaseDriver):
                     cat = S.to_playwright(page, S.F_CATEGORY)
                     cat.wait_for(timeout=8000)
                     human.human_click(page, cat)
-                    human.human_pause(800, 1500)
+                    human.human_pause(300, 600)
                     # The dropdown list is open — click the matching option.
                     # Scope to listbox/option roles so we don't hit stray text.
                     opt = page.locator(
@@ -903,7 +887,7 @@ class PlaywrightDriver(BaseDriver):
                         opt = page.get_by_text(category, exact=False).first
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
-                    human.human_pause(200, 500)
+                    human.human_pause(100, 250)
                 except Exception as exc_c:
                     self._note_field_error(
                         page, "category",
@@ -921,7 +905,7 @@ class PlaywrightDriver(BaseDriver):
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
                     cond_field.wait_for(timeout=8000)
                     human.human_click(page, cond_field)
-                    human.human_pause(800, 1500)
+                    human.human_pause(300, 600)
                     # Click the matching option in the list.
                     opt = page.locator(
                         "[role='listbox'] [role='option'], "
@@ -933,7 +917,7 @@ class PlaywrightDriver(BaseDriver):
                         opt = page.get_by_text(condition, exact=False).first
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
-                    human.human_pause(200, 500)
+                    human.human_pause(100, 250)
                 except Exception as exc_co:
                     self._note_field_error(
                         page, "condition",
@@ -948,7 +932,7 @@ class PlaywrightDriver(BaseDriver):
                     md = page.get_by_text(_md_text, exact=False).first
                     md.wait_for(timeout=4000)
                     human.human_click(page, md)
-                    human.human_pause(600, 1000)
+                    human.human_pause(200, 400)
                     break
                 except Exception:
                     continue
@@ -964,7 +948,7 @@ class PlaywrightDriver(BaseDriver):
                     human.human_pause(200, 400)
                     # fill() sets the value instantly (paste-like).
                     dloc.fill(desc)
-                    human.human_pause(200, 500)
+                    human.human_pause(100, 250)
                 except Exception as exc_d:
                     self._note_field_error(
                         page, "description",
@@ -987,7 +971,7 @@ class PlaywrightDriver(BaseDriver):
                 av = S.to_playwright(page, S.F_AVAILABILITY_FIELD)
                 av.wait_for(timeout=8000)
                 human.human_click(page, av)
-                human.human_pause(800, 1500)
+                human.human_pause(300, 600)
                 opt = page.locator(
                     "[role='listbox'] [role='option'], "
                     "[role='menu'] [role='menuitem']").filter(
@@ -998,7 +982,7 @@ class PlaywrightDriver(BaseDriver):
                     opt = page.get_by_text(_avail_text, exact=False).first
                     opt.wait_for(timeout=6000)
                 human.human_click(page, opt)
-                human.human_pause(200, 500)
+                human.human_pause(100, 250)
             except Exception as exc_av:
                 self._note_field_error(
                     page, "availability",
@@ -1023,7 +1007,7 @@ class PlaywrightDriver(BaseDriver):
                         _checked = None
                     if _checked not in ("true", True):
                         human.human_click(page, hff)
-                        human.human_pause(200, 500)
+                        human.human_pause(100, 250)
                 except Exception as exc_h:
                     self._note_field_error(
                         page, "hide-from-friends",
@@ -1052,7 +1036,7 @@ class PlaywrightDriver(BaseDriver):
                         _sel_state = None
                     if _sel_state not in (True, "true"):
                         human.human_click(page, dloc)
-                        human.human_pause(200, 500)
+                        human.human_pause(100, 250)
                 except Exception as exc_do:
                     self._note_field_error(
                         page, f"delivery-{_opt}",
@@ -1090,11 +1074,22 @@ class PlaywrightDriver(BaseDriver):
         page = self._page
         assert page is not None
         self._last_error = None  # v0.2.29: surfaced in the run logs on failure
+        # v0.2.59: per-listing timing — user sets min/max seconds per listing
+        # (e.g. 45-60s). Not too fast (suspicious), not slower than manual.
+        import time as _time
+        _t0 = _time.time()
+        _min_s = payload.get("min_seconds_to_post") or 45
         try:
             if not self._fill_form(page, payload):
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "form fill failed")
                 return None
+            # v0.2.59: if we finished faster than min_seconds_to_post, wait
+            # the difference before publishing (don't look like a bot).
+            _elapsed = _time.time() - _t0
+            if _elapsed < _min_s:
+                _wait = _min_s - _elapsed
+                human.human_pause(int(_wait * 1000), int(_wait * 1000) + 500)
             # Publish: form -> Next -> Publish (two-step, v0.2.51).
             # The Publish button only appears AFTER clicking Next; the old
             # code skipped Next entirely and timed out waiting for Publish.
