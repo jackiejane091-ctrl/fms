@@ -124,6 +124,7 @@
           <th style="padding:10px;text-align:left">Proxy</th><th style="padding:10px;text-align:left">Proxy Status</th>
           <th style="padding:10px;text-align:left">Cookie</th>
           <th style="padding:10px;text-align:left">2FA</th>
+          <th style="padding:10px;text-align:left">Status</th>
           <th style="padding:10px;text-align:center">Actions</th>
         </tr></thead>
         <tbody id="maBody"></tbody>
@@ -372,7 +373,12 @@ async function maRefresh(){
       '<td style="padding:10px">'+pxs+'</td>'+
       '<td style="padding:10px">'+(a.has_cookie?'set':'—')+'</td>'+
       '<td style="padding:10px">'+(a.has_2fa?'set':'—')+'</td>'+
+      '<td style="padding:10px">'+(a.status==='locked'
+        ? '<span style="background:#fde8e8;color:#b91c1c;border-radius:10px;padding:3px 10px;font-size:12px;font-weight:700">🔒 Locked</span>'
+        : '<span style="background:#e6f7e6;color:#1a7f1a;border-radius:10px;padding:3px 10px;font-size:12px">Active</span>')+'</td>'+
       '<td style="padding:10px;text-align:center;white-space:nowrap">'+
+        (a.status==='locked'
+          ? '<button data-rowact="unlock" data-id="'+a.id+'" title="Unlock account" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px;margin-right:4px">🔓</button>' : '')+
         '<button data-rowact="copy" data-id="'+a.id+'" title="Copy login line" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px;margin-right:4px">📋</button>'+
         '<button data-rowact="edit" data-id="'+a.id+'" title="Edit account" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px;margin-right:4px">✏️</button>'+
         '<button data-rowact="del" data-id="'+a.id+'" title="Delete account" style="background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:16px;padding:4px 7px">🗑️</button>'+
@@ -411,6 +417,11 @@ el('maBody').addEventListener('click', async function(e){
     if(!await fmsConfirm('Delete this account?')) return;
     const r = await fetch('/api/accounts/'+aid, {method:'DELETE'});
     if(r.ok) maRefresh(); else fmsAlert('Delete failed: '+await r.text());
+  } else if(act==='unlock'){
+    // v0.2.38: unlock a login-locked account.
+    if(!await fmsConfirm('Is account ko unlock karein? Agli run me ye dobara try hoga.')) return;
+    const r = await fetch('/api/accounts/'+aid+'/unlock', {method:'POST'});
+    if(r.ok){ maRefresh(); } else fmsAlert('Unlock failed: '+await r.text());
   } else if(act==='edit'){
     _eaEditId = aid;
     try{
