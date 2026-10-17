@@ -812,21 +812,13 @@ class PlaywrightDriver(BaseDriver):
                                        "create-item form did not open")
                 return False
 
-            # 1. Expand "More details" first (v0.2.55: try several
-            # phrasings — on some accounts the label differs).
-            for _md_text in ("More details", "Show more details",
-                             "More Details"):
-                try:
-                    md = page.get_by_text(_md_text, exact=False).first
-                    md.wait_for(timeout=4000)
-                    # Only click if it's actually expandable (not already open).
-                    human.human_click(page, md)
-                    human.human_pause(400, 800)
-                    break
-                except Exception:
-                    continue
+            # v0.2.58: user's EXACT form order (no more guessing):
+            # Main form: Photos -> Title -> Price -> Category -> Condition.
+            # THEN click "More details" -> Description -> Availability ->
+            # (skip Tags, skip SKU) -> Location -> Delivery -> Hide from friends.
+            # THEN Next becomes clickable -> Publish.
 
-            # 2. Photos FIRST (before any text).
+            # 1. Photos FIRST (before any text).
             images = payload.get("image_paths") or []
             if images:
                 try:
@@ -947,7 +939,21 @@ class PlaywrightDriver(BaseDriver):
                         page, "condition",
                         f"Condition '{condition}' not selected: "
                         f"{type(exc_co).__name__}")
-            # Description: COPY-PASTE, not typing (v0.2.55 — user's
+
+            # 5b. Click "More details" to reveal Description, Availability,
+            # Location, Delivery, Hide from friends (user's exact order).
+            for _md_text in ("More details", "Show more details",
+                             "More Details"):
+                try:
+                    md = page.get_by_text(_md_text, exact=False).first
+                    md.wait_for(timeout=4000)
+                    human.human_click(page, md)
+                    human.human_pause(600, 1000)
+                    break
+                except Exception:
+                    continue
+
+            # 6. Description: COPY-PASTE, not typing (v0.2.55 — user's
             # explicit instruction: simple and easy, no character-by-character).
             desc = payload.get("description") or ""
             if desc:
@@ -964,22 +970,67 @@ class PlaywrightDriver(BaseDriver):
                         page, "description",
                         f"Description not pasted: {type(exc_d).__name__}")
 
-            # Location
+            # 7. Availability: dropdown -> select "List as in stock"
+            # (user: product saves availability as "list as stock").
+            # Tags and SKU are SKIPPED (user's explicit instruction).
+            _avail = (payload.get("availability") or "").strip().lower()
+            # Map product values to the FB option text.
+            _avail_map = {
+                "in_stock": "List as in stock",
+                "list as in stock": "List as in stock",
+                "stock": "List as in stock",
+                "single": "List as single item",
+                "list as single item": "List as single item",
+            }
+            _avail_text = _avail_map.get(_avail, "List as in stock")
+            try:
+                av = S.to_playwright(page, S.F_AVAILABILITY_FIELD)
+                av.wait_for(timeout=8000)
+                human.human_click(page, av)
+                human.human_pause(800, 1500)
+                opt = page.locator(
+                    "[role='listbox'] [role='option'], "
+                    "[role='menu'] [role='menuitem']").filter(
+                    has_text=_avail_text).first
+                try:
+                    opt.wait_for(timeout=6000)
+                except Exception:
+                    opt = page.get_by_text(_avail_text, exact=False).first
+                    opt.wait_for(timeout=6000)
+                human.human_click(page, opt)
+                human.human_pause(200, 500)
+            except Exception as exc_av:
+                self._note_field_error(
+                    page, "availability",
+                    f"Availability '{_avail_text}' not selected: "
+                    f"{type(exc_av).__name__}")
+
+            # 8. Location (Tags and SKU skipped per user's instruction).
             if payload.get("location"):
                 self._select_location(page, payload["location"])
 
-            # Hide From Friends (v0.2.55: log failures, don't silently pass).
+            # 9. Hide From Friends: it's a TOGGLE switch (user's screenshot).
+            # Only click if it's currently OFF (we want it ON).
             if payload.get("hide_from_friends"):
                 try:
                     hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
                     hff.wait_for(timeout=6000)
-                    human.human_click(page, hff)
-                    human.human_pause(200, 500)
+                    # Check the toggle state — don't flip it if already on.
+                    try:
+                        _checked = hff.evaluate(
+                            "e => e.getAttribute('aria-checked')")
+                    except Exception:
+                        _checked = None
+                    if _checked not in ("true", True):
+                        human.human_click(page, hff)
+                        human.human_pause(200, 500)
                 except Exception as exc_h:
                     self._note_field_error(
                         page, "hide-from-friends",
                         f"Hide-from-friends not set: {type(exc_h).__name__}")
-            # Delivery options (v0.2.55: log failures, don't silently pass).
+            # 9. Delivery options: user ticks "Door drop-off".
+            # v0.2.58: state-aware — only click if not already selected
+            # (clicking a selected checkbox would UNSELECT it).
             _delivery_sel = {
                 "public_meetup": S.F_DELIVERY_MEETUP,
                 "door_pickup": S.F_DELIVERY_PICKUP,
@@ -992,8 +1043,16 @@ class PlaywrightDriver(BaseDriver):
                 try:
                     dloc = S.to_playwright(page, _sel)
                     dloc.wait_for(timeout=6000)
-                    human.human_click(page, dloc)
-                    human.human_pause(200, 500)
+                    # Check if already selected (checkbox/radio).
+                    try:
+                        _sel_state = dloc.evaluate(
+                            "e => e.checked !== undefined ? e.checked : "
+                            "e.getAttribute('aria-checked')")
+                    except Exception:
+                        _sel_state = None
+                    if _sel_state not in (True, "true"):
+                        human.human_click(page, dloc)
+                        human.human_pause(200, 500)
                 except Exception as exc_do:
                     self._note_field_error(
                         page, f"delivery-{_opt}",

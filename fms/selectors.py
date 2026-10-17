@@ -66,16 +66,25 @@ MORE_DETAILS = ("text", "More details")
 # wrapped labels). The old CSS aria-label* selectors stopped matching
 # Facebook's current markup — the form renders but the Title input was
 # never found (20s timeout on a visibly-loaded page).
-F_TITLE = ("label", "Title")
-F_PRICE = ("label", "Price")
-F_CATEGORY = ("label", "Category")
+# v0.2.58: Facebook uses PLACEHOLDER text (not <label>/aria-label) for the
+# form fields — confirmed from the user's screenshots. get_by_label was
+# failing/mismatching; get_by_placeholder is the correct strategy.
+F_TITLE = ("placeholder", "Title")
+F_PRICE = ("placeholder", "Price")
+# v0.2.58: Category is a dropdown DIV (screenshot shows ▼ arrow), not an input.
+F_CATEGORY = ("text", "Category")
 F_CONDITION_NEW = ("text", "New")
 F_CONDITION_USED_LIKE_NEW = ("text", "Used - like new")
 # v0.2.54: the Condition dropdown field itself (click to open the list).
-F_CONDITION_FIELD = ("label", "Condition")
-F_DESCRIPTION = ("label", "Description")
+# v0.2.58: it's a dropdown DIV with placeholder-like text, not a labeled input.
+F_CONDITION_FIELD = ("text", "Condition")
+F_DESCRIPTION = ("placeholder", "Description")
+# v0.2.58: Availability dropdown (in More details). Options: "List as single
+# item" / "List as in stock". User's product saves "list as stock".
+F_AVAILABILITY_FIELD = ("text", "Availability")
 F_AVAILABILITY = ("css", "[aria-label*='Availability' i]")
-F_LOCATION = ("label", "Location")
+# v0.2.58: Location is also a placeholder-style input (per screenshots).
+F_LOCATION = ("placeholder", "Location")
 F_LOCATION_FIRST_RESULT = ("css", "[role='listbox'] [role='option']:first-child")
 F_TAGS = ("css", "input[aria-label*='tag' i], input[placeholder*='tag' i]")
 
@@ -89,8 +98,10 @@ F_NEXT_BUTTON = ("text", "Next")
 F_DRAFT_SAVED_INDICATOR = ("text", "Your listing has been saved")
 
 # Listing visibility (matches the real tool's "Hide From Friends" setting)
-F_HIDE_FROM_FRIENDS = ("css", "input[aria-label*='Hide from friends' i], "
-                              "[aria-label*='Hide listing from friends' i]")
+# v0.2.58: Hide from friends is a TOGGLE SWITCH (screenshot), not a checkbox.
+# Find the switch near the "Hide from friends" text.
+F_HIDE_FROM_FRIENDS = ("css", "[role='switch'][aria-label*='Hide from friends' i], "
+                              "[role='switch'][aria-label*='Hide listing from friends' i]")
 
 # Delivery options (real tool's product dialog checkboxes; best-effort text match)
 F_DELIVERY_MEETUP = ("text", "Public meetup")
