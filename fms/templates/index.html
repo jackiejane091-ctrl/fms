@@ -40,9 +40,6 @@
     <span class="cc-field"><b>Pause/Continue:</b>
       <button type="button" class="btn" id="pauseBtn" onclick="togglePause()">Pause All</button>
     </span>
-    <span class="cc-field"><b>Board:</b>
-      <button type="button" class="btn" id="refreshBoardBtn" onclick="refreshBoard()" title="Clear the finished run's board for a new task (FBM Robo style)">🔄 Refresh</button>
-    </span>
     <span class="cc-field"><b>Schedule At:</b>
       <input type="datetime-local" id="schedAt">
     </span>
@@ -132,32 +129,6 @@ async function pauseAll(){ return togglePause(); }
 // v0.2.51: FBM Robo behavior — press Refresh and the board goes CLEAN.
 // No "select group" popup, no recycling old IDs to Pending. The board
 // empties and the group selection clears, ready for the next action.
-async function refreshBoard(){
-  const gids = (typeof selectedGroups === 'function') ? selectedGroups() : [];
-  for(const gid of gids){
-    try{
-      const fd = new FormData();
-      fd.append('group_id', gid);
-      await fetch('/api/board/refresh', {method:'POST', body: fd});
-    }catch(_){}
-  }
-  // Clear the group selection so the board is truly fresh.
-  try{
-    document.querySelectorAll('.gcheck:checked').forEach(c => { c.checked = false; });
-    if(typeof gcheckChanged === 'function'){ gcheckChanged(); }
-  }catch(_){}
-  // Empty the four board panels directly (no old IDs recycled to Pending).
-  try{
-    for(const id of ['bpPending','bpProg','bpDone','bpFailed']){
-      const ul = document.getElementById(id);
-      if(ul){ ul.innerHTML = ''; }
-    }
-    for(const id of ['bpPendingN','bpProgN','bpDoneN','bpFailedN']){
-      const sp = document.getElementById(id);
-      if(sp){ sp.textContent = '0'; }
-    }
-  }catch(_){}
-}
 function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
 }

@@ -33,6 +33,8 @@
     </span>
     <button type="button" class="upd-btn" id="updBtn" onclick="checkUpdate()">⟳ Update</button>
     <span class="ver" id="fmsVer" title="FMS version"></span>
+    <!-- v0.2.52: FBM Robo style — just the refresh icon, no text. -->
+    <button type="button" id="refreshIconBtn" onclick="refreshBoard()" title="Refresh board" style="background:none;border:none;font-size:18px;cursor:pointer;padding:4px 8px;color:var(--txt)">🔄</button>
   </nav>
 </header>
 <div id="browserBanner" class="banner hidden">
@@ -63,6 +65,35 @@
 </footer>
 {% block scripts %}{% endblock %}
 <script>
+// v0.2.52: FBM Robo style board refresh — global so the top-bar icon works
+// on every page. On the home page it clears the board; elsewhere it's a
+// harmless no-op (all DOM lookups are guarded).
+async function refreshBoard(){
+  try{
+    const gids = (typeof selectedGroups === 'function') ? selectedGroups() : [];
+    for(const gid of gids){
+      try{
+        const fd = new FormData();
+        fd.append('group_id', gid);
+        await fetch('/api/board/refresh', {method:'POST', body: fd});
+      }catch(_){}
+    }
+  }catch(_){}
+  try{
+    document.querySelectorAll('.gcheck:checked').forEach(c => { c.checked = false; });
+    if(typeof gcheckChanged === 'function'){ gcheckChanged(); }
+  }catch(_){}
+  try{
+    for(const id of ['bpPending','bpProg','bpDone','bpFailed']){
+      const ul = document.getElementById(id);
+      if(ul){ ul.innerHTML = ''; }
+    }
+    for(const id of ['bpPendingN','bpProgN','bpDoneN','bpFailedN']){
+      const sp = document.getElementById(id);
+      if(sp){ sp.textContent = '0'; }
+    }
+  }catch(_){}
+}
 function toggleDd(id){
   const el = document.getElementById(id);
   const was = el.classList.contains('open');
