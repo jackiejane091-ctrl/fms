@@ -60,14 +60,18 @@ ITEM_FOR_SALE_OPTION = ("text", "Item for sale")
 MKT_NAV_ICON = ("css", "a[aria-label='Marketplace']")
 
 # Form fields on /marketplace/create/item/
-F_TITLE = ("css", "input[aria-label*='Title' i], input[placeholder*='Title' i]")
-F_PRICE = ("css", "input[aria-label*='Price' i], input[placeholder*='Price' i]")
-F_CATEGORY = ("css", "input[aria-label*='Category' i], [role='combobox'][aria-label*='Category' i]")
+# v0.2.48: label-based (get_by_label handles aria-label, <label for>,
+# wrapped labels). The old CSS aria-label* selectors stopped matching
+# Facebook's current markup — the form renders but the Title input was
+# never found (20s timeout on a visibly-loaded page).
+F_TITLE = ("label", "Title")
+F_PRICE = ("label", "Price")
+F_CATEGORY = ("label", "Category")
 F_CONDITION_NEW = ("text", "New")
 F_CONDITION_USED_LIKE_NEW = ("text", "Used - like new")
-F_DESCRIPTION = ("css", "textarea[aria-label*='Description' i]")
+F_DESCRIPTION = ("label", "Description")
 F_AVAILABILITY = ("css", "[aria-label*='Availability' i]")
-F_LOCATION = ("css", "input[aria-label*='Location' i], input[placeholder*='Location' i]")
+F_LOCATION = ("label", "Location")
 F_LOCATION_FIRST_RESULT = ("css", "[role='listbox'] [role='option']:first-child")
 F_TAGS = ("css", "input[aria-label*='tag' i], input[placeholder*='tag' i]")
 

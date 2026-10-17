@@ -606,17 +606,29 @@ class PlaywrightDriver(BaseDriver):
         ))
         if not err:
             # 2. Click the Marketplace icon in the header nav.
-            err = step("Marketplace icon click", lambda: (
-                human.human_click(page, S.to_playwright(page, S.MKT_NAV_ICON)),
-                human.human_pause(2000, 3500),
-                S.to_playwright(page, S.CREATE_LISTING_BUTTON).wait_for(timeout=10000),
-            ))
+            def _click_mkt_icon():
+                human.human_click(page, S.to_playwright(page, S.MKT_NAV_ICON))
+                human.human_pause(2000, 3500)
+                # v0.2.48: try href selector, fall back to visible text.
+                try:
+                    S.to_playwright(page, S.CREATE_LISTING_BUTTON).wait_for(
+                        timeout=8000)
+                except Exception:
+                    page.get_by_text("Create listing", exact=False).first.wait_for(
+                        timeout=8000)
+            err = step("Marketplace icon click", _click_mkt_icon)
         if not err:
             # 3. Click "Create listing".
-            err = step("Create listing click", lambda: (
-                human.human_click(page, S.to_playwright(page, S.CREATE_LISTING_BUTTON)),
-                human.human_pause(2000, 3000),
-            ))
+            def _click_create():
+                try:
+                    loc = S.to_playwright(page, S.CREATE_LISTING_BUTTON)
+                    loc.wait_for(timeout=5000)
+                except Exception:
+                    loc = page.get_by_text("Create listing",
+                                           exact=False).first
+                human.human_click(page, loc)
+                human.human_pause(2000, 3000)
+            err = step("Create listing click", _click_create)
         if not err:
             # 4. Choose the listing type if a chooser appears (best effort —
             #    Facebook sometimes goes straight to the item form).
@@ -628,8 +640,25 @@ class PlaywrightDriver(BaseDriver):
             except Exception:
                 pass
             # 5. The Title field = the form is ready.
-            err = step("Title field wait", lambda:
-                       S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000))
+            def _wait_title():
+                try:
+                    S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+                except Exception:
+                    # v0.2.48 diagnostic: dump what inputs ARE on the page so
+                    # the logs reveal Facebook's real markup (no more guessing).
+                    try:
+                        dump = page.evaluate(
+                            """() => Array.from(document.querySelectorAll(
+                                'input, textarea')).slice(0, 25).map(el => [
+                                el.tagName,
+                                el.getAttribute('type') || '',
+                                el.getAttribute('aria-label') || '',
+                                el.getAttribute('placeholder') || '',
+                                el.id || ''].join('|')).join(' ;; ')}""")
+                    except Exception:
+                        dump = "?"
+                    raise TimeoutError(f"Title not found. Page inputs: {dump[:600]}")
+            err = step("Title field wait", _wait_title)
         if not err:
             return True, "click-through flow OK"
         detail = f"click-through failed at [{err}]"
@@ -637,11 +666,25 @@ class PlaywrightDriver(BaseDriver):
         try:
             page.goto(S.MKT_CREATE_ITEM_URL, wait_until="domcontentloaded")
             human.human_pause(1500, 3000)
-            S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+            try:
+                S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+            except Exception:
+                try:
+                    dump = page.evaluate(
+                        """() => Array.from(document.querySelectorAll(
+                            'input, textarea')).slice(0, 25).map(el => [
+                            el.tagName,
+                            el.getAttribute('type') || '',
+                            el.getAttribute('aria-label') || '',
+                            el.getAttribute('placeholder') || '',
+                            el.id || ''].join('|')).join(' ;; ')}""")
+                except Exception:
+                    dump = "?"
+                raise TimeoutError(f"Title not found. Page inputs: {dump[:600]}")
             return True, detail + " | direct URL worked"
         except Exception as exc2:
             return False, (detail +
-                           f" | direct URL also failed: {type(exc2).__name__}")
+                           f" | direct URL also failed: {type(exc2).__name__}: {str(exc2)[:300]}")
 
     def _fill_form(self, page, payload: dict) -> bool:
         """Fill the whole create-item form. Shared by post/draft/manual/edit."""
