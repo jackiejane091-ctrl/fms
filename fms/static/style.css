@@ -175,3 +175,7 @@ button.small { font-size:12px; padding:4px 10px; }
 /* v0.2.36: Running state — visibly disabled, not clickable. */
 .btn-start:disabled { background:#9db3c9; color:#f2f4f8; cursor:not-allowed;
   filter:none; opacity:.85; }
+/* v0.2.37: last-run outcome line next to Start. */
+.lastrun { margin-left:10px; font-size:13px; color:var(--muted,#5b6b7c); }
+.lastrun.bad { color:#d92d20; font-weight:700; }
+.lastrun.ok { color:#1a9e5c; font-weight:600; }

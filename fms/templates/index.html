@@ -34,6 +34,8 @@
   <div class="cc-row">
     <span class="cc-field"><b>Start:</b>
       <button type="button" class="btn-start" id="startBtn" onclick="startRun()">Start</button>
+      <!-- v0.2.37: last run outcome — a dead run never looks like "nothing happened". -->
+      <span id="lastRunLine" class="lastrun"></span>
     </span>
     <span class="cc-field"><b>Pause/Continue:</b>
       <button type="button" class="btn" id="pauseBtn" onclick="togglePause()">Pause All</button>
@@ -233,7 +235,7 @@ async function loadBoard(){
   if(!gids.length) return;
   // v0.2.23: board aggregates ALL selected groups, not just the first.
   const merged = {pending:[], in_progress:[], done_posting:[], failed:[]};
-  let anyLive = false, anyPaused = false, logs = [];
+  let anyLive = false, anyPaused = false, logs = [], lastRun = null;
   for(const gid of gids){
     try{
       const r = await fetch('/api/board?group_id=' + gid);
@@ -241,6 +243,7 @@ async function loadBoard(){
       if(b.run_id) boardRunIds[gid] = b.run_id;
       if(b.run_live) anyLive = true;
       if(b.run_paused) anyPaused = true;
+      if(b.last_run && (!lastRun || b.last_run.id > lastRun.id)) lastRun = b.last_run;
       for(const k of Object.keys(merged)) merged[k] = merged[k].concat(b[k] || []);
       if((b.logs || []).length && !logs.length) logs = b.logs;
     }catch(e){}
@@ -259,6 +262,24 @@ async function loadBoard(){
   // while a run is live so it can't be pressed twice (professional feel).
   const sb = document.getElementById('startBtn');
   if(sb){ sb.disabled = anyLive; sb.textContent = anyLive ? 'Running…' : 'Start'; }
+  // v0.2.37: show the last run's outcome next to Start — never silent.
+  const lr = document.getElementById('lastRunLine');
+  if(lr){
+    if(anyLive){ lr.textContent = ''; lr.className = 'lastrun'; }
+    else if(lastRun){
+      const st = lastRun.status || '?';
+      if(st === 'failed'){
+        lr.textContent = '⚠️ Aakhri run #' + lastRun.id + ' FAILED: ' + (lastRun.error || 'wajah maloom nahi');
+        lr.className = 'lastrun bad';
+      } else if(st === 'completed'){
+        lr.textContent = '✓ Aakhri run #' + lastRun.id + ' mukammal hui.';
+        lr.className = 'lastrun ok';
+      } else if(st === 'stopped'){
+        lr.textContent = '⏹ Aakhri run #' + lastRun.id + ' roki gayi thi.';
+        lr.className = 'lastrun';
+      } else { lr.textContent = ''; lr.className = 'lastrun'; }
+    } else { lr.textContent = ''; lr.className = 'lastrun'; }
+  }
   // Don't clobber a per-account log filter on every poll.
   // v0.2.28: never show combined logs automatically — the user asked for
   // account-specific logs only. Prompt to click an account instead.

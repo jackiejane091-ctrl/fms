@@ -757,6 +757,18 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
                 f"[{l['created_at']}] {l['level']}: {l['message']}"
                 for l in engine.recent_logs(run["id"], 50)
             ]
+            # v0.2.37: surface the last run's outcome on the dashboard so a
+            # silently-died run never looks like "Start did nothing".
+            err = ""
+            for l in engine.recent_logs(run["id"], 50):
+                if l.get("level") == "error":
+                    err = l["message"]
+                    break
+            board["last_run"] = {
+                "id": run["id"],
+                "status": full.get("status") or run.get("status") or "?",
+                "error": err,
+            }
             return board
         # Live run: prefer the controller's real queue state (v0.2.23 slot
         # refill). Items carry account ids for right-click Restart.
