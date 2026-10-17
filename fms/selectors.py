@@ -71,6 +71,8 @@ F_PRICE = ("label", "Price")
 F_CATEGORY = ("label", "Category")
 F_CONDITION_NEW = ("text", "New")
 F_CONDITION_USED_LIKE_NEW = ("text", "Used - like new")
+# v0.2.54: the Condition dropdown field itself (click to open the list).
+F_CONDITION_FIELD = ("label", "Condition")
 F_DESCRIPTION = ("label", "Description")
 F_AVAILABILITY = ("css", "[aria-label*='Availability' i]")
 F_LOCATION = ("label", "Location")

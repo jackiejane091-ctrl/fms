@@ -773,40 +773,63 @@ class PlaywrightDriver(BaseDriver):
             self._type(price, str(payload.get("price", "")))
             human.human_pause(200, 500)
 
-            # Category: type and pick the first suggestion.
-            # v0.2.53: no more silent pass — log the failure so we know.
+            # Category: CLICK the field, then SELECT from the dropdown list.
+            # v0.2.54: user confirmed these are lists, not type-in fields.
+            # The old code kept trying to TYPE, which never selected anything.
             category = payload.get("category")
             if category:
                 try:
                     cat = S.to_playwright(page, S.F_CATEGORY)
                     cat.wait_for(timeout=8000)
-                    self._type(cat, category)
+                    human.human_click(page, cat)
                     human.human_pause(800, 1500)
-                    first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
-                    first.wait_for(timeout=6000)
-                    human.human_click(page, first)
+                    # The dropdown list is open — click the matching option.
+                    # Scope to listbox/option roles so we don't hit stray text.
+                    opt = page.locator(
+                        "[role='listbox'] [role='option'], "
+                        "[role='menu'] [role='menuitem']").filter(
+                        has_text=category).first
+                    try:
+                        opt.wait_for(timeout=6000)
+                    except Exception:
+                        # Fallback: any visible element with the text.
+                        opt = page.get_by_text(category, exact=False).first
+                        opt.wait_for(timeout=6000)
+                    human.human_click(page, opt)
                     human.human_pause(200, 500)
                 except Exception as exc_c:
                     self._last_form_error = (
-                        f"Category '{category}' not filled: "
+                        f"Category '{category}' not selected: "
                         f"{type(exc_c).__name__}")
                     # Don't return False yet — try the rest, Next check
                     # will catch an incomplete form.
 
-            # Condition
-            # v0.2.53: log failures instead of silent pass.
-            condition = (payload.get("condition") or "New").lower()
-            try:
-                sel = (S.F_CONDITION_NEW if "new" in condition
-                       else S.F_CONDITION_USED_LIKE_NEW)
-                loc = S.to_playwright(page, sel)
-                loc.wait_for(timeout=8000)
-                human.human_click(page, loc)
-                human.human_pause(200, 500)
-            except Exception as exc_co:
-                self._last_form_error = (
-                    f"Condition '{condition}' not set: "
-                    f"{type(exc_co).__name__}")
+            # Condition: CLICK the field, then SELECT from the list.
+            # v0.2.54: same list-select approach as category.
+            condition = (payload.get("condition") or "New").strip()
+            if condition:
+                try:
+                    # Open the condition dropdown.
+                    cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
+                    cond_field.wait_for(timeout=8000)
+                    human.human_click(page, cond_field)
+                    human.human_pause(800, 1500)
+                    # Click the matching option in the list.
+                    opt = page.locator(
+                        "[role='listbox'] [role='option'], "
+                        "[role='menu'] [role='menuitem']").filter(
+                        has_text=condition).first
+                    try:
+                        opt.wait_for(timeout=6000)
+                    except Exception:
+                        opt = page.get_by_text(condition, exact=False).first
+                        opt.wait_for(timeout=6000)
+                    human.human_click(page, opt)
+                    human.human_pause(200, 500)
+                except Exception as exc_co:
+                    self._last_form_error = (
+                        f"Condition '{condition}' not selected: "
+                        f"{type(exc_co).__name__}")
 
             # Description
             desc = payload.get("description") or ""
