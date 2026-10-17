@@ -589,7 +589,9 @@ class PlaywrightDriver(BaseDriver):
 
     # -- posting ----------------------------------------------------------------
     def _select_location(self, page, location: str) -> None:
-        # v0.2.53: log failures instead of silent return.
+        # v0.2.55: extra care (user's explicit instruction). Type the FULL
+        # location text, wait for the suggestion list, then click the FIRST
+        # suggestion — never pick blindly.
         loc = S.to_playwright(page, S.F_LOCATION)
         try:
             loc.wait_for(timeout=10000)
@@ -597,15 +599,36 @@ class PlaywrightDriver(BaseDriver):
             self._last_form_error = (
                 f"Location field not found: {type(exc_l).__name__}")
             return
+        # Clear then type the full text.
+        try:
+            loc.click()
+            human.human_pause(200, 400)
+            loc.fill("")
+            human.human_pause(200, 400)
+        except Exception:
+            pass
         self._type(loc, location)
-        human.human_pause(800, 1500)
+        human.human_pause(1500, 2500)  # let suggestions appear
         try:
             first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
             first.wait_for(timeout=8000)
+            # Sanity: the suggestion should contain part of our text.
+            try:
+                sug_text = (first.inner_text() or "").strip().lower()
+                want = location.split(",")[0].strip().lower()
+                if want and want not in sug_text and sug_text not in want:
+                    self._last_form_error = (
+                        f"Location suggestion mismatch: wanted '{location}', "
+                        f"got '{sug_text[:60]}' — skipped to avoid wrong pick")
+                    return
+            except Exception:
+                pass
             human.human_click(page, first)
             human.human_pause(200, 500)
-        except Exception:
-            pass  # leave typed text; Facebook may still accept it
+        except Exception as exc_s:
+            self._last_form_error = (
+                f"Location '{location}' suggestion not selected: "
+                f"{type(exc_s).__name__}")
 
     def _open_create_item_form(self, page) -> tuple[bool, str]:
         """Open the create-item form the FBM Robo way: feed -> click the
@@ -734,14 +757,19 @@ class PlaywrightDriver(BaseDriver):
                 self._last_form_error = detail
                 return False
 
-            # 1. Expand "More details" first.
-            try:
-                md = S.to_playwright(page, S.MORE_DETAILS)
-                md.wait_for(timeout=6000)
-                human.human_click(page, md)
-                human.human_pause(400, 800)
-            except Exception:
-                pass  # already expanded or absent
+            # 1. Expand "More details" first (v0.2.55: try several
+            # phrasings — on some accounts the label differs).
+            for _md_text in ("More details", "Show more details",
+                             "More Details"):
+                try:
+                    md = page.get_by_text(_md_text, exact=False).first
+                    md.wait_for(timeout=4000)
+                    # Only click if it's actually expandable (not already open).
+                    human.human_click(page, md)
+                    human.human_pause(400, 800)
+                    break
+                except Exception:
+                    continue
 
             # 2. Photos FIRST (before any text).
             images = payload.get("image_paths") or []
@@ -831,26 +859,38 @@ class PlaywrightDriver(BaseDriver):
                         f"Condition '{condition}' not selected: "
                         f"{type(exc_co).__name__}")
 
-            # Description
+            # Description: COPY-PASTE, not typing (v0.2.55 — user's
+            # explicit instruction: simple and easy, no character-by-character).
             desc = payload.get("description") or ""
             if desc:
-                self._type(S.to_playwright(page, S.F_DESCRIPTION), desc,
-                           hybrid_ok=True)
-                human.human_pause(200, 500)
+                try:
+                    dloc = S.to_playwright(page, S.F_DESCRIPTION)
+                    dloc.wait_for(timeout=8000)
+                    dloc.click()
+                    human.human_pause(200, 400)
+                    # fill() sets the value instantly (paste-like).
+                    dloc.fill(desc)
+                    human.human_pause(200, 500)
+                except Exception as exc_d:
+                    self._last_form_error = (
+                        f"Description not pasted: {type(exc_d).__name__}")
 
             # Location
             if payload.get("location"):
                 self._select_location(page, payload["location"])
 
-            # Hide From Friends (matches the real tool's setting; best-effort)
+            # Hide From Friends (v0.2.55: log failures, don't silently pass).
             if payload.get("hide_from_friends"):
                 try:
-                    human.human_click(page, S.to_playwright(page, S.F_HIDE_FROM_FRIENDS))
+                    hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
+                    hff.wait_for(timeout=6000)
+                    human.human_click(page, hff)
                     human.human_pause(200, 500)
-                except Exception:
-                    pass
+                except Exception as exc_h:
+                    self._last_form_error = (
+                        f"Hide-from-friends not set: {type(exc_h).__name__}")
 
-            # Delivery options (real tool's product dialog checkboxes; best-effort)
+            # Delivery options (v0.2.55: log failures, don't silently pass).
             _delivery_sel = {
                 "public_meetup": S.F_DELIVERY_MEETUP,
                 "door_pickup": S.F_DELIVERY_PICKUP,
@@ -861,10 +901,13 @@ class PlaywrightDriver(BaseDriver):
                 if not _sel:
                     continue
                 try:
-                    human.human_click(page, S.to_playwright(page, _sel))
+                    dloc = S.to_playwright(page, _sel)
+                    dloc.wait_for(timeout=6000)
+                    human.human_click(page, dloc)
                     human.human_pause(200, 500)
-                except Exception:
-                    pass
+                except Exception as exc_do:
+                    self._last_form_error = (
+                        f"Delivery '{_opt}' not set: {type(exc_do).__name__}")
 
             # (Photos/video already attached at the top — v0.2.50 order.)
             return True
