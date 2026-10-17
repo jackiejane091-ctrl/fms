@@ -220,6 +220,18 @@ class PlaywrightDriver(BaseDriver):
         self._browser = None
         self._context = None
         self._page = None
+        # v0.2.49: set by the engine — called the instant the browser window
+        # is closed so the account flips to Failed immediately.
+        self._on_close_callback = None
+
+    def _handle_context_close(self) -> None:
+        """Fires the moment the browser window/context closes (user ×)."""
+        cb = getattr(self, "_on_close_callback", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
 
     # -- typing / ixbrowser config (injected by the engine per run) ------------
     def _typing_cfg(self) -> "human.TypingConfig":
@@ -295,6 +307,12 @@ class PlaywrightDriver(BaseDriver):
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+        # v0.2.49: watch for the user closing the window — the engine marks
+        # the account Failed the instant this fires (no 8-10s stall).
+        try:
+            self._context.on("close", self._handle_context_close)
+        except Exception:
+            pass
         # v0.2.33: stealth init script so Facebook sees a human-driven
         # browser, not automation ("we suspected automated behavior").
         try:
@@ -386,6 +404,11 @@ class PlaywrightDriver(BaseDriver):
         self._context = contexts[0] if contexts else self._browser.new_context()
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+        # v0.2.49: same close watcher as the main launch path.
+        try:
+            self._context.on("close", self._handle_context_close)
+        except Exception:
+            pass
 
     def _ensure(self) -> None:
         if self._page is None:

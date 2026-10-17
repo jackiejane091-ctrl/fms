@@ -110,13 +110,16 @@ async function togglePause(){
 async function pauseAll(){ return togglePause(); }
 // v0.2.46: FBM Robo style Refresh — clears the finished run's final board
 // (Done/Failed stay visible until this is pressed).
+// v0.2.49 fix: groups come from the custom gdrop checkboxes via
+// selectedGroups(), not a #groupSel element (which doesn't exist).
 async function refreshBoard(){
-  const g = document.getElementById('groupSel');
-  const gid = g ? g.value : '';
-  if(!gid){ fmsAlert('Pehle group select karo.'); return; }
-  const fd = new FormData();
-  fd.append('group_id', gid);
-  await fetch('/api/board/refresh', {method:'POST', body: fd});
+  const gids = (typeof selectedGroups === 'function') ? selectedGroups() : [];
+  if(!gids.length){ fmsAlert('Pehle group select karo.'); return; }
+  for(const gid of gids){
+    const fd = new FormData();
+    fd.append('group_id', gid);
+    await fetch('/api/board/refresh', {method:'POST', body: fd});
+  }
   loadBoard();
 }
 function modeChanged(){

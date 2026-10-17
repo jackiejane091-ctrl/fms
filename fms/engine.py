@@ -584,6 +584,23 @@ class RunController:
         except Exception:
             pass
 
+    def _on_browser_closed_by_user(self, account_id: int, label: str) -> None:
+        """The browser window was closed — flip the account to Failed RIGHT
+        NOW (v0.2.49). Previously the worker only noticed on its next
+        Playwright call, leaving the account stuck in In Progress for 8-10s.
+        Only acts when the account is still in_progress (normal cleanup after
+        a finished account is ignored). Idempotent with the worker's own
+        exception handling."""
+        with self._q_lock:
+            if self._acct_state.get(account_id) != "in_progress":
+                return
+            self._acct_state[account_id] = "failed"
+        try:
+            self.log(f"[{label}] browser closed — marked failed",
+                     level="error", account_id=account_id)
+        except Exception:
+            pass
+
     def _mark_failed(self, account_id: int) -> None:
         """Set state=failed in memory AND persist it for resume."""
         with self._q_lock:
@@ -692,6 +709,14 @@ class RunController:
             try:
                 driver = self.driver_factory(_driver_creds(self.db, self.cfg,
                                                            account))
+                # v0.2.49: instant Failed the moment the user closes the
+                # browser window (no waiting for the worker's next call).
+                try:
+                    driver._on_close_callback = (
+                        lambda: self._on_browser_closed_by_user(
+                            account["id"], label))
+                except Exception:
+                    pass
             except Exception as exc:
                 # v0.2.35: a broken stored credential (bad decrypt, corrupt
                 # data) used to kill the whole worker thread silently — the
