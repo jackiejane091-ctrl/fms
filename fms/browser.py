@@ -669,6 +669,11 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     # v0.2.48 diagnostic: dump what inputs ARE on the page so
                     # the logs reveal Facebook's real markup (no more guessing).
+                    # v0.2.51: more defensive — also capture URL.
+                    try:
+                        url_now = page.url
+                    except Exception:
+                        url_now = "?"
                     try:
                         dump = page.evaluate(
                             """() => Array.from(document.querySelectorAll(
@@ -678,9 +683,13 @@ class PlaywrightDriver(BaseDriver):
                                 el.getAttribute('aria-label') || '',
                                 el.getAttribute('placeholder') || '',
                                 el.id || ''].join('|')).join(' ;; ')}""")
-                    except Exception:
-                        dump = "?"
-                    raise TimeoutError(f"Title not found. Page inputs: {dump[:600]}")
+                        if not dump:
+                            dump = "(no inputs found)"
+                    except Exception as exc_e:
+                        dump = f"(evaluate failed: {type(exc_e).__name__})"
+                    raise TimeoutError(
+                        f"Title not found @ {url_now[:80]}. "
+                        f"Page inputs: {dump[:600]}")
             err = step("Title field wait", _wait_title)
         if not err:
             return True, "click-through flow OK"
@@ -856,8 +865,26 @@ class PlaywrightDriver(BaseDriver):
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "form fill failed")
                 return None
-            # Publish
-            human.human_click(page, S.to_playwright(page, S.F_PUBLISH_BUTTON))
+            # Publish: form -> Next -> Publish (two-step, v0.2.51).
+            # The Publish button only appears AFTER clicking Next; the old
+            # code skipped Next entirely and timed out waiting for Publish.
+            try:
+                nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
+                nxt.wait_for(timeout=15000)
+                human.human_click(page, nxt)
+                human.human_pause(2000, 3500)
+            except Exception as exc_n:
+                self._last_error = (f"Next button not found/clickable: "
+                                    f"{type(exc_n).__name__} @ {page.url[:80]}")
+                return None
+            try:
+                pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
+                pub.wait_for(timeout=15000)
+                human.human_click(page, pub)
+            except Exception as exc_p:
+                self._last_error = (f"Publish button not found/clickable: "
+                                    f"{type(exc_p).__name__} @ {page.url[:80]}")
+                return None
             human.human_pause(3000, 6000)
 
             # Try to capture the new listing id from the URL.

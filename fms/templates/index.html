@@ -129,15 +129,34 @@ async function pauseAll(){ return togglePause(); }
 // (Done/Failed stay visible until this is pressed).
 // v0.2.49 fix: groups come from the custom gdrop checkboxes via
 // selectedGroups(), not a #groupSel element (which doesn't exist).
+// v0.2.51: FBM Robo behavior — press Refresh and the board goes CLEAN.
+// No "select group" popup, no recycling old IDs to Pending. The board
+// empties and the group selection clears, ready for the next action.
 async function refreshBoard(){
   const gids = (typeof selectedGroups === 'function') ? selectedGroups() : [];
-  if(!gids.length){ fmsAlert('Pehle group select karo.'); return; }
   for(const gid of gids){
-    const fd = new FormData();
-    fd.append('group_id', gid);
-    await fetch('/api/board/refresh', {method:'POST', body: fd});
+    try{
+      const fd = new FormData();
+      fd.append('group_id', gid);
+      await fetch('/api/board/refresh', {method:'POST', body: fd});
+    }catch(_){}
   }
-  loadBoard();
+  // Clear the group selection so the board is truly fresh.
+  try{
+    document.querySelectorAll('.gcheck:checked').forEach(c => { c.checked = false; });
+    if(typeof gcheckChanged === 'function'){ gcheckChanged(); }
+  }catch(_){}
+  // Empty the four board panels directly (no old IDs recycled to Pending).
+  try{
+    for(const id of ['bpPending','bpProg','bpDone','bpFailed']){
+      const ul = document.getElementById(id);
+      if(ul){ ul.innerHTML = ''; }
+    }
+    for(const id of ['bpPendingN','bpProgN','bpDoneN','bpFailedN']){
+      const sp = document.getElementById(id);
+      if(sp){ sp.textContent = '0'; }
+    }
+  }catch(_){}
 }
 function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
