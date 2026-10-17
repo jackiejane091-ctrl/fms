@@ -505,6 +505,9 @@ class RunController:
         self._queue: collections.deque = collections.deque()
         self._acct_state: dict[int, str] = {}
         self._acct_label: dict[int, str] = {}
+        # v0.2.57: tracks which accounts' browsers FMS closed itself
+        # (vs the user closing them) for clear log messages.
+        self._closed_by_fms: dict[int, bool] = {}
         self._all_accounts: list = []
 
     def queue_state(self) -> dict:
@@ -590,14 +593,27 @@ class RunController:
         Playwright call, leaving the account stuck in In Progress for 8-10s.
         Only acts when the account is still in_progress (normal cleanup after
         a finished account is ignored). Idempotent with the worker's own
-        exception handling."""
+        exception handling.
+        v0.2.57: distinguishes WHO closed it — the user (× button) vs FMS
+        itself (auto-close). The driver sets _closed_by_fms=True right before
+        FMS closes it; otherwise it's the user."""
         with self._q_lock:
             if self._acct_state.get(account_id) != "in_progress":
                 return
             self._acct_state[account_id] = "failed"
         try:
-            self.log(f"[{label}] browser closed — marked failed",
-                     level="error", account_id=account_id)
+            by_fms = getattr(self, "_closed_by_fms", {}).get(account_id, False)
+            # Clear the flag so a later user-close isn't misattributed.
+            try:
+                self._closed_by_fms.pop(account_id, None)
+            except Exception:
+                pass
+            if by_fms:
+                self.log(f"[{label}] stopped by FMS (browser auto-closed)",
+                         level="error", account_id=account_id)
+            else:
+                self.log(f"[{label}] stopped by user (browser closed manually)",
+                         level="error", account_id=account_id)
         except Exception:
             pass
 
@@ -735,8 +751,11 @@ class RunController:
                 reason = getattr(driver, "login_error", "") or "unknown reason"
                 # v0.2.28: browser closed during login -> Failed at once,
                 # no reopen+retry loop.
+                # v0.2.57: say WHO closed it (user vs FMS).
                 if _browser_closed_msg(reason):
-                    self.log(f"[{label}] browser closed during login — "
+                    _by_fms = self._closed_by_fms.pop(account["id"], False)
+                    _who = "stopped by FMS" if _by_fms else "stopped by user"
+                    self.log(f"[{label}] {_who} (browser closed during login) — "
                              f"marked failed (no retry)", level="error",
                              account_id=account["id"])
                     self._log_account_summary(account, quota)
@@ -782,8 +801,24 @@ class RunController:
             finally:
                 try:
                     # Browser Launch leaves the browser open for manual work.
-                    if not getattr(driver, "keep_open", False):
+                    # v0.2.57: also leave it open when the account FAILED —
+                    # the user wants to see what went wrong, not find a
+                    # closed browser. Only auto-close on success.
+                    # The user's request: log WHO closed it — "stopped by user"
+                    # vs "stopped by FMS".
+                    _state = self._acct_state.get(account["id"])
+                    _failed = _state in ("failed",)
+                    if not getattr(driver, "keep_open", False) and not _failed:
+                        # Mark it so the close-handler logs "stopped by FMS".
+                        try:
+                            self._closed_by_fms[account["id"]] = True
+                        except Exception:
+                            pass
                         driver.close()
+                    elif _failed:
+                        self.log(f"[{label}] browser left open (account failed — "
+                                 f"close it yourself when done inspecting)",
+                                 level="warning", account_id=account["id"])
                 except Exception:
                     pass
 
