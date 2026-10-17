@@ -26,6 +26,13 @@
 4. **Scrap Module** — Competitor ki achi listings se data uthao, apna banao
 5. **Relist/Edit** — Limit walay accounts par purani listings edit karke nayi jaisi banao
 6. **UI Review Round** — 🎨 *Yehi wo waqt hai jab rang, buttons, pages ki changes hongi — tum dekh ke bataogi kya badalna hai*
+7. **Multi-Tab Posting (FBM Robo style)** — *(Tumhari 17 Oct wali spec, same-to-same)*
+   - Setting me **"Open tabs without limit"** me number likho (tumhara: 2) → utne tabs khulenge
+   - Flow: browser open → ID ka **home feed** → **Marketplace** → **create item** wala page → osi browser me 2nd tab **duplicate** (setting me 3 likho ge to 3 bar duplicate — jitne number, utne tabs)
+   - Tab 1: listing mukammal → **publish** → Tab 2 pe jao: listing → publish → agay tabs hon to aglay pe, warna wapis **Tab 1** pe — create item wala page **reload** karke agali listing → Tab 2 ke sath bhi yehi
+   - **Kisi tab pe error aye to wait nahi** — aglay tab pe jao, wahan listing karo; jab wapis error walay tab pe ao to create item wala page reload karke listing banao — **time waste nahi**
+   - **Manual fix sirf 1 listing ke liye** — agar listing 1 ho to error pe **ruk jao** (browser khula rakho), tum hath se sahi karo; listings **ziada** hon to error wali ko **skip** karke agli listing pe chalo
+   - **Per-listing timing** — setting me minimum/maximum time to post (tumhara: **45–60 seconds**) = **browser open se publish tak** ka total time, per listing. Na itna tez ke bot lage, na itna slow ke manual se ziada time lage
 
 ---
 
@@ -94,6 +101,6 @@ Main banata hun → Tum mobile par screenshots dekh ke review karti ho
 
 ## 📍 Abhi hum yahan hain
 
-**Phase 1 complete → Phase 2 shuru hona hai.**
+**Phase 1 + Phase 2 complete (21/21 tests green).** Ab 1 listing kamyab post karna baqi hai — uske baad Multi-Tab Posting aur Phase 3 (Verification, Analytics, final exe).
 
 Tum roadmap parho. Agar order theek lage to bolo **"Phase 2 shuru karo"** — aur agar kuch upar-neeche karna hai (koi feature pehle chahiye, koi baad me), to wo bhi bata do.

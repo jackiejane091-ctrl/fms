@@ -798,16 +798,52 @@ class PlaywrightDriver(BaseDriver):
             # THEN Next becomes clickable -> Publish.
 
             # 1. Photos FIRST (before any text).
+            # v0.2.60: NO MORE SILENT FAILURES. Log every step so the user
+            # sees exactly why pictures did or didn't upload.
             images = payload.get("image_paths") or []
-            if images:
-                try:
-                    file_input = S.to_playwright(page, S.F_ADD_PHOTOS)
-                    file_input.wait_for(timeout=8000)
-                    # Playwright file inputs accept a list of paths.
-                    page.set_input_files(S.F_ADD_PHOTOS[1], [str(p) for p in images[:10]])
-                    human.human_pause(2000, 3500)  # let uploads finish
-                except Exception:
-                    pass
+            if not images:
+                self._note_field_error(page, "pictures",
+                                       "no image_paths in payload — skipping")
+            else:
+                # Filter to files that actually exist.
+                import os as _os
+                _valid = [str(p) for p in images[:10]
+                          if _os.path.isfile(str(p))]
+                self.db.log(f"pictures: {len(_valid)}/{len(images)} files exist")
+                if not _valid:
+                    self._note_field_error(
+                        page, "pictures",
+                        f"0/{len(images)} image files exist on disk")
+                else:
+                    # Try multiple selectors — FB hides the file input.
+                    _file_sel = None
+                    for _cand in (
+                        "input[type='file'][accept*='image']",
+                        "input[type='file']",
+                    ):
+                        try:
+                            _loc = page.locator(_cand).first
+                            _loc.wait_for(state="attached", timeout=5000)
+                            _file_sel = _cand
+                            break
+                        except Exception:
+                            continue
+                    if not _file_sel:
+                        self._note_field_error(
+                            page, "pictures",
+                            "file input not found in DOM (tried 2 selectors)")
+                    else:
+                        try:
+                            page.set_input_files(_file_sel, _valid)
+                            self.db.log(
+                                f"pictures: set {_valid and len(_valid)} files "
+                                f"via '{_file_sel}'")
+                            human.human_pause(2000, 3500)
+                        except Exception as exc_p:
+                            self._note_field_error(
+                                page, "pictures",
+                                f"set_input_files failed: "
+                                f"{type(exc_p).__name__}: {str(exc_p)[:120]}")
 
             # Optional video
             if payload.get("video_path"):
@@ -831,23 +867,15 @@ class PlaywrightDriver(BaseDriver):
                     f"Title not filled: {type(exc_t).__name__}")
             # 4. Price (v0.2.59: independent, with verification).
 
+            # v0.2.60: Price is FULLY INDEPENDENT — never references 'title'.
+            # (The old code crashed with NameError if Title had failed.)
             price_val = str(payload.get("price", ""))
             if price_val:
-                price = S.to_playwright(page, S.F_PRICE)
                 try:
+                    price = S.to_playwright(page, S.F_PRICE)
                     price.wait_for(timeout=8000)
-                    # Sanity: price field must NOT be the title field.
-                    try:
-                        t_id = title.evaluate("e => e.id || e.outerHTML.slice(0,50)")
-                        p_id = price.evaluate("e => e.id || e.outerHTML.slice(0,50)")
-                        if t_id and t_id == p_id:
-                            raise RuntimeError("price selector matched the title field!")
-                    except RuntimeError:
-                        raise
-                    except Exception:
-                        pass  # couldn't compare; proceed cautiously
                     price.click()
-                    human.human_pause(200, 400)
+                    human.human_pause(100, 250)
                     price.fill(price_val)
                     human.human_pause(100, 250)
                     # Verify the price field actually holds the price.
