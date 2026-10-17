@@ -590,6 +590,25 @@ class RunController:
             self._acct_state[account_id] = "failed"
         self._mark_failed_persisted(account_id)
 
+    def _save_final_board(self) -> None:
+        """Snapshot the board when the run ends so the dashboard keeps
+        showing Done/Failed (FBM Robo style) until the user presses
+        Refresh — instead of everything silently flipping back to Pending."""
+        try:
+            with self._q_lock:
+                final = {str(i): s for i, s in self._acct_state.items()}
+                labels = {str(i): self._acct_label.get(i, "")
+                          for i in self._acct_state}
+            row = self.db.fetchone("SELECT settings_json FROM runs WHERE id=?",
+                                   (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+            settings["final_board"] = final
+            settings["final_board_labels"] = labels
+            self.db.execute("UPDATE runs SET settings_json=? WHERE id=?",
+                            (json.dumps(settings), self.run_id))
+        except Exception:
+            pass
+
     # -- public controls -------------------------------------------------------
     def signal(self, name: str) -> None:
         """Dashboard-initiated signal (e.g. 'download_start'): wakes a worker
@@ -1554,16 +1573,19 @@ class RunController:
             self.db.execute(
                 "UPDATE runs SET status = 'completed', finished_at = ? WHERE id = ?",
                 (utcnow(), self.run_id))
+            self._save_final_board()
             self.log("run completed")
         except _StopRun:
             self.db.execute(
                 "UPDATE runs SET status = 'stopped', finished_at = ? WHERE id = ?",
                 (utcnow(), self.run_id))
+            self._save_final_board()
             self.log("run stopped by user", level="warning")
         except Exception as exc:
             self.db.execute(
                 "UPDATE runs SET status = 'failed', finished_at = ? WHERE id = ?",
                 (utcnow(), self.run_id))
+            self._save_final_board()
             self.log(f"run FAILED: {type(exc).__name__}: {exc}", level="error")
 
 

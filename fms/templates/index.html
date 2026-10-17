@@ -40,6 +40,9 @@
     <span class="cc-field"><b>Pause/Continue:</b>
       <button type="button" class="btn" id="pauseBtn" onclick="togglePause()">Pause All</button>
     </span>
+    <span class="cc-field"><b>Board:</b>
+      <button type="button" class="btn" id="refreshBoardBtn" onclick="refreshBoard()" title="Clear the finished run's board for a new task (FBM Robo style)">🔄 Refresh</button>
+    </span>
     <span class="cc-field"><b>Schedule At:</b>
       <input type="datetime-local" id="schedAt">
     </span>
@@ -105,6 +108,17 @@ async function togglePause(){
   loadBoard();
 }
 async function pauseAll(){ return togglePause(); }
+// v0.2.46: FBM Robo style Refresh — clears the finished run's final board
+// (Done/Failed stay visible until this is pressed).
+async function refreshBoard(){
+  const g = document.getElementById('groupSel');
+  const gid = g ? g.value : '';
+  if(!gid){ fmsAlert('Pehle group select karo.'); return; }
+  const fd = new FormData();
+  fd.append('group_id', gid);
+  await fetch('/api/board/refresh', {method:'POST', body: fd});
+  loadBoard();
+}
 function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
 }

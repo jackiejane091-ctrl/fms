@@ -145,6 +145,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+
+-- v0.2.46: FBM Robo style board — remembers when the user last pressed
+-- Refresh per group, so a completed run's final Done/Failed board stays
+-- visible until explicitly cleared.
+CREATE TABLE IF NOT EXISTS board_refresh (
+    group_id INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+    refreshed_at TEXT NOT NULL
+);
 """
 
 

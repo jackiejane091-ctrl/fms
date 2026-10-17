@@ -721,6 +721,16 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             return [dict(r) for r in rows]
         return engine.recent_logs(run_id, limit)
 
+    @app.post("/api/board/refresh")
+    def api_refresh_board(group_id: int = Form(...)):
+        """FBM Robo style Refresh: clear the finished run's final board so
+        the dashboard shows a fresh Pending preview for the next task."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute("INSERT OR REPLACE INTO board_refresh (group_id, refreshed_at)"
+                   " VALUES (?, ?)", (group_id, now))
+        return {"ok": True}
+
     @app.get("/api/board")
     def api_board(group_id: int):
         """Main-screen status panels: Accounts / Pending / In Progress /
@@ -751,8 +761,41 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         board["run_live"] = live
         board["run_paused"] = bool(full.get("paused"))  # v0.2.24: Pause/Continue toggle
         if not live:
-            # Old/completed run: don't show stale data — show fresh preview.
-            board["pending"] = [a["label"] for a in accts if a.get("active")]
+            # v0.2.46 FBM Robo style: a finished run's final board (Done /
+            # Failed) stays visible until the user presses Refresh — it no
+            # longer silently flips everything back to Pending.
+            settings = full.get("settings", {}) or {}
+            final = settings.get("final_board") or {}
+            labels = settings.get("final_board_labels") or {}
+            show_final = False
+            if final:
+                try:
+                    r = db.fetchone(
+                        "SELECT refreshed_at FROM board_refresh WHERE group_id=?",
+                        (group_id,))
+                    refreshed_at = r["refreshed_at"] if r else ""
+                    finished_at = full.get("finished_at") or run.get("finished_at") or ""
+                    show_final = (not refreshed_at) or (finished_at > refreshed_at)
+                except Exception:
+                    show_final = True
+            if show_final:
+                for key in ("pending", "in_progress", "done_posting", "failed"):
+                    board[key] = []
+                for aid_s, state in final.items():
+                    try:
+                        aid = int(aid_s)
+                    except (TypeError, ValueError):
+                        continue
+                    label = labels.get(aid_s, "")
+                    # A run that was stopped mid-flight may leave accounts in
+                    # "in_progress" — show those as pending (they never ran).
+                    bucket = state if state in board else "pending"
+                    if bucket == "in_progress":
+                        bucket = "pending"
+                    board[bucket].append({"id": aid, "label": label})
+            else:
+                # Fresh preview (also what Refresh shows): what WOULD run.
+                board["pending"] = [a["label"] for a in accts if a.get("active")]
             board["logs"] = [
                 f"[{l['created_at']}] {l['level']}: {l['message']}"
                 for l in engine.recent_logs(run["id"], 50)
