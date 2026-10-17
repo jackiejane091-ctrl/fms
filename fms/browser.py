@@ -467,6 +467,13 @@ class PlaywrightDriver(BaseDriver):
         # account fails 4x with "could not fill login form" and never posts.
         if self._is_logged_in():
             return True
+        # v0.2.44: extra safety — if Facebook redirected us OFF the login
+        # page entirely, the session is authenticated even when the
+        # indicator selector misses (FB UI drift). Checkpoints excluded.
+        url_now = (page.url or "").lower()
+        if ("facebook.com" in url_now and "/login" not in url_now
+                and "checkpoint" not in url_now):
+            return True
         try:
             email = self._find_login_field(page, S.LOGIN_EMAIL_FALLBACKS)
             self._type(email, label)
@@ -570,14 +577,78 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             pass  # leave typed text; Facebook may still accept it
 
-    def _fill_form(self, page, payload: dict) -> bool:
-        """Fill the whole create-item form. Shared by post/draft/manual/edit."""
+    def _open_create_item_form(self, page) -> tuple[bool, str]:
+        """Open the create-item form the FBM Robo way: feed -> click the
+        Marketplace icon in the header -> Marketplace page -> click
+        'Create listing' -> choose 'Item for sale' -> wait for the form.
+
+        Returns (ok, detail). Falls back to direct URL navigation when a
+        click step fails. v0.2.44: direct-URL navigation left ID 1 staring
+        at a page whose Title field never appeared (20s timeout); the
+        click-through path is what the proven tool uses.
+        """
+        def step(name, fn):
+            try:
+                fn()
+                return None
+            except Exception as exc:
+                return f"{name}: {type(exc).__name__}"
+
+        # 1. Feed first — let it settle, like FBM Robo does.
+        err = step("feed load", lambda: (
+            page.goto("https://www.facebook.com/", wait_until="domcontentloaded"),
+            human.human_pause(2000, 3500),
+            S.to_playwright(page, S.MKT_NAV_ICON).wait_for(timeout=10000),
+        ))
+        if not err:
+            # 2. Click the Marketplace icon in the header nav.
+            err = step("Marketplace icon click", lambda: (
+                human.human_click(page, S.to_playwright(page, S.MKT_NAV_ICON)),
+                human.human_pause(2000, 3500),
+                S.to_playwright(page, S.CREATE_LISTING_BUTTON).wait_for(timeout=10000),
+            ))
+        if not err:
+            # 3. Click "Create listing".
+            err = step("Create listing click", lambda: (
+                human.human_click(page, S.to_playwright(page, S.CREATE_LISTING_BUTTON)),
+                human.human_pause(2000, 3000),
+            ))
+        if not err:
+            # 4. Choose the listing type if a chooser appears (best effort —
+            #    Facebook sometimes goes straight to the item form).
+            try:
+                opt = S.to_playwright(page, S.ITEM_FOR_SALE_OPTION)
+                opt.wait_for(timeout=8000)
+                human.human_click(page, opt)
+                human.human_pause(2000, 3000)
+            except Exception:
+                pass
+            # 5. The Title field = the form is ready.
+            err = step("Title field wait", lambda:
+                       S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000))
+        if not err:
+            return True, "click-through flow OK"
+        detail = f"click-through failed at [{err}]"
+        # Fallback: direct URL (previous behavior).
         try:
             page.goto(S.MKT_CREATE_ITEM_URL, wait_until="domcontentloaded")
             human.human_pause(1500, 3000)
+            S.to_playwright(page, S.F_TITLE).wait_for(timeout=20000)
+            return True, detail + " | direct URL worked"
+        except Exception as exc2:
+            return False, (detail +
+                           f" | direct URL also failed: {type(exc2).__name__}")
+
+    def _fill_form(self, page, payload: dict) -> bool:
+        """Fill the whole create-item form. Shared by post/draft/manual/edit."""
+        try:
+            ok, detail = self._open_create_item_form(page)
+            if not ok:
+                self._last_form_error = detail
+                return False
 
             title = S.to_playwright(page, S.F_TITLE)
-            title.wait_for(timeout=20000)
+            # (already waited visible inside _open_create_item_form)
             self._type(title, payload.get("title", ""), hybrid_ok=True)
             human.human_pause(300, 700)
 

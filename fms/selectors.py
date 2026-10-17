@@ -56,6 +56,8 @@ CHECKPOINT_CONTINUE = ("text", "Continue")
 # "Create new listing" -> "Item for sale" entry points (fallbacks in order)
 CREATE_LISTING_BUTTON = ("css", "a[href='/marketplace/create/']")
 ITEM_FOR_SALE_OPTION = ("text", "Item for sale")
+# v0.2.44: FBM Robo style click-through — header Marketplace nav icon.
+MKT_NAV_ICON = ("css", "a[aria-label='Marketplace']")
 
 # Form fields on /marketplace/create/item/
 F_TITLE = ("css", "input[aria-label*='Title' i], input[placeholder*='Title' i]")
