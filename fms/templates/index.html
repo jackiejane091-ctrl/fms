@@ -62,10 +62,7 @@
 </div>
 
 <div class="board" id="boardPanels">
-  <div class="panel"><h3>Pending: (<span id="bpPendingN">0</span>)</h3><ul id="bpPending"></ul>
-    <!-- v0.2.38: locked accounts are NOT pending — shown separately. -->
-    <div id="bpLocked" style="display:none;margin-top:8px;font-size:13px;color:#b91c1c"></div>
-  </div>
+  <div class="panel"><h3>Pending: (<span id="bpPendingN">0</span>)</h3><ul id="bpPending"></ul></div>
   <div class="panel"><h3>In Progress: (<span id="bpProgN">0</span>)</h3><ul id="bpProg"></ul></div>
   <div class="panel"><h3>Done Posting: (<span id="bpDoneN">0</span>)</h3><ul id="bpDone"></ul></div>
   <div class="panel"><h3>Failed: (<span id="bpFailedN">0</span>)</h3><ul id="bpFailed"></ul></div>
@@ -238,7 +235,7 @@ async function loadBoard(){
   if(!gids.length) return;
   // v0.2.23: board aggregates ALL selected groups, not just the first.
   const merged = {pending:[], in_progress:[], done_posting:[], failed:[]};
-  let anyLive = false, anyPaused = false, logs = [], lastRun = null, lockedAll = [];
+  let anyLive = false, anyPaused = false, logs = [], lastRun = null;
   for(const gid of gids){
     try{
       const r = await fetch('/api/board?group_id=' + gid);
@@ -248,8 +245,6 @@ async function loadBoard(){
       if(b.run_paused) anyPaused = true;
       if(b.last_run && (!lastRun || b.last_run.id > lastRun.id)) lastRun = b.last_run;
       for(const k of Object.keys(merged)) merged[k] = merged[k].concat(b[k] || []);
-      // v0.2.38: locked accounts surface separately, never as Pending.
-      if(b.locked && b.locked.length) lockedAll = lockedAll.concat(b.locked);
       if((b.logs || []).length && !logs.length) logs = b.logs;
     }catch(e){}
   }
@@ -261,17 +256,6 @@ async function loadBoard(){
   set('bpProgN','bpProg', merged.in_progress);
   set('bpDoneN','bpDone', merged.done_posting);
   set('bpFailedN','bpFailed', merged.failed);
-  // v0.2.38: locked accounts shown under Pending with unlock hint.
-  const lk = document.getElementById('bpLocked');
-  if(lk){
-    if(lockedAll.length && !anyLive){
-      lk.style.display = 'block';
-      lk.innerHTML = '🔒 Locked: ' + lockedAll.map(function(l){
-        const label = (l && l.label) || l;
-        return String(label).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      }).join(', ') + ' — Accounts page pe Unlock karein.';
-    } else { lk.style.display = 'none'; lk.innerHTML = ''; }
-  }
   // v0.2.24: Pause/Continue button follows the live run's state.
   document.getElementById('pauseBtn').textContent = anyPaused ? 'Continue' : 'Pause All';
   // v0.2.36: Start button reflects the running state — disabled + "Running…"

@@ -649,10 +649,11 @@ class RunController:
                     self._log_account_summary(account, quota)
                     return "failed"
                 if attempt >= attempts:
-                    accounts_mod.set_status(self.db, account["id"], "locked",
-                                            "login failed during run")
+                    # v0.2.39: no more permanent locking (user asked for it
+                    # simple). The failure is logged and the account lands
+                    # in Failed; the next Start tries it again.
                     self.log(f"[{label}] login FAILED after {attempts} "
-                             f"attempt(s): {reason} — marked locked",
+                             f"attempt(s): {reason}",
                              level="error", account_id=account["id"])
                     self._log_account_summary(account, quota)
                     return "login_failed"
@@ -1984,10 +1985,9 @@ class ScriptRunController:
         driver = self.driver_factory(creds)
         try:
             if not driver.login():
-                accounts_mod.set_status(self.db, account["id"], "locked",
-                                        "login failed during script run")
+                # v0.2.39: no permanent locking — just log and mark done.
                 reason = getattr(driver, "login_error", "") or "unknown reason"
-                self.log(f"[{label}] login FAILED: {reason} — marked locked",
+                self.log(f"[{label}] login FAILED: {reason}",
                          level="error", account_id=account["id"])
                 self._mark_done(account)
                 return

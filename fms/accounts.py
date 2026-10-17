@@ -498,10 +498,15 @@ def remove_not_working_proxies(db: Database,
 
 
 def active_accounts_for_run(db: Database, group_id: int) -> list[dict]:
-    """Accounts eligible for a listing run: active and not banned/locked."""
+    """Accounts eligible for a listing run: all active accounts.
+
+    v0.2.39: no more locked/banned exclusions — the user asked for it
+    simple. Every Start tries every active account; failures land in
+    the Failed panel with their reason.
+    """
     return db.fetchall(
         """SELECT * FROM accounts
-           WHERE group_id = ? AND active = 1 AND status NOT IN ('banned', 'locked')
+           WHERE group_id = ? AND active = 1
            ORDER BY id""",
         (group_id,),
     )

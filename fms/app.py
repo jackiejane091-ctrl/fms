@@ -440,13 +440,6 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     def api_toggle_account(account_id: int):
         return {"ok": True, "active": accounts_mod.toggle_active(db, account_id)}
 
-    # v0.2.38: unlock a login-locked account so it becomes eligible for
-    # runs again (previously a locked account was stuck forever with no UI).
-    @app.post("/api/accounts/{account_id}/unlock")
-    def api_unlock_account(account_id: int):
-        accounts_mod.set_status(db, account_id, "active", "")
-        return {"ok": True}
-
     @app.delete("/api/accounts/{account_id}")
     def api_delete_account(account_id: int):
         accounts_mod.delete_account(db, account_id)
@@ -743,18 +736,14 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             "pending": [], "in_progress": [],
             "done_posting": [], "failed": [],
             "exclude": [], "run_id": None, "run_live": False, "run_paused": False,
-            "logs": [], "locked": [],
+            "logs": [],
         }
         runs = engine.list_runs(50)
         run = next((r for r in runs if r.get("group_id") == group_id), None)
         if run is None:
-            # No run yet: preview = accounts eligible for a run, same filter
-            # as active_accounts_for_run (v0.2.38: locked/banned are NOT
-            # "pending" — they are shown separately so nobody is misled).
-            board["pending"] = [a["label"] for a in accts
-                                if a.get("active") and a.get("status") not in ("banned", "locked")]
-            board["locked"] = [a["label"] for a in accts
-                               if a.get("status") in ("banned", "locked")]
+            # No run yet: preview = active accounts ready to go
+            # (inactive/OFF accounts are excluded from runs).
+            board["pending"] = [a["label"] for a in accts if a.get("active")]
             return board
         full = engine.get_run(run["id"])
         board["run_id"] = run["id"]
@@ -763,11 +752,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
         board["run_paused"] = bool(full.get("paused"))  # v0.2.24: Pause/Continue toggle
         if not live:
             # Old/completed run: don't show stale data — show fresh preview.
-            # v0.2.38: same eligibility filter as active_accounts_for_run.
-            board["pending"] = [a["label"] for a in accts
-                                if a.get("active") and a.get("status") not in ("banned", "locked")]
-            board["locked"] = [a["label"] for a in accts
-                               if a.get("status") in ("banned", "locked")]
+            board["pending"] = [a["label"] for a in accts if a.get("active")]
             board["logs"] = [
                 f"[{l['created_at']}] {l['level']}: {l['message']}"
                 for l in engine.recent_logs(run["id"], 50)
