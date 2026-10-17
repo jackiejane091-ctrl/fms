@@ -501,7 +501,7 @@ class RunController:
         # workers pull accounts from _queue; a freed slot immediately takes
         # the next pending account. _acct_state maps account_id ->
         # 'pending' | 'in_progress' | 'done_posting' | 'failed'.
-        self._q_lock = threading.Lock()
+        self._q_lock = threading.RLock()  # v0.2.43: _mark_failed nests
         self._queue: collections.deque = collections.deque()
         self._acct_state: dict[int, str] = {}
         self._acct_label: dict[int, str] = {}
@@ -539,7 +539,56 @@ class RunController:
             acc = next((a for a in self._all_accounts if a["id"] == account_id), None)
             if acc is not None:
                 self._queue.append(acc)
+            # v0.2.43: clear the persisted failed flag so a later resume
+            # doesn't push this manually-restarted account back to Failed.
+            self._unmark_failed_persisted(account_id)
             return True
+
+    def _failed_ids_persisted(self) -> list:
+        try:
+            row = self.db.fetchone("SELECT settings_json FROM runs WHERE id=?",
+                                   (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+            return list(settings.get("failed_account_ids", []))
+        except Exception:
+            return []
+
+    def _mark_failed_persisted(self, account_id: int) -> None:
+        """Remember a failed account in the run's settings so pause/continue
+        (or resume after restart) never silently re-queues it. v0.2.43:
+        failed stays failed until the user manually restarts it."""
+        try:
+            row = self.db.fetchone("SELECT settings_json FROM runs WHERE id=?",
+                                   (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+            failed_ids = settings.get("failed_account_ids", [])
+            if account_id not in failed_ids:
+                failed_ids.append(account_id)
+                settings["failed_account_ids"] = failed_ids
+                self.db.execute("UPDATE runs SET settings_json=? WHERE id=?",
+                                (json.dumps(settings), self.run_id))
+        except Exception:
+            pass
+
+    def _unmark_failed_persisted(self, account_id: int) -> None:
+        try:
+            row = self.db.fetchone("SELECT settings_json FROM runs WHERE id=?",
+                                   (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+            failed_ids = settings.get("failed_account_ids", [])
+            if account_id in failed_ids:
+                failed_ids.remove(account_id)
+                settings["failed_account_ids"] = failed_ids
+                self.db.execute("UPDATE runs SET settings_json=? WHERE id=?",
+                                (json.dumps(settings), self.run_id))
+        except Exception:
+            pass
+
+    def _mark_failed(self, account_id: int) -> None:
+        """Set state=failed in memory AND persist it for resume."""
+        with self._q_lock:
+            self._acct_state[account_id] = "failed"
+        self._mark_failed_persisted(account_id)
 
     # -- public controls -------------------------------------------------------
     def signal(self, name: str) -> None:
@@ -1390,6 +1439,20 @@ class RunController:
                 self._acct_state = {a["id"]: "pending" for a in accounts}
                 self._acct_label = {a["id"]: a["label"] for a in accounts}
                 self._next_start_at = 0.0  # Account Start Gap bookkeeping
+            # v0.2.43: pause/continue (or resume after restart) must NOT
+            # re-queue accounts that already failed in this run. They stay
+            # in Failed until the user manually restarts them (right-click).
+            failed_ids = set(self._failed_ids_persisted())
+            if failed_ids:
+                with self._q_lock:
+                    self._queue = collections.deque(
+                        a for a in self._queue if a["id"] not in failed_ids)
+                    for aid in failed_ids:
+                        if aid in self._acct_state:
+                            self._acct_state[aid] = "failed"
+                self.log(f"{len(failed_ids)} previously-failed account(s) stay "
+                         f"in Failed — right-click → Restart to retry them",
+                         level="warning")
             self.log(f"run started: {len(accounts)} account(s), "
                      f"{n_workers} slot(s), "
                      f"{total_planned} listing(s) planned")
@@ -1421,7 +1484,8 @@ class RunController:
                         pass
                     if self.stop_event.is_set():
                         # Run stopped before this account started: Failed,
-                        # not Pending (v0.2.24).
+                        # not Pending (v0.2.24). Not persisted: a resume
+                        # must retry these (they never genuinely failed).
                         with self._q_lock:
                             self._acct_state[acc["id"]] = "failed"
                         return
@@ -1432,8 +1496,7 @@ class RunController:
                         # v0.2.35: one bad account must NEVER kill the worker
                         # thread (that silently ended the run with accounts
                         # looking stuck in Pending). Mark it failed instead.
-                        with self._q_lock:
-                            self._acct_state[acc["id"]] = "failed"
+                        self._mark_failed(acc["id"])
                         self.log(f"[{self._acct_label[acc['id']]}] worker "
                                  f"error: {type(exc).__name__}: {exc} — "
                                  f"marked failed",
@@ -1442,8 +1505,10 @@ class RunController:
                     with self._q_lock:
                         if outcome == "stopped":
                             # v0.2.24: a user-stopped account goes to Failed,
-                            # never silently back to Pending.
-                            self._acct_state[acc["id"]] = "failed"
+                            # never silently back to Pending. Not persisted:
+                            # resume retries it (it never genuinely failed).
+                            with self._q_lock:
+                                self._acct_state[acc["id"]] = "failed"
                             self.log(f"[{self._acct_label[acc['id']]}] stopped "
                                      f"by user — marked failed",
                                      level="warning", account_id=acc["id"])
@@ -1451,11 +1516,12 @@ class RunController:
                             posted = self._posted_count(acc["id"])
                             failed = self._failed_count(acc["id"])
                             # Posted nothing but had failures -> failed panel.
-                            self._acct_state[acc["id"]] = (
-                                "failed" if posted == 0 and failed > 0
-                                else "done_posting")
+                            if posted == 0 and failed > 0:
+                                self._mark_failed(acc["id"])
+                            else:
+                                self._acct_state[acc["id"]] = "done_posting"
                         else:
-                            self._acct_state[acc["id"]] = "failed"
+                            self._mark_failed(acc["id"])
 
             workers = [
                 threading.Thread(

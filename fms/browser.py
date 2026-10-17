@@ -473,18 +473,18 @@ class PlaywrightDriver(BaseDriver):
             human.human_pause(200, 500)
             pass_field = self._find_login_field(page, S.LOGIN_PASS_FALLBACKS)
             self._type(pass_field, password)
-            human.human_pause(300, 800)
-            # Submit: click the Log in button; if we are still on the login
-            # page afterwards, press Enter in the password field as fallback.
+            # v0.2.43: user asked for fast login — submit via Enter the moment
+            # the password is filled. No pause, no slow mouse move to the
+            # button. Button click stays as fallback if Enter doesn't submit.
             try:
-                human.human_click(
-                    page, self._find_login_field(page, S.LOGIN_BUTTON_FALLBACKS))
+                pass_field.press("Enter")
             except Exception:
                 pass
-            human.human_pause(2500, 4000)
+            human.human_pause(2000, 3000)
             if "login" in (page.url or "").lower() and not self._is_logged_in():
                 try:
-                    pass_field.press("Enter")
+                    human.human_click(
+                        page, self._find_login_field(page, S.LOGIN_BUTTON_FALLBACKS))
                 except Exception:
                     pass
                 human.human_pause(2500, 4000)
