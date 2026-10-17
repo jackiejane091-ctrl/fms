@@ -271,10 +271,14 @@ class PlaywrightDriver(BaseDriver):
             loc = rng.choice(LOCALES)
         else:
             loc = "en-GB"
-        # v0.2.23: fixed large window for every account (the random small
-        # viewports looked broken). Slight cascade so parallel account
-        # browsers don't stack pixel-exact on top of each other.
-        vw, vh = 1440, 900
+        # v0.2.45: no forced 1440x900 viewport/window. A fixed viewport wider
+        # than the user's real screen CUT OFF the page's right edge (FB's
+        # notifications/Messenger icons) — and maximizing the OS window did
+        # NOT help because the Playwright viewport stayed 1440. Now the
+        # browser opens maximized and the page uses the real window size,
+        # like a normal human-driven browser (also the most honest
+        # fingerprint — v0.2.32 principle). Slight cascade so parallel
+        # account browsers don't stack pixel-exact on top of each other.
         cascade = (self.account.get("id") or 0) % 5
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),
@@ -284,9 +288,9 @@ class PlaywrightDriver(BaseDriver):
             # v0.2.31: no timezone_id -> the laptop's real system timezone,
             # so Facebook sees a consistent clock for the proxy's location.
             # v0.2.32: no user_agent override -> honest self-consistent UA.
-            viewport={"width": vw, "height": vh},
+            no_viewport=True,
             args=["--disable-blink-features=AutomationControlled",
-                  f"--window-size={vw},{vh}",
+                  "--start-maximized",
                   f"--window-position={40 * cascade},{30 * cascade}"],
         )
         pages = self._context.pages
