@@ -589,18 +589,21 @@ class PlaywrightDriver(BaseDriver):
 
     # -- posting ----------------------------------------------------------------
     def _select_location(self, page, location: str) -> None:
+        # v0.2.53: log failures instead of silent return.
         loc = S.to_playwright(page, S.F_LOCATION)
         try:
             loc.wait_for(timeout=10000)
-        except Exception:
+        except Exception as exc_l:
+            self._last_form_error = (
+                f"Location field not found: {type(exc_l).__name__}")
             return
         self._type(loc, location)
-        human.human_pause(1200, 2200)
+        human.human_pause(800, 1500)
         try:
             first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
             first.wait_for(timeout=8000)
             human.human_click(page, first)
-            human.human_pause()
+            human.human_pause(200, 500)
         except Exception:
             pass  # leave typed text; Facebook may still accept it
 
@@ -770,28 +773,40 @@ class PlaywrightDriver(BaseDriver):
             self._type(price, str(payload.get("price", "")))
             human.human_pause(200, 500)
 
-            # Category: type and pick the first suggestion; fall back gracefully.
+            # Category: type and pick the first suggestion.
+            # v0.2.53: no more silent pass — log the failure so we know.
             category = payload.get("category")
             if category:
                 try:
                     cat = S.to_playwright(page, S.F_CATEGORY)
+                    cat.wait_for(timeout=8000)
                     self._type(cat, category)
                     human.human_pause(800, 1500)
                     first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
                     first.wait_for(timeout=6000)
                     human.human_click(page, first)
-                except Exception:
-                    pass
-                human.human_pause(200, 500)
+                    human.human_pause(200, 500)
+                except Exception as exc_c:
+                    self._last_form_error = (
+                        f"Category '{category}' not filled: "
+                        f"{type(exc_c).__name__}")
+                    # Don't return False yet — try the rest, Next check
+                    # will catch an incomplete form.
 
             # Condition
+            # v0.2.53: log failures instead of silent pass.
             condition = (payload.get("condition") or "New").lower()
             try:
-                sel = S.F_CONDITION_NEW if "new" in condition else S.F_CONDITION_USED_LIKE_NEW
-                human.human_click(page, S.to_playwright(page, sel))
+                sel = (S.F_CONDITION_NEW if "new" in condition
+                       else S.F_CONDITION_USED_LIKE_NEW)
+                loc = S.to_playwright(page, sel)
+                loc.wait_for(timeout=8000)
+                human.human_click(page, loc)
                 human.human_pause(200, 500)
-            except Exception:
-                pass
+            except Exception as exc_co:
+                self._last_form_error = (
+                    f"Condition '{condition}' not set: "
+                    f"{type(exc_co).__name__}")
 
             # Description
             desc = payload.get("description") or ""
@@ -808,7 +823,7 @@ class PlaywrightDriver(BaseDriver):
             if payload.get("hide_from_friends"):
                 try:
                     human.human_click(page, S.to_playwright(page, S.F_HIDE_FROM_FRIENDS))
-                    human.human_pause()
+                    human.human_pause(200, 500)
                 except Exception:
                     pass
 
@@ -824,7 +839,7 @@ class PlaywrightDriver(BaseDriver):
                     continue
                 try:
                     human.human_click(page, S.to_playwright(page, _sel))
-                    human.human_pause()
+                    human.human_pause(200, 500)
                 except Exception:
                     pass
 
@@ -868,14 +883,37 @@ class PlaywrightDriver(BaseDriver):
             # Publish: form -> Next -> Publish (two-step, v0.2.51).
             # The Publish button only appears AFTER clicking Next; the old
             # code skipped Next entirely and timed out waiting for Publish.
+            # v0.2.53: wait for Next to be ENABLED (not just visible). If the
+            # form is incomplete (category/condition missing), Next stays
+            # disabled — clicking a disabled button does nothing.
             try:
                 nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
                 nxt.wait_for(timeout=15000)
+                # Wait until it's actually clickable (enabled).
+                try:
+                    nxt.wait_for(state="enabled", timeout=10000)
+                except Exception:
+                    # Still disabled — find which required fields are missing.
+                    missing = []
+                    try:
+                        errs = page.evaluate(
+                            """() => Array.from(document.querySelectorAll(
+                                '[role=\"alert\"], .x1lliihq')).slice(0, 10)
+                                .map(e => e.innerText || '').filter(t => t)
+                                .join(' | ')""")
+                        if errs:
+                            missing.append(errs[:200])
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        "Next is disabled (form incomplete). " +
+                        ("Errors: " + missing[0] if missing else
+                         "Check category/condition/location."))
                 human.human_click(page, nxt)
                 human.human_pause(2000, 3500)
             except Exception as exc_n:
-                self._last_error = (f"Next button not found/clickable: "
-                                    f"{type(exc_n).__name__} @ {page.url[:80]}")
+                self._last_error = (f"Next button: "
+                                    f"{str(exc_n)[:200]} @ {page.url[:80]}")
                 return None
             try:
                 pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
