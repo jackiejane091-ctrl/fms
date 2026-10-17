@@ -621,8 +621,18 @@ class RunController:
         label = account["label"]
         attempts = 1 + max(0, int(self.cfg.retry_count))
         for attempt in range(1, attempts + 1):
-            driver = self.driver_factory(_driver_creds(self.db, self.cfg,
-                                                       account))
+            try:
+                driver = self.driver_factory(_driver_creds(self.db, self.cfg,
+                                                           account))
+            except Exception as exc:
+                # v0.2.35: a broken stored credential (bad decrypt, corrupt
+                # data) used to kill the whole worker thread silently — the
+                # run "completed" and accounts sat looking Pending forever.
+                # Now the account goes to Failed with a clear reason.
+                self.log(f"[{label}] credential error: "
+                         f"{type(exc).__name__}: {exc} — marked failed",
+                         level="error", account_id=account["id"])
+                return "failed"
             try:
                 self._process_account_once(account, driver, quota, account_idx)
                 _persist_ix_profile(self.db, account, driver)
@@ -1414,8 +1424,20 @@ class RunController:
                         with self._q_lock:
                             self._acct_state[acc["id"]] = "failed"
                         return
-                    outcome = self._process_account(
-                        acc, quotas_by_id[acc["id"]], acct_index[acc["id"]])
+                    try:
+                        outcome = self._process_account(
+                            acc, quotas_by_id[acc["id"]], acct_index[acc["id"]])
+                    except Exception as exc:
+                        # v0.2.35: one bad account must NEVER kill the worker
+                        # thread (that silently ended the run with accounts
+                        # looking stuck in Pending). Mark it failed instead.
+                        with self._q_lock:
+                            self._acct_state[acc["id"]] = "failed"
+                        self.log(f"[{self._acct_label[acc['id']]}] worker "
+                                 f"error: {type(exc).__name__}: {exc} — "
+                                 f"marked failed",
+                                 level="error", account_id=acc["id"])
+                        continue
                     with self._q_lock:
                         if outcome == "stopped":
                             # v0.2.24: a user-stopped account goes to Failed,
