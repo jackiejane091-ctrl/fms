@@ -33,7 +33,7 @@
   </div>
   <div class="cc-row">
     <span class="cc-field"><b>Start:</b>
-      <button type="button" class="btn-start" onclick="startRun()">Start</button>
+      <button type="button" class="btn-start" id="startBtn" onclick="startRun()">Start</button>
     </span>
     <span class="cc-field"><b>Pause/Continue:</b>
       <button type="button" class="btn" id="pauseBtn" onclick="togglePause()">Pause All</button>
@@ -113,6 +113,9 @@ async function startRun(){
   const mode = scriptId ? 'script' : actVal;
   if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
   if(!actVal){ fmsAlert('Pehle Script box se koi Action ya Script select karein.'); return; }
+  // v0.2.36: disable immediately — double-clicks must not fire two runs.
+  const sb = document.getElementById('startBtn');
+  if(sb){ sb.disabled = true; sb.textContent = 'Running…'; }
   // Saved Settings (peeche Settings me save ki hui) har run pe apply hoti hain.
   const s = await (await fetch('/api/settings')).json();
   const body = {
@@ -159,7 +162,12 @@ async function startRun(){
     fmsAlert('Run started! Neeche board pe live progress dekhein.');
     loadBoard();
   }
-  else fmsAlert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
+  else {
+    // v0.2.36: start failed — give the button back.
+    const sb2 = document.getElementById('startBtn');
+    if(sb2){ sb2.disabled = false; sb2.textContent = 'Start'; }
+    fmsAlert('Failed: ' + (errMsg || 'koi run start nahi ho saka.'));
+  }
 }
 function toggleGdrop(e){ e.stopPropagation(); const p=document.getElementById('gdropPanel'); p.style.display = p.style.display==='none' ? 'block' : 'none'; }
 document.addEventListener('click', function(){ const p=document.getElementById('gdropPanel'); if(p) p.style.display='none'; });
@@ -247,6 +255,10 @@ async function loadBoard(){
   set('bpFailedN','bpFailed', merged.failed);
   // v0.2.24: Pause/Continue button follows the live run's state.
   document.getElementById('pauseBtn').textContent = anyPaused ? 'Continue' : 'Pause All';
+  // v0.2.36: Start button reflects the running state — disabled + "Running…"
+  // while a run is live so it can't be pressed twice (professional feel).
+  const sb = document.getElementById('startBtn');
+  if(sb){ sb.disabled = anyLive; sb.textContent = anyLive ? 'Running…' : 'Start'; }
   // Don't clobber a per-account log filter on every poll.
   // v0.2.28: never show combined logs automatically — the user asked for
   // account-specific logs only. Prompt to click an account instead.

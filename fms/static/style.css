@@ -172,3 +172,6 @@ button.small { font-size:12px; padding:4px 10px; }
 .btn-start { background:#22c55e; color:#fff; font-weight:800; padding:9px 26px;
   border-radius:8px; border:0; cursor:pointer; font-size:15px; }
 .btn-start:hover { filter:brightness(1.08); }
+/* v0.2.36: Running state — visibly disabled, not clickable. */
+.btn-start:disabled { background:#9db3c9; color:#f2f4f8; cursor:not-allowed;
+  filter:none; opacity:.85; }

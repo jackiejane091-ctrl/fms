@@ -563,6 +563,15 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
 
     @app.post("/api/runs")
     def api_start_run(data: RunIn):
+        # v0.2.36: refuse a second live run on the same group — the Start
+        # button also disables while a run is live, but this is the
+        # backstop against double-clicks / double requests.
+        for r in engine.list_runs(50):
+            if r.get("group_id") == data.group_id:
+                full = engine.get_run(r["id"])
+                if full and full.get("live"):
+                    raise HTTPException(
+                        409, f"group par pehle se run #{r['id']} chal rahi hai")
         cfg = RunConfig(**{k: v for k, v in data.model_dump().items()
                            if k != "fresh"})
         # v0.2.25: fold the group's General Settings into the run config.
