@@ -58,6 +58,8 @@ CREATE_LISTING_BUTTON = ("css", "a[href='/marketplace/create/']")
 ITEM_FOR_SALE_OPTION = ("text", "Item for sale")
 # v0.2.44: FBM Robo style click-through — header Marketplace nav icon.
 MKT_NAV_ICON = ("css", "a[aria-label='Marketplace']")
+# v0.2.50: expand the "More details" section first (user's explicit order).
+MORE_DETAILS = ("text", "More details")
 
 # Form fields on /marketplace/create/item/
 # v0.2.48: label-based (get_by_label handles aria-label, <label for>,

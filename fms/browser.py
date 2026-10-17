@@ -710,21 +710,56 @@ class PlaywrightDriver(BaseDriver):
                            f" | direct URL also failed: {type(exc2).__name__}: {str(exc2)[:300]}")
 
     def _fill_form(self, page, payload: dict) -> bool:
-        """Fill the whole create-item form. Shared by post/draft/manual/edit."""
+        """Fill the whole create-item form. Shared by post/draft/manual/edit.
+
+        v0.2.50 order (user's explicit sequence): More details first, then
+        photos, then title, price, and the rest of the details. Faster —
+        short pauses instead of long ones.
+        """
         try:
             ok, detail = self._open_create_item_form(page)
             if not ok:
                 self._last_form_error = detail
                 return False
 
+            # 1. Expand "More details" first.
+            try:
+                md = S.to_playwright(page, S.MORE_DETAILS)
+                md.wait_for(timeout=6000)
+                human.human_click(page, md)
+                human.human_pause(400, 800)
+            except Exception:
+                pass  # already expanded or absent
+
+            # 2. Photos FIRST (before any text).
+            images = payload.get("image_paths") or []
+            if images:
+                try:
+                    file_input = S.to_playwright(page, S.F_ADD_PHOTOS)
+                    file_input.wait_for(timeout=8000)
+                    # Playwright file inputs accept a list of paths.
+                    page.set_input_files(S.F_ADD_PHOTOS[1], [str(p) for p in images[:10]])
+                    human.human_pause(2000, 3500)  # let uploads finish
+                except Exception:
+                    pass
+
+            # Optional video
+            if payload.get("video_path"):
+                try:
+                    page.set_input_files(S.F_ADD_VIDEO[1], str(payload["video_path"]))
+                    human.human_pause(2000, 3500)
+                except Exception:
+                    pass
+
+            # 3. Title, 4. Price.
             title = S.to_playwright(page, S.F_TITLE)
             # (already waited visible inside _open_create_item_form)
             self._type(title, payload.get("title", ""), hybrid_ok=True)
-            human.human_pause(300, 700)
+            human.human_pause(200, 500)
 
             price = S.to_playwright(page, S.F_PRICE)
             self._type(price, str(payload.get("price", "")))
-            human.human_pause(300, 700)
+            human.human_pause(200, 500)
 
             # Category: type and pick the first suggestion; fall back gracefully.
             category = payload.get("category")
@@ -732,20 +767,20 @@ class PlaywrightDriver(BaseDriver):
                 try:
                     cat = S.to_playwright(page, S.F_CATEGORY)
                     self._type(cat, category)
-                    human.human_pause(1200, 2200)
+                    human.human_pause(800, 1500)
                     first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
                     first.wait_for(timeout=6000)
                     human.human_click(page, first)
                 except Exception:
                     pass
-                human.human_pause()
+                human.human_pause(200, 500)
 
             # Condition
             condition = (payload.get("condition") or "New").lower()
             try:
                 sel = S.F_CONDITION_NEW if "new" in condition else S.F_CONDITION_USED_LIKE_NEW
                 human.human_click(page, S.to_playwright(page, sel))
-                human.human_pause()
+                human.human_pause(200, 500)
             except Exception:
                 pass
 
@@ -754,7 +789,7 @@ class PlaywrightDriver(BaseDriver):
             if desc:
                 self._type(S.to_playwright(page, S.F_DESCRIPTION), desc,
                            hybrid_ok=True)
-                human.human_pause()
+                human.human_pause(200, 500)
 
             # Location
             if payload.get("location"):
@@ -784,25 +819,7 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
 
-            # Photos
-            images = payload.get("image_paths") or []
-            if images:
-                try:
-                    file_input = S.to_playwright(page, S.F_ADD_PHOTOS)
-                    file_input.wait_for(timeout=8000)
-                    # Playwright file inputs accept a list of paths.
-                    page.set_input_files(S.F_ADD_PHOTOS[1], [str(p) for p in images[:10]])
-                    human.human_pause(2500, 5000)  # let uploads finish
-                except Exception:
-                    pass
-
-            # Optional video
-            if payload.get("video_path"):
-                try:
-                    page.set_input_files(S.F_ADD_VIDEO[1], str(payload["video_path"]))
-                    human.human_pause(2500, 5000)
-                except Exception:
-                    pass
+            # (Photos/video already attached at the top — v0.2.50 order.)
             return True
         except Exception as exc:
             # v0.2.29: keep the real failure reason + page so the run logs

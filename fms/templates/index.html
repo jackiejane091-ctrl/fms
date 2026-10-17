@@ -50,6 +50,23 @@
     <span class="cc-field"><button type="button" class="speedbtn" id="speedBtn" onclick="cycleSpeed()" title="Run speed">⚡1x</button>
       <input type="hidden" id="speedVal" value="1"></span>
   </div>
+  <!-- v0.2.50: Min/Max dialog — appears when Start is pressed. -->
+  <div id="minmaxDlg" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:200;background:rgba(0,0,0,.45);align-items:center;justify-content:center">
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 26px;min-width:320px;box-shadow:0 8px 30px rgba(0,0,0,.4)">
+      <h3 style="margin:0 0 14px">Listing Settings</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <label>Min listings<br><input type="number" id="mmMinAds" value="1" min="1" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
+        <label>Max listings<br><input type="number" id="mmMaxAds" value="3" min="1" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
+        <label>Min price<br><input type="number" id="mmMinPrice" placeholder="—" min="0" step="any" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
+        <label>Max price<br><input type="number" id="mmMaxPrice" placeholder="—" min="0" step="any" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:14px">Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" class="btn" onclick="closeMinMax()" style="background:#fff;color:var(--txt);border:1px solid var(--line)">Cancel</button>
+        <button type="button" class="btn" onclick="saveMinMax()" style="background:var(--accent);color:#fff">Save &amp; Start</button>
+      </div>
+    </div>
+  </div>
   <div class="cc-row">
     <span class="cc-field"><b>Script:</b>
       <select id="actionSel" onchange="modeChanged()" style="min-width:200px">
@@ -126,12 +143,27 @@ function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
 }
 async function startRun(){
+  // v0.2.50: show the Min/Max dialog first — Save starts the run.
+  const gids = selectedGroups();
+  const actVal = document.getElementById('actionSel').value;
+  if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
+  if(!actVal){ fmsAlert('Pehle Script box se koi Action ya Script select karein.'); return; }
+  const dlg = document.getElementById('minmaxDlg');
+  if(dlg){ dlg.style.display = 'flex'; }
+}
+function closeMinMax(){
+  const dlg = document.getElementById('minmaxDlg');
+  if(dlg){ dlg.style.display = 'none'; }
+}
+async function saveMinMax(){
+  closeMinMax();
+  await _doStartRun();
+}
+async function _doStartRun(){
   const gids = selectedGroups();
   const actVal = document.getElementById('actionSel').value;
   const scriptId = actVal.startsWith('script:') ? actVal.slice(7) : '';
   const mode = scriptId ? 'script' : actVal;
-  if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
-  if(!actVal){ fmsAlert('Pehle Script box se koi Action ya Script select karein.'); return; }
   // v0.2.36: disable immediately — double-clicks must not fire two runs.
   const sb = document.getElementById('startBtn');
   if(sb){ sb.disabled = true; sb.textContent = 'Running…'; }
@@ -164,6 +196,17 @@ async function startRun(){
     newline_pause_max_ms: parseInt(s.newline_pause_max_ms) || 900,
     hybrid_threshold_chars: parseInt(s.hybrid_threshold_chars) || 500,
   };
+  // v0.2.50: Min/Max dialog values — per-account listing count + per-listing price range.
+  const _mm = id => document.getElementById(id);
+  let _minA = parseInt(_mm('mmMinAds').value) || 1;
+  let _maxA = parseInt(_mm('mmMaxAds').value) || 3;
+  if(_maxA < _minA){ const _t = _minA; _minA = _maxA; _maxA = _t; }
+  body.min_ads = _minA; body.max_ads = _maxA;
+  const _minP = parseFloat(_mm('mmMinPrice').value);
+  const _maxP = parseFloat(_mm('mmMaxPrice').value);
+  if(!isNaN(_minP) && !isNaN(_maxP) && _maxP > 0){
+    body.min_price = Math.min(_minP, _maxP); body.max_price = Math.max(_minP, _maxP);
+  }
   // Include all products (home page uses all products for posting modes).
   body.product_ids = {{ product_ids_json|default('[]') }};
   let firstRun = null, failed = 0, errMsg = '';
