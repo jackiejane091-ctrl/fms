@@ -832,22 +832,34 @@ class PlaywrightDriver(BaseDriver):
             # 1. Photos FIRST (before any text).
             # v0.2.60: NO MORE SILENT FAILURES. Log every step so the user
             # sees exactly why pictures did or didn't upload.
+            # v0.2.68: INSTRUMENTED image pipeline (ChatGPT's diagnosis plan).
+            # Log every step so we see exactly where it fails.
             images = payload.get("image_paths") or []
             _check("pictures", "attempted", f"{len(images)} paths in payload")
+            print(f"[PICS] payload has {len(images)} image paths", flush=True)
+            if images:
+                # Log first path (redacted to folder + filename, no full user path)
+                import os as _os2
+                _sample = str(images[0])
+                print(f"[PICS] sample path folder: {_os2.path.dirname(_sample)[:60]}", flush=True)
             if not images:
                 self._note_field_error(page, "pictures",
                                        "no image_paths in payload — skipping")
                 _check("pictures", "failed", "no image_paths")
+                print("[PICS] FAIL: no image_paths in payload", flush=True)
             else:
                 # Filter to files that actually exist.
                 import os as _os
                 _valid = [str(p) for p in images[:10]
                           if _os.path.isfile(str(p))]
+                print(f"[PICS] {len(_valid)}/{len(images)} files exist on disk", flush=True)
                 # (v0.2.61: removed self.db.log — PlaywrightDriver has no db)
                 if not _valid:
                     self._note_field_error(
                         page, "pictures",
                         f"0/{len(images)} image files exist on disk")
+                    _check("pictures", "failed", "0 files exist")
+                    print("[PICS] FAIL: 0 files exist on disk", flush=True)
                 else:
                     # Try multiple selectors — FB hides the file input.
                     _file_sel = None
@@ -859,22 +871,58 @@ class PlaywrightDriver(BaseDriver):
                             _loc = page.locator(_cand).first
                             _loc.wait_for(state="attached", timeout=5000)
                             _file_sel = _cand
+                            print(f"[PICS] file input found: {_cand}", flush=True)
                             break
                         except Exception:
+                            print(f"[PICS] selector not found: {_cand}", flush=True)
                             continue
                     if not _file_sel:
                         self._note_field_error(
                             page, "pictures",
                             "file input not found in DOM (tried 2 selectors)")
+                        _check("pictures", "failed", "no file input")
+                        print("[PICS] FAIL: file input not found", flush=True)
                     else:
                         try:
+                            print(f"[PICS] calling set_input_files with {len(_valid)} files...", flush=True)
                             page.set_input_files(_file_sel, _valid)
+                            print("[PICS] set_input_files returned OK", flush=True)
                             human.human_pause(2000, 3500)
+                            # v0.2.68: VERIFY — count photo previews on page.
+                            # Don't assume success from set_input_files alone.
+                            try:
+                                _prev_count = page.evaluate(
+                                    """() => document.querySelectorAll(
+                                        '[aria-label*="photo" i], '
+                                        + 'img[src*="fbcdn"], '
+                                        + 'img[src*="scontent"]').length""")
+                            except Exception:
+                                _prev_count = -1
+                            print(f"[PICS] preview elements found: {_prev_count}", flush=True)
+                            # Also check the "Photos: X/10" counter text.
+                            try:
+                                _counter = page.evaluate(
+                                    """() => (document.body.innerText.match(
+                                        /Photos:\s*(\d+)\/10/) || [])[1] || '?'""")
+                            except Exception:
+                                _counter = '?'
+                            print(f"[PICS] Photos counter shows: {_counter}/10", flush=True)
+                            if str(_counter) == '0' or _counter == '?':
+                                _check("pictures", "failed",
+                                       f"counter={_counter}, previews={_prev_count}")
+                                self._note_field_error(
+                                    page, "pictures",
+                                    f"upload called but Photos counter={_counter}")
+                            else:
+                                _check("pictures", "succeeded",
+                                       f"{_counter}/10 photos")
                         except Exception as exc_p:
                             self._note_field_error(
                                 page, "pictures",
                                 f"set_input_files failed: "
                                 f"{type(exc_p).__name__}: {str(exc_p)[:120]}")
+                            _check("pictures", "failed", type(exc_p).__name__)
+                            print(f"[PICS] FAIL: {type(exc_p).__name__}", flush=True)
 
             # Optional video
             if payload.get("video_path"):
