@@ -830,16 +830,22 @@ class PlaywrightDriver(BaseDriver):
             # THEN Next becomes clickable -> Publish.
 
             # 1. Photos FIRST (before any text).
+            # v0.2.75: Log upload errors visibly (was silent "except: pass").
             images = payload.get("image_paths") or []
-            if images:
+            if not images:
+                self._note_field_error(page, "pictures",
+                                       "no image_paths in payload — 0 images to upload")
+            else:
                 try:
                     file_input = S.to_playwright(page, S.F_ADD_PHOTOS)
                     file_input.wait_for(timeout=8000)
                     # Playwright file inputs accept a list of paths.
                     page.set_input_files(S.F_ADD_PHOTOS[1], [str(p) for p in images[:10]])
                     human.human_pause(2000, 3500)  # let uploads finish
-                except Exception:
-                    pass
+                except Exception as exc_pic:
+                    self._note_field_error(
+                        page, "pictures",
+                        f"upload failed: {type(exc_pic).__name__}: {str(exc_pic)[:200]}")
             # Optional video
             if payload.get("video_path"):
                 try:
