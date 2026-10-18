@@ -830,7 +830,7 @@ class PlaywrightDriver(BaseDriver):
             # THEN Next becomes clickable -> Publish.
 
             # 1. Photos FIRST (before any text).
-            # v0.2.77: VERIFY upload worked (v0.2.76 had false "success").
+            # v0.2.79: Use file_chooser (Playwright recommended).
             images = payload.get("image_paths") or []
             if not images:
                 self._note_field_error(page, "pictures",
@@ -838,43 +838,41 @@ class PlaywrightDriver(BaseDriver):
             else:
                 _attempted = False
                 _last_err = ""
-                # Try 1: direct selectors (broad to narrow).
-                for _sel in ("input[type='file']",
-                             "input[type='file'][accept*='image']"):
-                    try:
-                        page.set_input_files(_sel, [str(p) for p in images[:10]])
-                        _attempted = True
-                        break
-                    except Exception as _e1:
-                        _last_err = f"{type(_e1).__name__}: {str(_e1)[:100]}"
-                        continue
-                # Try 2: click "Add photos" area first, then set files.
-                if not _attempted:
-                    try:
+                # Try 1: file chooser via "Add photos" click.
+                try:
+                    with page.expect_file_chooser(timeout=8000) as _fc:
                         _add = page.get_by_text("Add photos", exact=False).first
                         _add.wait_for(timeout=5000)
                         human.human_click(page, _add)
-                        human.human_pause(1000, 1500)
-                        page.set_input_files("input[type='file']",
-                                             [str(p) for p in images[:10]])
-                        _attempted = True
-                    except Exception as _e2:
-                        _last_err = f"{type(_e2).__name__}: {str(_e2)[:100]}"
+                    _chooser = _fc.value
+                    _chooser.set_files([str(p) for p in images[:10]])
+                    _attempted = True
+                except Exception as _e1:
+                    _last_err = f"chooser: {type(_e1).__name__}: {str(_e1)[:100]}"
+                # Try 2: direct set_input_files (fallback).
+                if not _attempted:
+                    for _sel in ("input[type='file']",
+                                 "input[type='file'][accept*='image']"):
+                        try:
+                            page.set_input_files(_sel, [str(p) for p in images[:10]])
+                            _attempted = True
+                            break
+                        except Exception as _e2:
+                            _last_err = f"direct: {type(_e2).__name__}: {str(_e2)[:100]}"
+                            continue
                 if not _attempted:
                     self._note_field_error(
                         page, "pictures",
                         f"upload failed: {_last_err[:200]}")
                 else:
                     # VERIFY: did photos actually appear?
-                    human.human_pause(3000, 4000)  # let uploads process
+                    human.human_pause(3000, 4000)
                     _photos_ok = False
                     _verify_detail = ""
                     try:
-                        # Check 1: Photos X/10 counter
                         _counter = page.get_by_text("Photos:", exact=False).first
                         _ctext = _counter.inner_text(timeout=3000) if _counter else ""
                         _verify_detail = f"counter='{_ctext}'"
-                        # Parse "Photos: 5/10" — if >0, success
                         import re as _re
                         _m = _re.search(r"(\d+)\s*/\s*10", _ctext)
                         if _m and int(_m.group(1)) > 0:
