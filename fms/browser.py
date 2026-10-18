@@ -870,7 +870,7 @@ class PlaywrightDriver(BaseDriver):
                     _photos_ok = False
                     _verify_detail = ""
                     try:
-                        _counter = page.get_by_text("Photos:", exact=False).first
+                        _counter = page.get_by_text("Photos", exact=False).first
                         _ctext = _counter.inner_text(timeout=3000) if _counter else ""
                         _verify_detail = f"counter='{_ctext}'"
                         import re as _re
