@@ -455,6 +455,18 @@ class _Rotator:
         if product.get("tags"):
             description = (description + "\n" + product["tags"]).strip()
 
+        # v0.2.69: LOG runtime config for verification (ChatGPT's plan).
+        # Sanitized: folder path truncated, no secrets.
+        try:
+            _pid = product.get("id", "?")
+            _img_folder = str(product.get("image_folder") or "")[:50]
+            print(f"[CONFIG] product_id={_pid} price={price} "
+                  f"condition={product.get('condition')} "
+                  f"category={product.get('category')}", flush=True)
+            print(f"[CONFIG] image_folder={_img_folder} "
+                  f"images={len(image_paths)}", flush=True)
+        except Exception:
+            pass
         return {
             "title": title,
             "price": price,
@@ -765,6 +777,8 @@ class RunController:
                              f"marked failed (no retry)", level="error",
                              account_id=account["id"])
                     self._log_account_summary(account, quota)
+                    # v0.2.69: mark failed BEFORE finally so browser stays open.
+                    self._acct_state[account["id"]] = "failed"
                     return "failed"
                 if attempt >= attempts:
                     # v0.2.39: no more permanent locking (user asked for it
@@ -794,11 +808,15 @@ class RunController:
                              f"(no retry)", level="error",
                              account_id=account["id"])
                     self._log_account_summary(account, quota)
+                    # v0.2.69: mark failed BEFORE finally so browser stays open.
+                    self._acct_state[account["id"]] = "failed"
                     return "failed"
                 if attempt >= attempts:
                     self.log(f"[{label}] ERROR: {type(exc).__name__}: {exc}",
                              level="error", account_id=account["id"])
                     self._log_account_summary(account, quota)
+                    # v0.2.69: mark failed BEFORE finally so browser stays open.
+                    self._acct_state[account["id"]] = "failed"
                     return "failed"
                 self.log(f"[{label}] error on attempt {attempt}/{attempts} "
                          f"({type(exc).__name__}) — retrying",

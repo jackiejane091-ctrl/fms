@@ -890,6 +890,8 @@ class PlaywrightDriver(BaseDriver):
                             human.human_pause(2000, 3500)
                             # v0.2.68: VERIFY — count photo previews on page.
                             # Don't assume success from set_input_files alone.
+                            # v0.2.69: Try multiple counter patterns; don't fail
+                            # just because one regex returns "?".
                             try:
                                 _prev_count = page.evaluate(
                                     """() => document.querySelectorAll(
@@ -899,23 +901,39 @@ class PlaywrightDriver(BaseDriver):
                             except Exception:
                                 _prev_count = -1
                             print(f"[PICS] preview elements found: {_prev_count}", flush=True)
-                            # Also check the "Photos: X/10" counter text.
-                            try:
-                                _counter = page.evaluate(
-                                    """() => (document.body.innerText.match(
-                                        /Photos:\s*(\d+)\/10/) || [])[1] || '?'""")
-                            except Exception:
-                                _counter = '?'
+                            # Check the "Photos: X/10" counter text (multiple patterns).
+                            _counter = '?'
+                            for _pat in (
+                                r"Photos:\s*(\d+)\s*/\s*10",
+                                r"Photos[^\d]*(\d+)\s*/\s*10",
+                            ):
+                                try:
+                                    _counter = page.evaluate(
+                                        f"""() => (document.body.innerText.match(
+                                            /{_pat}/) || [])[1] || '?'""")
+                                    if _counter != '?':
+                                        break
+                                except Exception:
+                                    continue
                             print(f"[PICS] Photos counter shows: {_counter}/10", flush=True)
-                            if str(_counter) == '0' or _counter == '?':
+                            # v0.2.69: Only mark failed if BOTH counter=0 AND no previews.
+                            # Don't fail on "?" alone — verify via previews.
+                            if str(_counter) == '0' and _prev_count <= 0:
                                 _check("pictures", "failed",
                                        f"counter={_counter}, previews={_prev_count}")
                                 self._note_field_error(
                                     page, "pictures",
                                     f"upload called but Photos counter={_counter}")
+                            elif _counter == '?' and _prev_count <= 0:
+                                # Counter unreadable AND no previews — likely failed.
+                                _check("pictures", "failed",
+                                       f"counter=?, previews={_prev_count}")
+                                self._note_field_error(
+                                    page, "pictures",
+                                    "upload called but no previews found")
                             else:
                                 _check("pictures", "succeeded",
-                                       f"{_counter}/10 photos")
+                                       f"counter={_counter}, previews={_prev_count}")
                         except Exception as exc_p:
                             self._note_field_error(
                                 page, "pictures",
