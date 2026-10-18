@@ -888,6 +888,19 @@ class RunController:
             self._scrap_flow(account, driver, account_idx)
         else:
             self._complete_flow(account, driver, quota, account_idx)
+        # v0.2.62: log the video recording path so the user can send it
+        # for visual debugging (user's request — see the real issue).
+        try:
+            _vdir = None
+            import fms.config as _cfg
+            _vdir = _cfg.videos_dir() / f"account_{account['id']}"
+            if _vdir.exists():
+                _vids = sorted(_vdir.glob("*.webm"), key=lambda x: x.stat().st_mtime)
+                if _vids:
+                    self.log(f"[{label}] video: {_vids[-1]}",
+                             account_id=account["id"])
+        except Exception:
+            pass
         self.log(f"[{label}] account finished", account_id=account["id"])
 
     # -- new modes (alignment pass #5, v6.2.0.0) ---------------------------------

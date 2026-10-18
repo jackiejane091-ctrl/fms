@@ -341,6 +341,11 @@ class PlaywrightDriver(BaseDriver):
         # fingerprint — v0.2.32 principle). Slight cascade so parallel
         # account browsers don't stack pixel-exact on top of each other.
         cascade = (self.account.get("id") or 0) % 5
+        # v0.2.62: video recording — the user asked for a recording of each
+        # listing attempt so the real issue is visible (not just logs).
+        # Videos land in <data>/videos/account_<id>/.
+        _video_dir = config.videos_dir() / f"account_{self.account['id']}"
+        _video_dir.mkdir(parents=True, exist_ok=True)
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),
             headless=self.headless,
@@ -350,6 +355,8 @@ class PlaywrightDriver(BaseDriver):
             # so Facebook sees a consistent clock for the proxy's location.
             # v0.2.32: no user_agent override -> honest self-consistent UA.
             no_viewport=True,
+            record_video_dir=str(_video_dir),
+            record_video_size={"width": 1280, "height": 720},
             args=["--disable-blink-features=AutomationControlled",
                   "--start-maximized",
                   f"--window-position={40 * cascade},{30 * cascade}"],

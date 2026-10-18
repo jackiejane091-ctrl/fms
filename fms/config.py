@@ -50,5 +50,12 @@ def profiles_dir() -> Path:
     return p
 
 
+def videos_dir() -> Path:
+    """Where Playwright saves per-run videos (v0.2.62)."""
+    p = data_dir() / "videos"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def categories_path() -> Path:
     return data_dir() / "categories.json"
