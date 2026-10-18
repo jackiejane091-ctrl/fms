@@ -1067,7 +1067,13 @@ class PlaywrightDriver(BaseDriver):
                     f"{type(exc_av).__name__}")
 
             # 8. Location (Tags and SKU skipped per user's instruction).
+            # v0.2.78: scroll into view (form has its own scrollbar).
             if payload.get("location"):
+                try:
+                    _loc_field = page.get_by_text("Location", exact=False).first
+                    _loc_field.scroll_into_view_if_needed(timeout=3000)
+                except Exception:
+                    pass
                 self._select_location(page, payload["location"])
 
             # 9. Hide From Friends: it's a TOGGLE switch (user's screenshot).
@@ -1075,6 +1081,11 @@ class PlaywrightDriver(BaseDriver):
             if payload.get("hide_from_friends"):
                 try:
                     hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
+                    # v0.2.78: scroll into view first.
+                    try:
+                        hff.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
                     hff.wait_for(timeout=6000)
                     # Check the toggle state — don't flip it if already on.
                     try:
@@ -1103,6 +1114,11 @@ class PlaywrightDriver(BaseDriver):
                     continue
                 try:
                     dloc = S.to_playwright(page, _sel)
+                    # v0.2.78: scroll into view first.
+                    try:
+                        dloc.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
                     dloc.wait_for(timeout=6000)
                     # Check if already selected (checkbox/radio).
                     try:
