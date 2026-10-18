@@ -942,6 +942,20 @@ class PlaywrightDriver(BaseDriver):
                             _check("pictures", "failed", type(exc_p).__name__)
                             print(f"[PICS] FAIL: {type(exc_p).__name__}", flush=True)
 
+            # v0.2.70: PHOTOS ARE REQUIRED — if pictures failed, STOP HERE.
+            # Don't continue to Title with 0 photos (Facebook will never enable Next).
+            # User's priority: fix photo upload first.
+            _pics_status = checklist.get("pictures", {}).get("status", "")
+            if _pics_status != "succeeded":
+                _pics_detail = checklist.get("pictures", {}).get("detail", "")
+                print(f"[PICS] HARD STOP: pictures not uploaded ({_pics_detail})", flush=True)
+                self._note_field_error(
+                    page, "pictures-required",
+                    f"Photos are required but upload failed: {_pics_detail}. "
+                    f"Stopping — not continuing to Title.")
+                return False
+            print("[PICS] Photos verified — continuing to Title", flush=True)
+
             # Optional video
             if payload.get("video_path"):
                 try:
