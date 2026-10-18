@@ -455,18 +455,6 @@ class _Rotator:
         if product.get("tags"):
             description = (description + "\n" + product["tags"]).strip()
 
-        # v0.2.69: LOG runtime config for verification (ChatGPT's plan).
-        # Sanitized: folder path truncated, no secrets.
-        try:
-            _pid = product.get("id", "?")
-            _img_folder = str(product.get("image_folder") or "")[:50]
-            print(f"[CONFIG] product_id={_pid} price={price} "
-                  f"condition={product.get('condition')} "
-                  f"category={product.get('category')}", flush=True)
-            print(f"[CONFIG] image_folder={_img_folder} "
-                  f"images={len(image_paths)}", flush=True)
-        except Exception:
-            pass
         return {
             "title": title,
             "price": price,
@@ -713,8 +701,21 @@ class RunController:
 
     def _rotation(self, product: dict, account_idx: int) -> dict:
         """Build one listing payload with rotated title/price/location/images."""
-        return self._rotator.payload(
+        _payload = self._rotator.payload(
             product, self.cfg, as_draft=self.cfg.mode == "draft_publish")
+        # v0.2.70: LOG runtime config via self.log() so it appears in FMS Logs.
+        # Sanitized: folder path truncated, no secrets.
+        try:
+            _pid = product.get("id", "?")
+            _img_folder = str(product.get("image_folder") or "")[:50]
+            _imgs = _payload.get("image_paths") or []
+            self.log(f"[CONFIG] product_id={_pid} price={_payload.get('price')} "
+                     f"condition={_payload.get('condition')} "
+                     f"category={_payload.get('category')}")
+            self.log(f"[CONFIG] image_folder={_img_folder} images={len(_imgs)}")
+        except Exception:
+            pass
+        return _payload
 
     def _posted_count(self, account_id: int) -> int:
         row = self.db.fetchone(

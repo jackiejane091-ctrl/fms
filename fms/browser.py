@@ -822,6 +822,21 @@ class PlaywrightDriver(BaseDriver):
                 self._note_field_error(page, "form-open", detail or
                                        "create-item form did not open")
                 return False
+            # v0.2.71: Scroll form top-to-bottom so all sections render.
+            # (User instruction: inspect all relevant sections via scrolling.)
+            try:
+                page.evaluate("""() => {
+                    const el = document.querySelector('[role="main"]') || document.body;
+                    el.scrollTop = el.scrollHeight;
+                }""")
+                human.human_pause(500, 800)
+                page.evaluate("""() => {
+                    const el = document.querySelector('[role="main"]') || document.body;
+                    el.scrollTop = 0;
+                }""")
+                human.human_pause(500, 800)
+            except Exception:
+                pass
 
             # v0.2.58: user's EXACT form order (no more guessing):
             # Main form: Photos -> Title -> Price -> Category -> Condition.
