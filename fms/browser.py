@@ -822,21 +822,96 @@ class PlaywrightDriver(BaseDriver):
                 self._note_field_error(page, "form-open", detail or
                                        "create-item form did not open")
                 return False
-            # v0.2.71: Scroll form top-to-bottom so all sections render.
-            # (User instruction: inspect all relevant sections via scrolling.)
-            try:
-                page.evaluate("""() => {
-                    const el = document.querySelector('[role="main"]') || document.body;
-                    el.scrollTop = el.scrollHeight;
-                }""")
-                human.human_pause(500, 800)
-                page.evaluate("""() => {
-                    const el = document.querySelector('[role="main"]') || document.body;
-                    el.scrollTop = 0;
-                }""")
-                human.human_pause(500, 800)
-            except Exception:
-                pass
+            # v0.2.72: Scroll through the ENTIRE form to render all sections.
+            # Facebook uses an internal scrollable container — find it and
+            # scroll incrementally until bottom is reached (not a fixed count).
+            def _scroll_form_to_bottom():
+                try:
+                    _info = page.evaluate("""() => {
+                        // Find the actual scrollable container (not body).
+                        const candidates = [
+                            document.querySelector('[role="main"]'),
+                            document.querySelector('div[data-pagelet]'),
+                            document.documentElement,
+                            document.body,
+                        ].filter(Boolean);
+                        let scroller = document.body;
+                        for (const c of candidates) {
+                            const st = getComputedStyle(c);
+                            if ((st.overflowY === 'auto' || st.overflowY === 'scroll')
+                                && c.scrollHeight > c.clientHeight + 50) {
+                                scroller = c;
+                                break;
+                            }
+                        }
+                        // Fallback: the tallest scrollable ancestor of the form.
+                        if (scroller === document.body) {
+                            const form = document.querySelector(
+                                'input[aria-label], [role="combobox"]');
+                            let el = form;
+                            while (el && el.parentElement) {
+                                el = el.parentElement;
+                                if (el.scrollHeight > el.clientHeight + 50) {
+                                    scroller = el;
+                                    break;
+                                }
+                            }
+                        }
+                        return {
+                            tag: scroller.tagName,
+                            cls: (scroller.className || '').toString().slice(0, 40),
+                            sh: scroller.scrollHeight,
+                            ch: scroller.clientHeight,
+                        };
+                    }""")
+                    print(f"[SCROLL] container: {_info.get('tag')} "
+                          f"scrollH={_info.get('sh')} clientH={_info.get('ch')}",
+                          flush=True)
+                    # Incremental scroll until bottom (detect via scrollTop stall).
+                    _last_top = -1
+                    _steps = 0
+                    while _steps < 20:  # safety cap, not a fixed count
+                        _top = page.evaluate("""() => {
+                            const cands = [
+                                document.querySelector('[role="main"]'),
+                                document.documentElement,
+                                document.body,
+                            ].filter(Boolean);
+                            let sc = document.body;
+                            for (const c of cands) {
+                                if (c.scrollHeight > c.clientHeight + 50) {
+                                    sc = c; break;
+                                }
+                            }
+                            sc.scrollTop += 600;
+                            return sc.scrollTop;
+                        }""")
+                        human.human_pause(400, 700)
+                        _steps += 1
+                        if _top == _last_top:
+                            print(f"[SCROLL] bottom reached after {_steps} steps",
+                                  flush=True)
+                            break
+                        _last_top = _top
+                    # Scroll back to top for field-by-field processing.
+                    page.evaluate("""() => {
+                        const cands = [
+                            document.querySelector('[role="main"]'),
+                            document.documentElement,
+                            document.body,
+                        ].filter(Boolean);
+                        for (const c of cands) { c.scrollTop = 0; }
+                    }""")
+                    human.human_pause(400, 600)
+                except Exception as _se:
+                    print(f"[SCROLL] scroll-through failed: {_se}", flush=True)
+            _scroll_form_to_bottom()
+            # Helper: scroll a locator into view before interacting.
+            def _ensure_visible(loc):
+                try:
+                    loc.scroll_into_view_if_needed(timeout=5000)
+                except Exception:
+                    pass
 
             # v0.2.58: user's EXACT form order (no more guessing):
             # Main form: Photos -> Title -> Price -> Category -> Condition.
@@ -1153,7 +1228,13 @@ class PlaywrightDriver(BaseDriver):
                     f"{type(exc_av).__name__}")
 
             # 8. Location (Tags and SKU skipped per user's instruction).
+            # v0.2.72: scroll into view — this is BELOW Availability.
             if payload.get("location"):
+                try:
+                    _loc_probe = S.to_playwright(page, S.F_LOCATION)
+                    _ensure_visible(_loc_probe)
+                except Exception:
+                    pass
                 self._select_location(page, payload["location"])
 
             # 9. Hide From Friends: it's a TOGGLE switch (user's screenshot).
@@ -1161,6 +1242,8 @@ class PlaywrightDriver(BaseDriver):
             if payload.get("hide_from_friends"):
                 try:
                     hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
+                    # v0.2.72: scroll into view — below Availability.
+                    _ensure_visible(hff)
                     hff.wait_for(timeout=6000)
                     # Check the toggle state — don't flip it if already on.
                     try:
@@ -1189,6 +1272,8 @@ class PlaywrightDriver(BaseDriver):
                     continue
                 try:
                     dloc = S.to_playwright(page, _sel)
+                    # v0.2.72: scroll into view — below Availability.
+                    _ensure_visible(dloc)
                     dloc.wait_for(timeout=6000)
                     # Check if already selected (checkbox/radio).
                     try:
