@@ -809,7 +809,7 @@ class PlaywrightDriver(BaseDriver):
                 import os as _os
                 _valid = [str(p) for p in images[:10]
                           if _os.path.isfile(str(p))]
-                self.db.log(f"pictures: {len(_valid)}/{len(images)} files exist")
+                # (v0.2.61: removed self.db.log — PlaywrightDriver has no db)
                 if not _valid:
                     self._note_field_error(
                         page, "pictures",
@@ -835,9 +835,6 @@ class PlaywrightDriver(BaseDriver):
                     else:
                         try:
                             page.set_input_files(_file_sel, _valid)
-                            self.db.log(
-                                f"pictures: set {_valid and len(_valid)} files "
-                                f"via '{_file_sel}'")
                             human.human_pause(2000, 3500)
                         except Exception as exc_p:
                             self._note_field_error(
