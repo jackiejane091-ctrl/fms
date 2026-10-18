@@ -975,8 +975,35 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
-                    cond_field.wait_for(timeout=8000)
+                    # v0.2.82: Try multiple selectors (XPath times out).
+                    cond_field = None
+                    _cerr = ""
+                    for _attempt in range(3):
+                        try:
+                            if _attempt == 0:
+                                # Try 1: role-based (most reliable).
+                                cond_field = page.get_by_role(
+                                    "combobox", name="Condition").first
+                            elif _attempt == 1:
+                                # Try 2: original XPath.
+                                cond_field = S.to_playwright(
+                                    page, S.F_CONDITION_FIELD)
+                            else:
+                                # Try 3: text + parent.
+                                _span = page.get_by_text(
+                                    "Condition", exact=True).first
+                                _span.wait_for(timeout=3000)
+                                cond_field = _span.locator(
+                                    "xpath=ancestor::label[1]")
+                            cond_field.wait_for(timeout=5000)
+                            break
+                        except Exception as _e:
+                            _cerr = f"{type(_e).__name__}"
+                            cond_field = None
+                            continue
+                    if not cond_field:
+                        raise TimeoutError(
+                            f"Condition field not found: {_cerr}")
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
