@@ -76,12 +76,19 @@ F_PRICE = ("xpath",
            "//span[normalize-space(text())='Price']/ancestor::label[1]"
            "//input[@type='text']")
 # v0.2.58: Category is a dropdown DIV (screenshot shows ▼ arrow), not an input.
-F_CATEGORY = ("text", "Category")
+# v0.2.67: Category is a combobox label. Use XPath for reliability.
+F_CATEGORY = ("xpath",
+              "//span[normalize-space(text())='Category']"
+              "/ancestor::label[@role='combobox'][1]")
 F_CONDITION_NEW = ("text", "New")
 F_CONDITION_USED_LIKE_NEW = ("text", "Used - like new")
 # v0.2.54: the Condition dropdown field itself (click to open the list).
 # v0.2.58: it's a dropdown DIV with placeholder-like text, not a labeled input.
-F_CONDITION_FIELD = ("text", "Condition")
+# v0.2.67: Condition is a combobox label (like Category). get_by_text finds
+# the SPAN, not the clickable LABEL. Use XPath to get the label.
+F_CONDITION_FIELD = ("xpath",
+                     "//span[normalize-space(text())='Condition']"
+                     "/ancestor::label[@role='combobox'][1]")
 # v0.2.59: reverted — Description floating label is not a placeholder attr.
 F_DESCRIPTION = ("label", "Description")
 # v0.2.58: Availability dropdown (in More details). Options: "List as single
