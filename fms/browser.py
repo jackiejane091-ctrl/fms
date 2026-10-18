@@ -1007,14 +1007,23 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
+                    # v0.2.83: Use EXACT match — "New" also matches
+                    # "Used - like new" with fuzzy filter!
                     opt = page.locator(
                         "[role='listbox'] [role='option'], "
                         "[role='menu'] [role='menuitem']").filter(
                         has_text=condition).first
                     try:
                         opt.wait_for(timeout=6000)
+                        # Verify it's the EXACT option, not a partial match.
+                        _opt_text = opt.inner_text(timeout=2000).strip()
+                        if _opt_text.lower() != condition.lower():
+                            # Try exact text match instead.
+                            opt = page.get_by_text(
+                                condition, exact=True).first
+                            opt.wait_for(timeout=6000)
                     except Exception:
-                        opt = page.get_by_text(condition, exact=False).first
+                        opt = page.get_by_text(condition, exact=True).first
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
                     human.human_pause(100, 250)
