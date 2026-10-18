@@ -122,6 +122,15 @@ def download_update(exe_url: str, expected_size: int | None = None) -> None:
 
     def _run():
         target = new_exe_path()
+        # v0.2.80: Clean up stale temp files from previous failed updates.
+        try:
+            for _stale in target.parent.glob("fms_update_*.exe"):
+                try:
+                    _stale.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
         fd, tmp = tempfile.mkstemp(prefix="fms_update_", suffix=".exe",
                                    dir=str(target.parent))
         os.close(fd)
@@ -148,6 +157,25 @@ def download_update(exe_url: str, expected_size: int | None = None) -> None:
                 raise RuntimeError(
                     f"Incomplete download: got {downloaded} of "
                     f"{expected_size} bytes.")
+            # v0.2.80: Remove existing FMS.new.exe with retries
+            # (antivirus may lock it). This fixes WinError 5.
+            import time as _time
+            _removed = False
+            for _attempt in range(5):
+                try:
+                    if target.is_file():
+                        target.unlink()
+                    _removed = True
+                    break
+                except OSError:
+                    if _attempt < 4:
+                        _time.sleep(1)
+                    continue
+            if not _removed:
+                raise RuntimeError(
+                    "Cannot replace FMS.new.exe — file is locked. "
+                    "Close FMS completely, manually delete FMS.new.exe "
+                    "from Downloads, then try the update again.")
             os.replace(tmp, target)
             _set_state(state="done", message="Download complete. "
                        "Quit FMS and open it again to apply the update.")
