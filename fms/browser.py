@@ -792,6 +792,15 @@ class PlaywrightDriver(BaseDriver):
         photos, then title, price, and the rest of the details. Faster —
         short pauses instead of long ones.
         """
+        # v0.2.64: Field completion checklist — track every field:
+        # attempted, succeeded, verified, error. Don't click Next until
+        # required fields pass (ChatGPT's debugging plan).
+        checklist = {}
+        def _check(field, status, detail=""):
+            checklist[field] = {"status": status, "detail": detail}
+            # Log to console for visibility
+            print(f"[CHECKLIST] {field}: {status}" + (f" — {detail}" if detail else ""), flush=True)
+
         try:
             ok, detail = self._open_create_item_form(page)
             if not ok:
@@ -811,9 +820,11 @@ class PlaywrightDriver(BaseDriver):
             # v0.2.60: NO MORE SILENT FAILURES. Log every step so the user
             # sees exactly why pictures did or didn't upload.
             images = payload.get("image_paths") or []
+            _check("pictures", "attempted", f"{len(images)} paths in payload")
             if not images:
                 self._note_field_error(page, "pictures",
                                        "no image_paths in payload — skipping")
+                _check("pictures", "failed", "no image_paths")
             else:
                 # Filter to files that actually exist.
                 import os as _os
@@ -863,20 +874,24 @@ class PlaywrightDriver(BaseDriver):
             # 3. Title (v0.2.59: INDEPENDENT — a Title failure must NOT
             # block pictures/price/category/etc. FBM Robo style: try it,
             # log the result, move on to the next field).
+            _check("title", "attempted")
             try:
                 title = S.to_playwright(page, S.F_TITLE)
                 title.wait_for(timeout=8000)
                 self._type(title, payload.get("title", ""), hybrid_ok=True)
                 human.human_pause(100, 300)
+                _check("title", "succeeded")
             except Exception as exc_t:
                 self._note_field_error(
                     page, "title",
                     f"Title not filled: {type(exc_t).__name__}")
+                _check("title", "failed", type(exc_t).__name__)
             # 4. Price (v0.2.59: independent, with verification).
 
             # v0.2.60: Price is FULLY INDEPENDENT — never references 'title'.
             # (The old code crashed with NameError if Title had failed.)
             price_val = str(payload.get("price", ""))
+            _check("price", "attempted", f"value='{price_val}'")
             if price_val:
                 try:
                     price = S.to_playwright(page, S.F_PRICE)
