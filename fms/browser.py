@@ -916,6 +916,8 @@ class PlaywrightDriver(BaseDriver):
 
             # Category: CLICK the field, then SELECT from the dropdown list.
             # v0.2.54: user confirmed these are lists, not type-in fields.
+            # v0.2.65: checklist tracking (dynamic value from payload).
+            _check("category", "attempted")
             # The old code kept trying to TYPE, which never selected anything.
             category = payload.get("category")
             if category:
