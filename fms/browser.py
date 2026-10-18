@@ -270,10 +270,17 @@ class PlaywrightDriver(BaseDriver):
         Replaces bare ``self._last_form_error = msg`` assignments so every
         failure the user sees in the Logs comes with a picture they can
         forward instead of taking one themselves (v0.2.56).
+
+        v0.2.66: accumulate ALL errors in _all_field_errors (not just last).
         """
         shot = self._snap(page, reason)
         suffix = f" | Screenshot: {shot}" if shot else " | Screenshot: (failed)"
-        self._last_form_error = msg + suffix
+        err = msg + suffix
+        self._last_form_error = err
+        # Accumulate for the final report
+        if not hasattr(self, "_all_field_errors"):
+            self._all_field_errors = []
+        self._all_field_errors.append(f"{reason}: {msg}")
 
     def _handle_context_close(self) -> None:
         """Fires the moment the browser window/context closes (user ×)."""
@@ -796,10 +803,16 @@ class PlaywrightDriver(BaseDriver):
         # attempted, succeeded, verified, error. Don't click Next until
         # required fields pass (ChatGPT's debugging plan).
         checklist = {}
+        checklist_lines = []
         def _check(field, status, detail=""):
             checklist[field] = {"status": status, "detail": detail}
+            line = f"[CHECKLIST] {field}: {status}" + (f" — {detail}" if detail else "")
+            checklist_lines.append(line)
             # Log to console for visibility
-            print(f"[CHECKLIST] {field}: {status}" + (f" — {detail}" if detail else ""), flush=True)
+            print(line, flush=True)
+            # v0.2.66: also store for the final summary so it's visible
+            # in FMS logs, not just console.
+
 
         try:
             ok, detail = self._open_create_item_form(page)
@@ -951,6 +964,7 @@ class PlaywrightDriver(BaseDriver):
             # Condition: CLICK the field, then SELECT from the list.
             # v0.2.54: same list-select approach as category.
             condition = (payload.get("condition") or "New").strip()
+            _check("condition", "attempted", f"value='{condition}'")
             if condition:
                 try:
                     # Open the condition dropdown.
@@ -970,11 +984,13 @@ class PlaywrightDriver(BaseDriver):
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
                     human.human_pause(100, 250)
+                    _check("condition", "succeeded")
                 except Exception as exc_co:
                     self._note_field_error(
                         page, "condition",
                         f"Condition '{condition}' not selected: "
                         f"{type(exc_co).__name__}")
+                    _check("condition", "failed", type(exc_co).__name__)
 
             # 5b. Click "More details" to reveal Description, Availability,
             # Location, Delivery, Hide from friends (user's exact order).
@@ -1182,10 +1198,15 @@ class PlaywrightDriver(BaseDriver):
                                 ].join('|')).join(' ;; ')""")
                     except Exception:
                         formdump = "?"
+                    # v0.2.66: include ALL field errors so the user sees
+                    # WHICH fields failed and WHY (not just empty "Errors:").
+                    _all_errs = getattr(self, "_all_field_errors", []) or []
+                    _field_errs = " ;; ".join(_all_errs) if _all_errs else (getattr(self, "_last_form_error", "") or "")
                     raise RuntimeError(
                         "Next is disabled (form incomplete). " +
                         ("Errors: " + missing[0] if missing else
                          "Check category/condition/location.") +
+                        (f" | Field errors: {_field_errs[:500]}" if _field_errs else "") +
                         f" | Form fields: {formdump[:800]}")
                 human.human_click(page, nxt)
                 human.human_pause(2000, 3500)
