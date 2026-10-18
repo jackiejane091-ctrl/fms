@@ -830,22 +830,43 @@ class PlaywrightDriver(BaseDriver):
             # THEN Next becomes clickable -> Publish.
 
             # 1. Photos FIRST (before any text).
-            # v0.2.75: Log upload errors visibly (was silent "except: pass").
+            # v0.2.76: File input not in DOM on load (TimeoutError).
+            # Try broader selectors; click "Add photos" to trigger input.
             images = payload.get("image_paths") or []
             if not images:
                 self._note_field_error(page, "pictures",
                                        "no image_paths in payload — 0 images to upload")
             else:
-                try:
-                    file_input = S.to_playwright(page, S.F_ADD_PHOTOS)
-                    file_input.wait_for(timeout=8000)
-                    # Playwright file inputs accept a list of paths.
-                    page.set_input_files(S.F_ADD_PHOTOS[1], [str(p) for p in images[:10]])
-                    human.human_pause(2000, 3500)  # let uploads finish
-                except Exception as exc_pic:
+                _uploaded = False
+                _last_err = ""
+                # Try 1: direct selectors (broad to narrow).
+                for _sel in ("input[type='file']",
+                             "input[type='file'][accept*='image']"):
+                    try:
+                        page.set_input_files(_sel, [str(p) for p in images[:10]])
+                        human.human_pause(2000, 3500)
+                        _uploaded = True
+                        break
+                    except Exception as _e1:
+                        _last_err = f"{type(_e1).__name__}: {str(_e1)[:100]}"
+                        continue
+                # Try 2: click "Add photos" area first, then set files.
+                if not _uploaded:
+                    try:
+                        _add = page.get_by_text("Add photos", exact=False).first
+                        _add.wait_for(timeout=5000)
+                        human.human_click(page, _add)
+                        human.human_pause(1000, 1500)
+                        page.set_input_files("input[type='file']",
+                                             [str(p) for p in images[:10]])
+                        human.human_pause(2000, 3500)
+                        _uploaded = True
+                    except Exception as _e2:
+                        _last_err = f"{type(_e2).__name__}: {str(_e2)[:100]}"
+                if not _uploaded:
                     self._note_field_error(
                         page, "pictures",
-                        f"upload failed: {type(exc_pic).__name__}: {str(exc_pic)[:200]}")
+                        f"upload failed: {_last_err[:200]}")
             # Optional video
             if payload.get("video_path"):
                 try:
