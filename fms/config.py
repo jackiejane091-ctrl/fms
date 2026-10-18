@@ -57,5 +57,25 @@ def videos_dir() -> Path:
     return p
 
 
+def debug_dir() -> Path:
+    """Easy-to-find folder for screenshots/videos (v0.2.63).
+
+    User's request: not buried in AppData. Use D:\FMS if D: exists,
+    else C:\FMS. Falls back to data_dir on non-Windows.
+    """
+    import os
+    if os.name == "nt":
+        for drive in ("D", "C"):
+            base = Path(f"{drive}:\\FMS")
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+            except Exception:
+                continue
+    p = data_dir() / "debug"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def categories_path() -> Path:
     return data_dir() / "categories.json"

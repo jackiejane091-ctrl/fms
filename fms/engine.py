@@ -893,7 +893,8 @@ class RunController:
         try:
             _vdir = None
             import fms.config as _cfg
-            _vdir = _cfg.videos_dir() / f"account_{account['id']}"
+            # v0.2.63: videos now in D:\FMS\videos (not AppData).
+            _vdir = _cfg.debug_dir() / "videos" / f"account_{account['id']}"
             if _vdir.exists():
                 _vids = sorted(_vdir.glob("*.webm"), key=lambda x: x.stat().st_mtime)
                 if _vids:

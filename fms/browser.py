@@ -238,7 +238,9 @@ class PlaywrightDriver(BaseDriver):
         raises — a failed screenshot must never break the run.
         """
         try:
-            shot_dir = config.data_dir() / "screenshots"
+            # v0.2.63: screenshots go to D:\FMS\screenshots (easy to find),
+            # not buried in AppData (user's request).
+            shot_dir = config.debug_dir() / "screenshots"
             shot_dir.mkdir(parents=True, exist_ok=True)
             stamp = time.strftime("%Y%m%d-%H%M%S")
             label = str(self.account.get("label") or "account")
@@ -344,7 +346,8 @@ class PlaywrightDriver(BaseDriver):
         # v0.2.62: video recording — the user asked for a recording of each
         # listing attempt so the real issue is visible (not just logs).
         # Videos land in <data>/videos/account_<id>/.
-        _video_dir = config.videos_dir() / f"account_{self.account['id']}"
+        # v0.2.63: videos go to D:\FMS\videos (easy to find).
+        _video_dir = config.debug_dir() / "videos" / f"account_{self.account['id']}"
         _video_dir.mkdir(parents=True, exist_ok=True)
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),

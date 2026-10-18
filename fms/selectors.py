@@ -70,7 +70,11 @@ MORE_DETAILS = ("text", "More details")
 # NOT a placeholder attribute (it's a Material-style floating label).
 # get_by_label worked in v0.2.57; placeholder broke everything in v0.2.58.
 F_TITLE = ("label", "Title")
-F_PRICE = ("label", "Price")
+# v0.2.63: Price has TWO "Price" texts in DOM (one without input!). Use XPath
+# to find the span with "Price" that actually has a text input in its label.
+F_PRICE = ("xpath",
+           "//span[normalize-space(text())='Price']/ancestor::label[1]"
+           "//input[@type='text']")
 # v0.2.58: Category is a dropdown DIV (screenshot shows ▼ arrow), not an input.
 F_CATEGORY = ("text", "Category")
 F_CONDITION_NEW = ("text", "New")
