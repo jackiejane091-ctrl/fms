@@ -997,14 +997,16 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
-                    opt = page.locator(
-                        "[role='listbox'] [role='option'], "
-                        "[role='menu'] [role='menuitem']").filter(
-                        has_text=condition).first
+                    # v0.2.93: EXACT match only (per instructions).
+                    # "New" must not match "Used - like new".
+                    opt = page.get_by_role(
+                        "option", name=condition, exact=True).first
                     try:
                         opt.wait_for(timeout=6000)
                     except Exception:
-                        opt = page.get_by_text(condition, exact=False).first
+                        # Fallback: exact text match within listbox
+                        opt = page.locator("[role='listbox']").get_by_text(
+                            condition, exact=True).first
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
                     human.human_pause(100, 250)
