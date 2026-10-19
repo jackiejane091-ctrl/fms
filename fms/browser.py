@@ -975,55 +975,19 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    # v0.2.82: Try multiple selectors (XPath times out).
-                    cond_field = None
-                    _cerr = ""
-                    for _attempt in range(3):
-                        try:
-                            if _attempt == 0:
-                                # Try 1: role-based (most reliable).
-                                cond_field = page.get_by_role(
-                                    "combobox", name="Condition").first
-                            elif _attempt == 1:
-                                # Try 2: original XPath.
-                                cond_field = S.to_playwright(
-                                    page, S.F_CONDITION_FIELD)
-                            else:
-                                # Try 3: text + parent.
-                                _span = page.get_by_text(
-                                    "Condition", exact=True).first
-                                _span.wait_for(timeout=3000)
-                                cond_field = _span.locator(
-                                    "xpath=ancestor::label[1]")
-                            cond_field.wait_for(timeout=5000)
-                            break
-                        except Exception as _e:
-                            _cerr = f"{type(_e).__name__}"
-                            cond_field = None
-                            continue
-                    if not cond_field:
-                        raise TimeoutError(
-                            f"Condition field not found: {_cerr}")
+                    cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
+                    cond_field.wait_for(timeout=8000)
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
-                    # v0.2.83: Use EXACT match — "New" also matches
-                    # "Used - like new" with fuzzy filter!
                     opt = page.locator(
                         "[role='listbox'] [role='option'], "
                         "[role='menu'] [role='menuitem']").filter(
                         has_text=condition).first
                     try:
                         opt.wait_for(timeout=6000)
-                        # Verify it's the EXACT option, not a partial match.
-                        _opt_text = opt.inner_text(timeout=2000).strip()
-                        if _opt_text.lower() != condition.lower():
-                            # Try exact text match instead.
-                            opt = page.get_by_text(
-                                condition, exact=True).first
-                            opt.wait_for(timeout=6000)
                     except Exception:
-                        opt = page.get_by_text(condition, exact=True).first
+                        opt = page.get_by_text(condition, exact=False).first
                         opt.wait_for(timeout=6000)
                     human.human_click(page, opt)
                     human.human_pause(100, 250)
