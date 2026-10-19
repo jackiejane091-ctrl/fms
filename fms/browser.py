@@ -975,8 +975,25 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
+                    # v0.2.85: Scroll into view + retry (safe, no selector change).
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
-                    cond_field.wait_for(timeout=8000)
+                    try:
+                        cond_field.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
+                    _found = False
+                    _last_err = ""
+                    for _retry in range(2):
+                        try:
+                            cond_field.wait_for(timeout=8000)
+                            _found = True
+                            break
+                        except Exception as _e:
+                            _last_err = type(_e).__name__
+                            human.human_pause(1000, 1500)
+                            continue
+                    if not _found:
+                        raise TimeoutError(f"Condition field not found: {_last_err}")
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
