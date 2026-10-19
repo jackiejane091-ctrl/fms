@@ -986,7 +986,7 @@ class PlaywrightDriver(BaseDriver):
 
             # Condition: CLICK the field, then SELECT from the list.
             # v0.2.54: same list-select approach as category.
-            condition = (payload.get("condition") or "New").strip()
+            condition = (payload.get("condition") or "").strip() or "New"
             _check("condition", "attempted", f"value='{condition}'")
             if condition:
                 try:
