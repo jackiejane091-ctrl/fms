@@ -975,19 +975,21 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    # v0.2.88: No scroll (user request — scroll broke Description).
-                    # Retry only. Condition may not work, but other fields safe.
+                    # v0.2.89: Wait for form stability after Category (not scroll).
+                    # Category selection triggers re-render; Condition may be
+                    # temporarily absent. Wait for DOM to stabilize.
+                    human.human_pause(1500, 2000)
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
                     _found = False
                     _last_err = ""
-                    for _retry in range(2):
+                    for _retry in range(3):
                         try:
                             cond_field.wait_for(timeout=8000)
                             _found = True
                             break
                         except Exception as _e:
                             _last_err = type(_e).__name__
-                            human.human_pause(1000, 1500)
+                            human.human_pause(1500, 2000)
                             continue
                     if not _found:
                         raise TimeoutError(f"Condition field not found: {_last_err}")
