@@ -975,12 +975,9 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    # v0.2.85: Scroll into view + retry (safe, no selector change).
+                    # v0.2.85: Retry (safe, no selector change).
+                    # v0.2.86: REMOVED scroll — it broke Description/Availability/Delivery.
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
-                    try:
-                        cond_field.scroll_into_view_if_needed(timeout=3000)
-                    except Exception:
-                        pass
                     _found = False
                     _last_err = ""
                     for _retry in range(2):
