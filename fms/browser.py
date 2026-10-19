@@ -17,6 +17,22 @@ from pathlib import Path
 from typing import Any
 
 from . import config, human, selectors as S
+def _ensure_visible(page, locator, timeout=3000):
+    """Smart scroll: only scroll if element is not visible.
+    
+    User's idea: don't hardcode scroll per field. Check visibility first.
+    Returns True if element is visible (after optional scroll).
+    """
+    try:
+        if locator.is_visible(timeout=1000):
+            return True
+    except Exception:
+        pass
+    try:
+        locator.scroll_into_view_if_needed(timeout=timeout)
+        return True
+    except Exception:
+        return False
 
 # A small pool of desktop user agents to rotate per account.
 # v0.2.32: NO user-agent override at all. The bundled browser is Chrome for
@@ -975,11 +991,11 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    # v0.2.89: Wait for form stability after Category (not scroll).
-                    # Category selection triggers re-render; Condition may be
-                    # temporarily absent. Wait for DOM to stabilize.
-                    human.human_pause(1500, 2000)
+                    # v0.2.90: SMART scroll (user's idea).
+                    # Only scroll if not visible. No per-field hacks.
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
+                    _ensure_visible(page, cond_field)
+                    human.human_pause(500, 800)
                     _found = False
                     _last_err = ""
                     for _retry in range(3):
