@@ -352,6 +352,12 @@ def human_move(page, x: float, y: float, steps: int | None = None) -> None:
 
 def human_click(page, locator) -> None:
     """Move to the element's center with a curve, then click with a tiny delay."""
+    # v0.2.94: UNIVERSAL scroll (user instruction).
+    # Wherever needed, scroll. Not per-field. One place, all fields.
+    try:
+        locator.scroll_into_view_if_needed(timeout=2000)
+    except Exception:
+        pass
     try:
         box = locator.bounding_box()
     except Exception:

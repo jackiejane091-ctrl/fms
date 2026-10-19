@@ -986,6 +986,8 @@ class PlaywrightDriver(BaseDriver):
 
             # Condition: CLICK the field, then SELECT from the list.
             # v0.2.54: same list-select approach as category.
+            # PERMANENT RULE (2026-10-19): Automation follows DB saved value.
+            # No thinking, no intelligence, no guessing. DB says X → use X.
             condition = (payload.get("condition") or "").strip() or "New"
             _check("condition", "attempted", f"value='{condition}'")
             if condition:
