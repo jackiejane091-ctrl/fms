@@ -975,13 +975,9 @@ class PlaywrightDriver(BaseDriver):
             if condition:
                 try:
                     # Open the condition dropdown.
-                    # v0.2.87: Scroll + retry (from v0.2.85) + scroll reset.
-                    # Scroll fixes Condition; reset prevents breaking other fields.
+                    # v0.2.88: No scroll (user request — scroll broke Description).
+                    # Retry only. Condition may not work, but other fields safe.
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
-                    try:
-                        cond_field.scroll_into_view_if_needed(timeout=3000)
-                    except Exception:
-                        pass
                     _found = False
                     _last_err = ""
                     for _retry in range(2):
@@ -1010,12 +1006,6 @@ class PlaywrightDriver(BaseDriver):
                     human.human_click(page, opt)
                     human.human_pause(100, 250)
                     _check("condition", "succeeded")
-                    # v0.2.87: Reset scroll after Condition so subsequent
-                    # fields (Description, Availability, etc.) are not affected.
-                    try:
-                        page.evaluate("window.scrollTo(0, 0)")
-                    except Exception:
-                        pass
                 except Exception as exc_co:
                     self._note_field_error(
                         page, "condition",
