@@ -990,25 +990,10 @@ class PlaywrightDriver(BaseDriver):
             _check("condition", "attempted", f"value='{condition}'")
             if condition:
                 try:
-                    # Open the condition dropdown.
-                    # v0.2.90: SMART scroll (user's idea).
-                    # Only scroll if not visible. No per-field hacks.
+                    # v0.2.91: EXACTLY like Category (user request).
+                    # Simple: find field, click, find option, click.
                     cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
-                    _ensure_visible(page, cond_field)
-                    human.human_pause(500, 800)
-                    _found = False
-                    _last_err = ""
-                    for _retry in range(3):
-                        try:
-                            cond_field.wait_for(timeout=8000)
-                            _found = True
-                            break
-                        except Exception as _e:
-                            _last_err = type(_e).__name__
-                            human.human_pause(1500, 2000)
-                            continue
-                    if not _found:
-                        raise TimeoutError(f"Condition field not found: {_last_err}")
+                    cond_field.wait_for(timeout=8000)
                     human.human_click(page, cond_field)
                     human.human_pause(300, 600)
                     # Click the matching option in the list.
