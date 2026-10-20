@@ -677,6 +677,56 @@ class PlaywrightDriver(BaseDriver):
         return fail("login did not complete within 60s (still not logged in)")
 
     # -- posting ----------------------------------------------------------------
+    def _location_candidate_identity(self, page, loc) -> tuple[bool, str]:
+        """Prove a resolved element is the Location field's own input.
+
+        Read-only. Returns (ok, description). ok=True only when the
+        element's aria-label/placeholder mentions 'location', or a field
+        row above it is captioned 'Location...'. This is the guard that
+        makes it impossible to type the location into Title (or any other
+        field): an unprovable candidate is rejected, never typed into.
+        """
+        try:
+            info = loc.evaluate(
+                """el => {
+                    const out = {
+                        tag: el.tagName || '',
+                        type: el.getAttribute('type') || '',
+                        role: el.getAttribute('role') || '',
+                        aria: el.getAttribute('aria-label') || '',
+                        placeholder: el.getAttribute('placeholder') || '',
+                        rowLabel: '',
+                        locRow: false,
+                    };
+                    let node = el;
+                    for (let i = 0; i < 7; i++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const t = (node.innerText || '').trim();
+                        if (t && !out.rowLabel) {
+                            out.rowLabel = t.split('\\n')[0].slice(0, 60);
+                        }
+                        if (/^location\\b/i.test(t)) {
+                            out.locRow = true;
+                            break;
+                        }
+                    }
+                    return out;
+                }""")
+        except Exception as exc:
+            return False, f"identity unreadable ({type(exc).__name__})"
+        if not isinstance(info, dict):
+            return False, "identity unreadable (no data)"
+        desc = (f"tag={info.get('tag')} type={info.get('type')} "
+                f"role={info.get('role') or '-'} "
+                f"aria={info.get('aria') or '-'} "
+                f"row={info.get('rowLabel') or '-'}")
+        aria = (info.get("aria") or "").lower()
+        ph = (info.get("placeholder") or "").lower()
+        if "location" in aria or "location" in ph or info.get("locRow"):
+            return True, desc
+        return False, desc
+
     def _select_location(self, page, location: str) -> tuple[bool, str]:
         # v0.2.55: extra care (user's explicit instruction). Type the FULL
         # location text, wait for the suggestion list, then click the FIRST
@@ -691,30 +741,58 @@ class PlaywrightDriver(BaseDriver):
         # holds one (the F_PRICE pattern). (b) return (ok, step-detail)
         # instead of swallowing the failing step, so callers can log it per
         # account. (c) verify the field's value after the suggestion click.
+        # v0.2.102 (targeted fix, user-approved): identity-guarded
+        # resolution. The v0.2.99 fallback climbed from the 'Location'
+        # label to the nearest ancestor containing ANY text input and
+        # took its FIRST input — when the Location input had not rendered
+        # yet, that climb reached the whole form panel and selected the
+        # TITLE input (live evidence 2026-10-20: page scrolled to top,
+        # title erased/replaced by the location text, log detail
+        # 'suggestions: no suggestion list appeared'). Now every candidate
+        # must PROVE it is the Location field's own input (see
+        # _location_candidate_identity) before anything is clicked or
+        # typed, and the fallback may only take the first text input
+        # FOLLOWING the 'Location' label in document order — Title and
+        # Price precede the label, so they can never be reached.
         loc = None
+        ident = ""
         try:
             cand = S.to_playwright(page, S.F_LOCATION)
             cand.wait_for(timeout=4000)
             if cand.is_visible():
-                loc = cand
+                _ok_id, _desc = self._location_candidate_identity(page, cand)
+                if _ok_id:
+                    loc, ident = cand, _desc
         except Exception:
             loc = None
         if loc is None:
             try:
                 cand = page.locator(
                     "xpath=//span[normalize-space(text())='Location']"
-                    "/ancestor::div[.//input[@type='text']][1]"
-                    "//input[@type='text']").first
+                    "/following::input[@type='text'][1]").first
                 cand.wait_for(timeout=8000)
-                loc = cand
+                if cand.is_visible():
+                    _ok_id, _desc = self._location_candidate_identity(
+                        page, cand)
+                    if _ok_id:
+                        loc, ident = cand, _desc
+                    else:
+                        self._note_field_error(
+                            page, "location-field",
+                            "Location input identity rejected: element "
+                            f"after the Location label is {_desc}")
+                        return False, (
+                            "field: element after the Location label is "
+                            f"not the Location input ({_desc})")
             except Exception:
                 loc = None
         if loc is None:
             self._note_field_error(
                 page, "location-field",
-                "Location field not found: label and text-anchored lookup "
-                "both failed")
-            return False, "field: Location input not resolved"
+                "Location field not found: label lookup failed and no "
+                "identified input follows the Location label")
+            return False, ("field: Location input not rendered or not "
+                           "identified")
         # Clear then type the full text.
         try:
             loc.click()
@@ -723,6 +801,18 @@ class PlaywrightDriver(BaseDriver):
             human.human_pause(200, 400)
         except Exception:
             pass
+        # Diagnostic (v0.2.102): which element actually holds focus now —
+        # recorded in the step details so a wrong target can never hide.
+        focus_desc = ""
+        try:
+            focus_desc = page.evaluate(
+                """() => { const a = document.activeElement;
+                    if (!a) return 'none';
+                    return (a.tagName || '') + '/' +
+                           (a.getAttribute('type') || '') + '/' +
+                           (a.getAttribute('aria-label') || ''); }""") or ""
+        except Exception:
+            focus_desc = ""
         self._type(loc, location)
         human.human_pause(1500, 2500)  # let suggestions appear
         try:
@@ -734,7 +824,8 @@ class PlaywrightDriver(BaseDriver):
                 f"Location '{location}' suggestion not selected: "
                 f"{type(exc_s).__name__}")
             return False, (f"suggestions: no suggestion list appeared "
-                           f"({type(exc_s).__name__})")
+                           f"({type(exc_s).__name__}) "
+                           f"[field: {ident}; focus: {focus_desc}]")
         # Sanity: the suggestion should contain part of our text.
         sug_text = ""
         try:
@@ -767,9 +858,10 @@ class PlaywrightDriver(BaseDriver):
             pass
         want_city = location.split(",")[0].strip().lower()
         if actual and want_city and want_city in actual.lower():
-            return True, f"selected '{sug_text or actual}'"
+            return True, (f"selected '{sug_text or actual}' "
+                          f"[field: {ident}; focus: {focus_desc}]")
         return False, (f"verify: suggestion clicked but field value is "
-                       f"'{actual[:60]}'")
+                       f"'{actual[:60]}' [field: {ident}]")
 
     def _open_create_item_form(self, page) -> tuple[bool, str]:
         """Open the create-item form the FBM Robo way: feed -> click the
