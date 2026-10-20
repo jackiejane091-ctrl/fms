@@ -52,6 +52,7 @@ ACTIONS = [
     ("download_images_titles", "Download Images & Titles"),
     ("change_location", "Change Marketplace Location"),
     ("scrap_data", "Scrap Data"),
+    ("test_single_post", "Test Single Post"),
 ]
 MODES = (tuple(key for key, _ in ACTIONS)
          + ("manual_publish", "script", "wait_next_turn"))
@@ -905,6 +906,8 @@ class RunController:
             self._wait_mode_flow(account)
         elif mode == "scrap_data":
             self._scrap_flow(account, driver, account_idx)
+        elif mode == "test_single_post":
+            self._test_single_flow(account, driver, account_idx)
         else:
             self._complete_flow(account, driver, quota, account_idx)
         # v0.2.62: log the video recording path so the user can send it
@@ -1102,6 +1105,61 @@ class RunController:
             # v0.2.24: notice Stop/Pause promptly after each listing instead
             # of only before the next one.
             self._wait_if_paused()
+
+    # -- mode: test_single_post (experimental, v0.2.96) -------------------------
+    def _test_single_flow(self, account: dict, driver, account_idx: int) -> None:
+        """Run ChatGPT's single_post_test.py against the FIRST selected
+        product on this logged-in session. Fills the form, verifies each
+        field, and stops before Next/Publish. The browser stays open so
+        the user can inspect the filled form."""
+        from . import single_post_test as _spt
+        label = account["label"]
+        aid = account["id"]
+        # Keep the browser open afterwards for visual inspection.
+        try:
+            driver.keep_open = True
+        except Exception:
+            pass
+        product_ids = list(self.cfg.product_ids or [])
+        if not product_ids:
+            self.log(f"[{label}] Test Single Post: no product selected — "
+                     f"select a product first", level="error",
+                     account_id=aid)
+            return
+        pid = product_ids[0]
+        product = products_mod.get_product(self.db, pid)
+        if product is None:
+            self.log(f"[{label}] Test Single Post: product {pid} not found",
+                     level="error", account_id=aid)
+            return
+        payload = self._rotation(product, account_idx)
+        self.log(f"[{label}] Test Single Post: product '{product.get('name')}' "
+                 f"(id={pid}) — filling form, will STOP before Next/Publish",
+                 account_id=aid)
+        try:
+            report = _spt.run_single_post_test(driver, payload)
+        except Exception as exc:
+            self.log(f"[{label}] Test Single Post crashed: "
+                     f"{type(exc).__name__}: {exc}", level="error",
+                     account_id=aid)
+            return
+        # Field-by-field report into the account logs.
+        self.log(f"[{label}] ===== TEST SINGLE POST REPORT =====",
+                 account_id=aid)
+        for row in report.get("fields", []):
+            status = row.get("status", "?")
+            lvl = "error" if status == "FAILED" else "info"
+            self.log(f"[{label}] {row.get('field')}: {status} | "
+                     f"expected='{row.get('expected_value', '')}' | "
+                     f"actual='{row.get('actual_value', '')}' | "
+                     f"{row.get('detail', '')}", level=lvl, account_id=aid)
+        self.log(f"[{label}] Summary: {report.get('summary', {})}",
+                 account_id=aid)
+        self.log(f"[{label}] Publish attempted: "
+                 f"{report.get('publish_attempted')} | Next clicked: "
+                 f"{report.get('next_clicked')}", account_id=aid)
+        self.log(f"[{label}] ================================",
+                 account_id=aid)
 
     # -- mode: draft_publish (full two-phase flow) ----------------------------------
     def _draft_count(self, account_id: int) -> int:
