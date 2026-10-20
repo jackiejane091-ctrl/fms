@@ -11,11 +11,31 @@ upload mechanism is retained here without changing production photo code.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import human, selectors as S
+
+
+def _parse_amount(text: Any) -> float | None:
+    """Extract a numeric amount from currency-formatted text like "£5" or "5.00"."""
+    cleaned = re.sub(r"[^\d.\-]", "", str(text or ""))
+    parts = cleaned.split(".")
+    if len(parts) > 2:
+        cleaned = "".join(parts[:-1]) + "." + parts[-1]
+    try:
+        return float(cleaned) if cleaned not in ("", "-", ".", "-.") else None
+    except Exception:
+        return None
+
+
+def _amounts_equal(a: Any, b: Any, tol: float = 0.005) -> bool:
+    pa, pb = _parse_amount(a), _parse_amount(b)
+    if pa is None or pb is None:
+        return False
+    return abs(pa - pb) <= tol
 
 
 def _record(results: list[dict[str, str]], field: str, expected: Any,
@@ -58,14 +78,16 @@ def _field_value(page, selector) -> str:
 
 
 def _fill_text(page, selector, field: str, value: Any,
-               results: list[dict[str, str]], timeout: int = 8000) -> None:
+               results: list[dict[str, str]], timeout: int = 8000,
+               numeric_compare: bool = False) -> None:
     if value is None or str(value).strip() == "":
         _record(results, field, None, "", "SKIPPED", "No saved value configured")
         return
     expected = str(value).strip()
     try:
         loc = S.to_playwright(page, selector)
-        loc.wait_for(state="visible", timeout=timeout)
+        # Fix 1: attached wait like production (browser.py), not strict visible.
+        loc.wait_for(timeout=timeout)
         try:
             loc.scroll_into_view_if_needed(timeout=2500)
         except Exception:
@@ -73,7 +95,14 @@ def _fill_text(page, selector, field: str, value: Any,
         loc.click(timeout=3000)
         loc.fill(expected, timeout=5000)
         actual = _visible_value(loc)
-        if actual == expected:
+        if numeric_compare:
+            # Fix 3: normalize currency/format ("£5" vs "5.00"), compare numbers.
+            if _amounts_equal(actual, expected):
+                _record(results, field, expected, actual, "VERIFIED")
+            else:
+                _record(results, field, expected, actual, "FAILED",
+                        "Numeric amount differs after fill")
+        elif actual == expected:
             _record(results, field, expected, actual, "VERIFIED")
         else:
             _record(results, field, expected, actual, "FAILED",
@@ -85,30 +114,50 @@ def _fill_text(page, selector, field: str, value: Any,
 
 def _select_option(page, field_selector, expected: Any, field: str,
                    results: list[dict[str, str]], exact: bool = True,
-                   timeout: int = 8000) -> None:
+                   timeout: int = 8000,
+                   production_sequence: bool = False) -> None:
     if expected is None or str(expected).strip() == "":
         _record(results, field, None, "", "SKIPPED", "No saved value configured")
         return
     wanted = str(expected).strip()
     try:
         field_loc = S.to_playwright(page, field_selector)
-        field_loc.wait_for(state="visible", timeout=timeout)
-        try:
-            field_loc.scroll_into_view_if_needed(timeout=2500)
-        except Exception:
-            pass
-        field_loc.click(timeout=4000)
-        human.human_pause(250, 450)
-        option = page.get_by_role("option", name=wanted, exact=exact).first
-        try:
-            option.wait_for(state="visible", timeout=5000)
-        except Exception:
-            # Fallback is constrained to the open listbox, never a global text click.
-            option = page.locator("[role='listbox']").get_by_text(
-                wanted, exact=exact).first
-            option.wait_for(state="visible", timeout=3500)
-        option.click(timeout=4000)
-        human.human_pause(150, 300)
+        # Fix 1 (dropdown fields): attached wait like production, not strict visible.
+        field_loc.wait_for(timeout=timeout)
+        if production_sequence:
+            # Fix 2: mirror the proven production interaction sequence
+            # (browser.py Category flow): human click, settle pause,
+            # listbox option filter, human click.
+            human.human_click(page, field_loc)
+            human.human_pause(300, 600)
+            option = page.locator(
+                "[role='listbox'] [role='option'], "
+                "[role='menu'] [role='menuitem']").filter(
+                has_text=wanted).first
+            try:
+                option.wait_for(timeout=6000)
+            except Exception:
+                option = page.get_by_text(wanted, exact=False).first
+                option.wait_for(timeout=6000)
+            human.human_click(page, option)
+            human.human_pause(100, 250)
+        else:
+            try:
+                field_loc.scroll_into_view_if_needed(timeout=2500)
+            except Exception:
+                pass
+            field_loc.click(timeout=4000)
+            human.human_pause(250, 450)
+            option = page.get_by_role("option", name=wanted, exact=exact).first
+            try:
+                option.wait_for(state="visible", timeout=5000)
+            except Exception:
+                # Fallback is constrained to the open listbox, never a global text click.
+                option = page.locator("[role='listbox']").get_by_text(
+                    wanted, exact=exact).first
+                option.wait_for(state="visible", timeout=3500)
+            option.click(timeout=4000)
+            human.human_pause(150, 300)
         actual = _visible_value(field_loc)
         # Facebook dropdowns vary in DOM semantics. Require the selected field
         # to visibly contain the exact saved value before declaring success.
@@ -136,7 +185,9 @@ def _upload_photos_unchanged(page, payload: dict,
     try:
         with page.expect_file_chooser(timeout=8000) as chooser_info:
             add = page.get_by_text("Add photos", exact=False).first
-            add.wait_for(state="visible", timeout=5000)
+            # Fix 7: attached wait exactly like production (browser.py uses
+            # wait_for(timeout=5000)); strict "visible" stalled the chooser.
+            add.wait_for(timeout=5000)
             human.human_click(page, add)
         chooser_info.value.set_files(images)
         attempted = True
@@ -152,16 +203,32 @@ def _upload_photos_unchanged(page, payload: dict,
                 last_error = f"direct input: {type(exc).__name__}: {str(exc)[:100]}"
     if attempted:
         human.human_pause(900, 1400)
-        # Don't trust upload-attempt alone; count rendered image previews when possible.
+        # Verify via the "Photos • X/10" counter (same as production).
+        _photo_count = 0
         try:
-            count = page.locator("img").count()
-            _record(results, "photos", len(images),
-                    f"upload supplied {len(images)} file(s); page img nodes={count}",
-                    "ATTEMPTED",
-                    "Existing upload method used; rendered img count is diagnostic only")
+            _counter = page.get_by_text("Photos", exact=False).first
+            _ctext = _counter.inner_text(timeout=3000) or ""
+            _m = re.search(r"(\d+)\s*/\s*10", _ctext)
+            if _m:
+                _photo_count = int(_m.group(1))
         except Exception:
-            _record(results, "photos", len(images), f"upload supplied {len(images)} file(s)",
-                    "ATTEMPTED", "Existing upload method used; visual confirmation needed")
+            _photo_count = 0
+        if _photo_count > 0:
+            _record(results, "photos", len(images),
+                    f"{_photo_count}/10 photos visible",
+                    "VERIFIED",
+                    "Photos counter confirms uploaded previews")
+        else:
+            # Don't trust upload-attempt alone; count rendered image previews when possible.
+            try:
+                count = page.locator("img").count()
+                _record(results, "photos", len(images),
+                        f"upload supplied {len(images)} file(s); page img nodes={count}",
+                        "ATTEMPTED",
+                        "Existing upload method used; rendered img count is diagnostic only")
+            except Exception:
+                _record(results, "photos", len(images), f"upload supplied {len(images)} file(s)",
+                        "ATTEMPTED", "Existing upload method used; visual confirmation needed")
     else:
         _record(results, "photos", len(images), "", "FAILED", last_error)
 
@@ -197,9 +264,10 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         _fill_text(page, S.F_TITLE, "title", payload.get("title"), results)
         price = payload.get("price")
         _fill_text(page, S.F_PRICE, "price",
-                   ("{:.2f}".format(float(price)) if price not in (None, "") else None), results)
+                   ("{:.2f}".format(float(price)) if price not in (None, "") else None), results,
+                   numeric_compare=True)
         _select_option(page, S.F_CATEGORY, payload.get("category"), "category", results,
-                       exact=False)
+                       exact=False, production_sequence=True)
         _select_option(page, S.F_CONDITION_FIELD, payload.get("condition"), "condition", results,
                        exact=True)
 
@@ -224,6 +292,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         availability_raw = (payload.get("availability") or "")
         availability_map = {
             "in_stock": "List as in stock",
+            "in stock": "List as in stock",
             "list as in stock": "List as in stock",
             "stock": "List as in stock",
             "single": "List as single item",
@@ -232,7 +301,8 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         availability_label = availability_map.get(str(availability_raw).strip().lower())
         if availability_label:
             _select_option(page, S.F_AVAILABILITY_FIELD, availability_label,
-                           "availability", results, exact=False)
+                           "availability", results, exact=False,
+                           production_sequence=True)
         elif availability_raw:
             _record(results, "availability", availability_raw, "", "SKIPPED",
                     "Saved availability value has no known exact Facebook label mapping")
@@ -278,15 +348,30 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 continue
             try:
                 loc = S.to_playwright(page, selector)
-                loc.wait_for(state="visible", timeout=6000)
+                loc.wait_for(timeout=6000)
                 try:
                     loc.scroll_into_view_if_needed(timeout=2500)
                 except Exception:
                     pass
-                state = loc.evaluate("e => e.checked !== undefined ? e.checked : e.getAttribute('aria-checked')")
+                # Fix 5: read state from the actual checkbox/toggle element,
+                # not the text label (a span has no .checked / aria-checked).
+                state_el = loc
+                for _xp in ("ancestor::*[@role='checkbox'][1]",
+                            "ancestor::*[@role='switch'][1]",
+                            "ancestor::label[1]//input[@type='checkbox']"):
+                    try:
+                        _cand = loc.locator(f"xpath={_xp}")
+                        if _cand.count() > 0:
+                            state_el = _cand.first
+                            break
+                    except Exception:
+                        continue
+                _state_js = ("e => e.checked !== undefined ? e.checked : "
+                             "e.getAttribute('aria-checked')")
+                state = state_el.evaluate(_state_js)
                 if state not in (True, "true"):
                     loc.click(timeout=3000)
-                state_after = loc.evaluate("e => e.checked !== undefined ? e.checked : e.getAttribute('aria-checked')")
+                state_after = state_el.evaluate(_state_js)
                 status = "VERIFIED" if state_after in (True, "true") else "UNCERTAIN"
                 _record(results, f"delivery:{option_key}", option_key, state_after,
                         status, "Checkbox/toggle state after action")
