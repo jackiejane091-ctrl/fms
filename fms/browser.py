@@ -670,18 +670,44 @@ class PlaywrightDriver(BaseDriver):
         return fail("login did not complete within 60s (still not logged in)")
 
     # -- posting ----------------------------------------------------------------
-    def _select_location(self, page, location: str) -> None:
+    def _select_location(self, page, location: str) -> tuple[bool, str]:
         # v0.2.55: extra care (user's explicit instruction). Type the FULL
         # location text, wait for the suggestion list, then click the FIRST
         # suggestion — never pick blindly.
-        loc = S.to_playwright(page, S.F_LOCATION)
+        # v0.2.99 (location-only fix): (a) resolve the input via a cascade —
+        # the long-standing "Location field not found" timeouts show the
+        # label-based locator alone does not reliably resolve this control
+        # (its sibling dropdowns use span-anchored lookups; the saved DOM
+        # shows Location as a section pattern, not a label-wrapped input).
+        # Primary stays F_LOCATION; the fallback anchors on the "Location"
+        # text and takes the text input inside the nearest container that
+        # holds one (the F_PRICE pattern). (b) return (ok, step-detail)
+        # instead of swallowing the failing step, so callers can log it per
+        # account. (c) verify the field's value after the suggestion click.
+        loc = None
         try:
-            loc.wait_for(timeout=10000)
-        except Exception as exc_l:
+            cand = S.to_playwright(page, S.F_LOCATION)
+            cand.wait_for(timeout=4000)
+            if cand.is_visible():
+                loc = cand
+        except Exception:
+            loc = None
+        if loc is None:
+            try:
+                cand = page.locator(
+                    "xpath=//span[normalize-space(text())='Location']"
+                    "/ancestor::div[.//input[@type='text']][1]"
+                    "//input[@type='text']").first
+                cand.wait_for(timeout=8000)
+                loc = cand
+            except Exception:
+                loc = None
+        if loc is None:
             self._note_field_error(
                 page, "location-field",
-                f"Location field not found: {type(exc_l).__name__}")
-            return
+                "Location field not found: label and text-anchored lookup "
+                "both failed")
+            return False, "field: Location input not resolved"
         # Clear then type the full text.
         try:
             loc.click()
@@ -695,25 +721,48 @@ class PlaywrightDriver(BaseDriver):
         try:
             first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
             first.wait_for(timeout=8000)
-            # Sanity: the suggestion should contain part of our text.
-            try:
-                sug_text = (first.inner_text() or "").strip().lower()
-                want = location.split(",")[0].strip().lower()
-                if want and want not in sug_text and sug_text not in want:
-                    self._note_field_error(
-                        page, "location-mismatch",
-                        f"Location suggestion mismatch: wanted '{location}', "
-                        f"got '{sug_text[:60]}' — skipped to avoid wrong pick")
-                    return
-            except Exception:
-                pass
-            human.human_click(page, first)
-            human.human_pause(100, 250)
         except Exception as exc_s:
             self._note_field_error(
                 page, "location-select",
                 f"Location '{location}' suggestion not selected: "
                 f"{type(exc_s).__name__}")
+            return False, (f"suggestions: no suggestion list appeared "
+                           f"({type(exc_s).__name__})")
+        # Sanity: the suggestion should contain part of our text.
+        sug_text = ""
+        try:
+            sug_text = (first.inner_text() or "").strip()
+            want = location.split(",")[0].strip().lower()
+            if want and want not in sug_text.lower() \
+                    and sug_text.lower() not in want:
+                self._note_field_error(
+                    page, "location-mismatch",
+                    f"Location suggestion mismatch: wanted '{location}', "
+                    f"got '{sug_text[:60]}' — skipped to avoid wrong pick")
+                return False, f"mismatch: first suggestion was '{sug_text[:60]}'"
+        except Exception:
+            pass
+        try:
+            human.human_click(page, first)
+        except Exception as exc_c:
+            self._note_field_error(
+                page, "location-select",
+                f"Location '{location}' suggestion click failed: "
+                f"{type(exc_c).__name__}")
+            return False, (f"click: suggestion click failed "
+                           f"({type(exc_c).__name__})")
+        human.human_pause(100, 250)
+        # Verify: the field itself must now hold the selected location.
+        actual = ""
+        try:
+            actual = (loc.input_value() or "").strip()
+        except Exception:
+            pass
+        want_city = location.split(",")[0].strip().lower()
+        if actual and want_city and want_city in actual.lower():
+            return True, f"selected '{sug_text or actual}'"
+        return False, (f"verify: suggestion clicked but field value is "
+                       f"'{actual[:60]}'")
 
     def _open_create_item_form(self, page) -> tuple[bool, str]:
         """Open the create-item form the FBM Robo way: feed -> click the

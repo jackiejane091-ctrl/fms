@@ -385,11 +385,20 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
 
             if location and str(location).strip():
                 try:
-                    driver._select_location(page, str(location).strip())
+                    _loc_ok, _loc_detail = driver._select_location(
+                        page, str(location).strip())
                     actual = _field_value(page, S.F_LOCATION)
-                    status = "VERIFIED" if str(location).split(",")[0].strip().lower() in actual.lower() else "UNCERTAIN"
+                    _city = str(location).split(",")[0].strip().lower()
+                    if _loc_ok and _city in actual.lower():
+                        status = "VERIFIED"
+                    elif _loc_ok:
+                        # Picker verified internally, but this read-back could
+                        # not confirm it — stay honest, don't claim success.
+                        status = "UNCERTAIN"
+                    else:
+                        status = "FAILED"
                     _record(results, "location", location, actual, status,
-                            "Uses existing location suggestion picker; verify selected suggestion")
+                            _loc_detail or "Existing location suggestion picker result")
                 except Exception as exc:
                     _record(results, "location", location, "", "FAILED",
                             f"{type(exc).__name__}: {str(exc)[:180]}")
