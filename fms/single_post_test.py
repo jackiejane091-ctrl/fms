@@ -171,6 +171,112 @@ def _select_option(page, field_selector, expected: Any, field: str,
                 f"{type(exc).__name__}: {str(exc)[:180]}")
 
 
+def _norm_label(s: Any) -> str:
+    """Normalize a UI label for comparison: lowercase, single spaces."""
+    return " ".join(str(s or "").lower().split())
+
+
+def _select_category(page, expected: Any,
+                     results: list[dict[str, str]]) -> bool:
+    """Category with real, verified selection (v0.2.103).
+
+    Opens the actual Category combobox, waits for its options list,
+    uses the popup's own search box when one exists (Facebook's category
+    list is long and virtualized — the wanted option may not be in the
+    initially rendered chunk), matches the configured category by
+    normalized exact text, clicks the match, and reads the value back
+    from the control. Returns False when selection cannot be proven —
+    the caller then stops the form workflow. Never silently continues.
+    """
+    if expected is None or str(expected).strip() == "":
+        _record(results, "category", None, "", "SKIPPED",
+                "No saved value configured")
+        return True
+    wanted = str(expected).strip()
+    wanted_norm = _norm_label(wanted)
+    try:
+        field = S.to_playwright(page, S.F_CATEGORY)
+        field.wait_for(timeout=8000)
+        try:
+            field.scroll_into_view_if_needed(timeout=2500)
+        except Exception:
+            pass
+        human.human_click(page, field)
+        human.human_pause(400, 700)
+        popup = page.locator("[role='listbox'], [role='menu']").first
+        try:
+            popup.wait_for(state="visible", timeout=8000)
+        except Exception:
+            _record(results, "category", wanted, "", "FAILED",
+                    "Category dropdown did not open "
+                    "(no options list appeared)")
+            return False
+        # Use the popup's own search box if it has one (a human would;
+        # it also defeats the virtualized long list).
+        try:
+            search = popup.locator(
+                "input[type='text'], input[type='search'], "
+                "input:not([type])").first
+            if search.count() > 0 and search.is_visible():
+                search.click(timeout=2000)
+                search.fill(wanted, timeout=3000)
+                human.human_pause(500, 900)
+        except Exception:
+            pass
+        option_sel = "[role='option'], [role='menuitem'], [role='treeitem']"
+        seen: list[str] = []
+        seen_norms: set[str] = set()
+        match = None
+        for _round in range(5):
+            options = popup.locator(option_sel)
+            for i in range(min(options.count(), 60)):
+                try:
+                    text = (options.nth(i).inner_text(timeout=800)
+                            or "").strip()
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                norm = _norm_label(text)
+                if norm not in seen_norms:
+                    seen_norms.add(norm)
+                    seen.append(text)
+                if norm == wanted_norm:
+                    match = options.nth(i)
+                    break
+            if match is not None:
+                break
+            try:
+                popup.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+            except Exception:
+                pass
+            human.human_pause(350, 600)
+        if match is None:
+            _record(results, "category", wanted, "", "FAILED",
+                    "No matching category option appeared. Options seen: "
+                    + (" | ".join(seen[:12]) if seen else "(none)"))
+            return False
+        human.human_click(page, match)
+        human.human_pause(300, 600)
+        actual = _visible_value(field)
+        if not actual:
+            try:
+                actual = (field.inner_text(timeout=2000) or "").strip()
+            except Exception:
+                actual = ""
+        if wanted_norm and wanted_norm in _norm_label(actual):
+            _record(results, "category", wanted, actual, "VERIFIED",
+                    "Selected option read back from the Category control")
+            return True
+        _record(results, "category", wanted, actual, "FAILED",
+                "Category read-back did not match the configured value")
+        return False
+    except Exception as exc:
+        _record(results, "category", wanted, "", "FAILED",
+                f"{type(exc).__name__}: {str(exc)[:180]}")
+        return False
+
+
 def _upload_photos_unchanged(page, payload: dict,
                              results: list[dict[str, str]]) -> None:
     """Use the current established chooser/direct-input upload approach."""
@@ -297,8 +403,12 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         _fill_text(page, S.F_PRICE, "price",
                    ("{:.2f}".format(float(price)) if price not in (None, "") else None), results,
                    numeric_compare=True)
-        _select_option(page, S.F_CATEGORY, payload.get("category"), "category", results,
-                       exact=False, production_sequence=True)
+        if not _select_category(page, payload.get("category"), results):
+            _record(results, "workflow", "category selected and verified",
+                    "", "FAILED",
+                    "Form workflow stopped: category could not be "
+                    "selected and verified")
+            return _report(started, results, page)
         _select_option(page, S.F_CONDITION_FIELD, payload.get("condition"), "condition", results,
                        exact=True)
 

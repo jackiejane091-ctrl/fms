@@ -727,6 +727,93 @@ class PlaywrightDriver(BaseDriver):
             return True, desc
         return False, desc
 
+    def _find_location_input_in_section(self, page):
+        """Find the Location field's input by section membership.
+
+        Searches from each visible 'Location' label: climb to the
+        SMALLEST container that holds a visible text input; that
+        container must not also hold the Title or Price inputs (their
+        row captions betray them), and the candidate must FOLLOW the
+        label inside the container. The found element is marked with a
+        data attribute and returned as a locator. Unlike the caption
+        check, this works even when Facebook renders the input with no
+        label text of its own nearby. Returns (locator, description) or
+        (None, diagnostic).
+        """
+        try:
+            outcome = page.evaluate(
+                """() => {
+                    const MARK = 'data-fms-location-input';
+                    document.querySelectorAll('[' + MARK + ']').forEach(
+                        e => e.removeAttribute(MARK));
+                    const isVis = el => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        const cs = getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 &&
+                               cs.display !== 'none' &&
+                               cs.visibility !== 'hidden';
+                    };
+                    const caption = el => {
+                        let n = el;
+                        for (let i = 0; i < 6; i++) {
+                            n = n.parentElement;
+                            if (!n) break;
+                            const t = (n.innerText || '').trim();
+                            if (t) return t.split('\\n')[0].slice(0, 40);
+                        }
+                        return '';
+                    };
+                    const notes = [];
+                    const spans = Array.from(
+                        document.querySelectorAll('span')).filter(
+                        s => (s.textContent || '').trim() === 'Location'
+                             && isVis(s));
+                    for (const span of spans) {
+                        let node = span;
+                        for (let d = 0; d < 8; d++) {
+                            node = node.parentElement;
+                            if (!node) break;
+                            const inputs = Array.from(node.querySelectorAll(
+                                'input[type="text"]')).filter(isVis);
+                            if (!inputs.length) continue;
+                            const caps = inputs.map(caption);
+                            if (caps.some(c => /^title\\b/i.test(c) ||
+                                               /^price\\b/i.test(c))) {
+                                notes.push('section too broad: it also '
+                                           + 'holds Title/Price');
+                                break;
+                            }
+                            const cand = inputs.find(el =>
+                                span.compareDocumentPosition(el) &
+                                Node.DOCUMENT_POSITION_FOLLOWING);
+                            if (cand) {
+                                cand.setAttribute(MARK, '1');
+                                return {found: true,
+                                        caption: caption(cand),
+                                        aria: cand.getAttribute(
+                                            'aria-label') || '',
+                                        placeholder: cand.getAttribute(
+                                            'placeholder') || ''};
+                            }
+                            notes.push('section inputs exist but none '
+                                       + 'follow the Location label');
+                            break;
+                        }
+                    }
+                    return {found: false, notes};
+                }""")
+        except Exception as exc:
+            return None, f"section search failed ({type(exc).__name__})"
+        if not isinstance(outcome, dict) or not outcome.get("found"):
+            notes = "; ".join((outcome or {}).get("notes") or [])
+            return None, ("Location input not found inside its section"
+                          + (f" ({notes})" if notes else ""))
+        desc = (f"tag=INPUT type=text role=- "
+                f"aria={outcome.get('aria') or '-'} "
+                f"row={outcome.get('caption') or '-'} (section match)")
+        return page.locator('[data-fms-location-input="1"]').first, desc
+
     def _select_location(self, page, location: str) -> tuple[bool, str]:
         # v0.2.55: extra care (user's explicit instruction). Type the FULL
         # location text, wait for the suggestion list, then click the FIRST
@@ -766,33 +853,26 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             loc = None
         if loc is None:
-            try:
-                cand = page.locator(
-                    "xpath=//span[normalize-space(text())='Location']"
-                    "/following::input[@type='text'][1]").first
-                cand.wait_for(timeout=8000)
-                if cand.is_visible():
-                    _ok_id, _desc = self._location_candidate_identity(
-                        page, cand)
-                    if _ok_id:
-                        loc, ident = cand, _desc
-                    else:
-                        self._note_field_error(
-                            page, "location-field",
-                            "Location input identity rejected: element "
-                            f"after the Location label is {_desc}")
-                        return False, (
-                            "field: element after the Location label is "
-                            f"not the Location input ({_desc})")
-            except Exception:
-                loc = None
-        if loc is None:
-            self._note_field_error(
-                page, "location-field",
-                "Location field not found: label lookup failed and no "
-                "identified input follows the Location label")
-            return False, ("field: Location input not rendered or not "
-                           "identified")
+            # v0.2.103: section-scoped search (the caption-based identity
+            # check alone rejected the real input on Facebook's current
+            # layout — the field was never touched at all). Brief render
+            # wait, then a safe, diagnosed failure. Never climbs to the
+            # panel, never considers Title/Price.
+            _desc2 = ""
+            for _attempt in range(8):
+                cand2, _desc2 = self._find_location_input_in_section(page)
+                if cand2 is not None:
+                    loc, ident = cand2, _desc2
+                    break
+                try:
+                    page.wait_for_timeout(750)
+                except Exception:
+                    break
+            if loc is None:
+                self._note_field_error(
+                    page, "location-field",
+                    f"Location input not identified: {_desc2}")
+                return False, f"field: {_desc2}"
         # Clear then type the full text.
         try:
             loc.click()

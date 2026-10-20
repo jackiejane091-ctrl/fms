@@ -81,6 +81,36 @@ HTML_C = f"""<html><body><div id="panel">
 <div class="row"><label>Location <input type="text" id="locinput"></label>{LISTBOX}</div>
 </div>{SUGGESTION_JS}</body></html>"""
 
+# v0.2.102's live failure mode: the input IS rendered inside its section
+# but has no caption text of its own nearby (just a placeholder), and the
+# section's text does not start with 'Location' — the caption-based
+# identity check rejected the real input, so nothing was touched at all.
+HTML_D = f"""<html><body><div id="panel">
+{TITLE_ROW}
+<div class="section">
+  <div class="sec-note">Where is the item?</div>
+  <div class="sec-head"><span><span>Location</span></span></div>
+  <div class="sec-body"><div class="slot">
+    <input type="text" id="locinput" placeholder="Enter a town or city">
+  </div>{LISTBOX}</div>
+</div>
+</div>{SUGGESTION_JS}</body></html>"""
+
+# Location input missing, but OTHER text inputs (tags, SKU) exist in
+# sibling rows BEFORE the Location row inside the same details section.
+# Nothing may be typed anywhere.
+HTML_E = f"""<html><body><div id="panel">
+{TITLE_ROW}
+<div class="details">
+  <div class="row"><div><span><span>Product tags</span></span>
+  <input type="text" id="tags"></div></div>
+  <div class="row"><div><span><span>SKU</span></span>
+  <input type="text" id="sku"></div></div>
+  <div class="row"><div><span><span>Location</span></span></div>
+  <div class="slot">&nbsp;</div></div>
+</div>
+</div></body></html>"""
+
 
 def check(name, fn):
     global PASS, FAIL
@@ -109,29 +139,49 @@ def _run(html):
         page = browser.new_page()
         page.set_content(html)
         result = _driver()._select_location(page, "Coventry, United kingdom")
-        title = page.locator("#title").input_value()
+        values = {}
+        for el_id in ("title", "price", "tags", "sku", "search"):
+            loc = page.locator(f"#{el_id}")
+            if loc.count() > 0:
+                values[el_id] = loc.input_value()
         browser.close()
-        return result, title
+        return result, values
 
 
 def t_a_unrendered_location_never_touches_title():
-    (ok, detail), title = _run(HTML_A)
+    (ok, detail), values = _run(HTML_A)
     assert ok is False, (ok, detail)
     assert detail.startswith("field:"), detail
-    assert title == "Original Title", title  # the bug would have erased it
+    assert values["title"] == "Original Title", values  # bug erased it
+    assert values.get("search", "") == "", values
 
 
 def t_b_section_input_selects():
-    (ok, detail), title = _run(HTML_B)
+    (ok, detail), values = _run(HTML_B)
     assert ok is True, (ok, detail)
     assert "selected" in detail and "tag=INPUT" in detail, detail
-    assert title == "Original Title", title
+    assert values["title"] == "Original Title", values
 
 
 def t_c_label_input_selects():
-    (ok, detail), title = _run(HTML_C)
+    (ok, detail), values = _run(HTML_C)
     assert ok is True, (ok, detail)
-    assert title == "Original Title", title
+    assert values["title"] == "Original Title", values
+
+
+def t_d_captionless_section_input_selects():
+    (ok, detail), values = _run(HTML_D)
+    assert ok is True, (ok, detail)
+    assert "section match" in detail, detail
+    assert values["title"] == "Original Title", values
+
+
+def t_e_missing_input_types_nowhere():
+    (ok, detail), values = _run(HTML_E)
+    assert ok is False, (ok, detail)
+    assert detail.startswith("field:"), detail
+    assert values["title"] == "Original Title", values
+    assert values.get("tags", "") == "" and values.get("sku", "") == "", values
 
 
 def main() -> int:
@@ -140,6 +190,10 @@ def main() -> int:
           t_a_unrendered_location_never_touches_title)
     check("B: section input -> selected, Title intact", t_b_section_input_selects)
     check("C: label input -> selected, Title intact", t_c_label_input_selects)
+    check("D: caption-less section input -> selected (v0.2.102 live mode)",
+          t_d_captionless_section_input_selects)
+    check("E: missing input + sibling inputs -> types nowhere",
+          t_e_missing_input_types_nowhere)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 
