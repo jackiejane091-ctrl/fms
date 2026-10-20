@@ -107,6 +107,57 @@ def new_exe_path() -> Path:
     return _exe_dir() / "FMS.new.exe"
 
 
+def _drive_file_id(url: str) -> str | None:
+    """Extract a Google Drive file id from a download URL, if present."""
+    try:
+        from urllib.parse import parse_qs, urlparse
+        ids = parse_qs(urlparse(url or "").query).get("id") or []
+        return ids[0] if ids else None
+    except Exception:
+        return None
+
+
+def _open_exe_response(url: str):
+    """Open `url` and return a response streaming the real exe bytes.
+
+    Google Drive answers large-file downloads from cookie-less clients
+    with an HTML 'virus scan warning' page (2,454 bytes) instead of the
+    file — the updater's size check then (correctly) rejects it. When
+    the response is HTML, follow Drive's confirmed-download endpoint
+    (drive.usercontent.google.com ... &confirm=t), which serves the
+    actual binary. Raises RuntimeError if even that returns a page.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "FMS"})
+    resp = urllib.request.urlopen(req, timeout=60)
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+    if "text/html" not in ctype:
+        return resp
+    final_url = getattr(resp, "url", "") or ""
+    try:
+        resp.close()
+    except Exception:
+        pass
+    fid = _drive_file_id(url) or _drive_file_id(final_url)
+    if not fid:
+        raise RuntimeError(
+            "The update server returned a web page instead of the FMS "
+            "program file, and no direct-download fallback is available.")
+    alt = ("https://drive.usercontent.google.com/download"
+           f"?id={fid}&export=download&confirm=t")
+    req2 = urllib.request.Request(alt, headers={"User-Agent": "FMS"})
+    resp2 = urllib.request.urlopen(req2, timeout=60)
+    ctype2 = (resp2.headers.get("Content-Type") or "").lower()
+    if "text/html" in ctype2:
+        try:
+            resp2.close()
+        except Exception:
+            pass
+        raise RuntimeError(
+            "The update server returned a web page instead of the FMS "
+            "program file. Please try the update again later.")
+    return resp2
+
+
 def download_update(exe_url: str, expected_size: int | None = None) -> None:
     """Stream the new exe to FMS.new.exe in a background thread.
 
@@ -136,8 +187,7 @@ def download_update(exe_url: str, expected_size: int | None = None) -> None:
         os.close(fd)
         downloaded = 0
         try:
-            req = urllib.request.Request(exe_url, headers={"User-Agent": "FMS"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with _open_exe_response(exe_url) as resp:
                 length = resp.headers.get("Content-Length")
                 total = int(length) if length and length.isdigit() else expected_size
                 _set_state(total=total)

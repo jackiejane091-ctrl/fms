@@ -245,6 +245,103 @@ def t_download_zip_slip_blocked():
     assert not (d.parent / "evil.txt").exists()
 
 
+# ------------------------------------------- Drive virus-scan fallback ---
+class _DriveFakeResp:
+    """urlopen stand-in carrying Content-Type + url (fallback path)."""
+
+    def __init__(self, data: bytes, ctype: str, url: str = ""):
+        self._buf = io.BytesIO(data)
+        self.headers = {"Content-Type": ctype,
+                        "Content-Length": str(len(data))}
+        self.url = url
+
+    def read(self, n: int = -1) -> bytes:
+        return self._buf.read(n)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_FAKE_EXE = b"MZ" + b"\x00" * (updater_mod.MIN_EXE_SIZE + 100)
+_WARNING = b"<html><title>Google Drive - Virus scan warning</title></html>"
+
+
+def _drive_urlopen(calls: list, html_first: bool, html_second: bool = False):
+    def _open(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        calls.append(url)
+        if "usercontent" in url:
+            if html_second:
+                return _DriveFakeResp(_WARNING, "text/html", url)
+            return _DriveFakeResp(_FAKE_EXE, "application/octet-stream", url)
+        if html_first:
+            return _DriveFakeResp(_WARNING, "text/html; charset=utf-8", url)
+        return _DriveFakeResp(_FAKE_EXE, "application/octet-stream", url)
+    return _open
+
+
+def _run_download(exe_url: str):
+    import time
+    updater_mod.download_update(exe_url, expected_size=len(_FAKE_EXE))
+    end = time.time() + 10
+    st = updater_mod.download_state()
+    while time.time() < end:
+        st = updater_mod.download_state()
+        if st["state"] in ("done", "error"):
+            break
+        time.sleep(0.1)
+    updater_mod._set_state(state="idle", downloaded=0, total=None, message="")
+    return st
+
+
+def t_drive_warning_fallback_downloads_real_exe():
+    d = Path(tempfile.mkdtemp(prefix="fms_upd_"))
+    calls: list = []
+    url = "https://drive.google.com/uc?export=download&id=FILEID123"
+    with mock.patch.object(updater_mod, "_exe_dir", return_value=d):
+        with mock.patch.object(urllib.request, "urlopen",
+                               _drive_urlopen(calls, html_first=True)):
+            st = _run_download(url)
+    assert st["state"] == "done", st
+    assert len(calls) == 2, calls
+    assert "confirm=t" in calls[1] and "id=FILEID123" in calls[1], calls
+    target = d / "FMS.new.exe"
+    assert target.is_file() and target.stat().st_size == len(_FAKE_EXE)
+    assert target.read_bytes()[:2] == b"MZ"
+
+
+def t_drive_direct_binary_single_request():
+    d = Path(tempfile.mkdtemp(prefix="fms_upd_"))
+    calls: list = []
+    url = "https://drive.google.com/uc?export=download&id=FILEID123"
+    with mock.patch.object(updater_mod, "_exe_dir", return_value=d):
+        with mock.patch.object(urllib.request, "urlopen",
+                               _drive_urlopen(calls, html_first=False)):
+            st = _run_download(url)
+    assert st["state"] == "done", st
+    assert len(calls) == 1, calls
+
+
+def t_drive_warning_twice_errors():
+    d = Path(tempfile.mkdtemp(prefix="fms_upd_"))
+    calls: list = []
+    url = "https://drive.google.com/uc?export=download&id=FILEID123"
+    with mock.patch.object(updater_mod, "_exe_dir", return_value=d):
+        with mock.patch.object(urllib.request, "urlopen",
+                               _drive_urlopen(calls, html_first=True,
+                                              html_second=True)):
+            st = _run_download(url)
+    assert st["state"] == "error", st
+    assert "web page" in st["message"], st
+    assert not (d / "FMS.new.exe").exists()
+
+
 def main():
     print("FMS updater/browsers tests")
     for name, fn in sorted(
