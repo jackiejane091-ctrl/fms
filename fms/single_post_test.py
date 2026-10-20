@@ -233,6 +233,37 @@ def _upload_photos_unchanged(page, payload: dict,
         _record(results, "photos", len(images), "", "FAILED", last_error)
 
 
+def _more_details_state(page) -> tuple[str, Any]:
+    """Locate the 'More details' toggle and read its aria-expanded state.
+
+    Returns (state, button) with state in {'true','false','unknown'}.
+    Read-only — never clicks.
+    """
+    for label in ("More details", "Show more details", "More Details"):
+        try:
+            raw = page.get_by_text(label, exact=False)
+            if raw.count() == 0:
+                continue
+            text_loc = raw.first
+            # The toggle is the role="button" ancestor carrying aria-expanded.
+            btn = text_loc.locator(
+                "xpath=ancestor::*[@role='button'][@aria-expanded][1]")
+            if btn.count() > 0:
+                state = btn.first.evaluate(
+                    "e => e.getAttribute('aria-expanded')")
+                return ("true" if state == "true"
+                        else "false" if state == "false" else "unknown",
+                        btn.first)
+            # Fallback: the attribute may live on the text node itself.
+            state = text_loc.evaluate("e => e.getAttribute('aria-expanded')")
+            return ("true" if state == "true"
+                    else "false" if state == "false" else "unknown",
+                    text_loc)
+        except Exception:
+            continue
+    return "unknown", None
+
+
 def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
     """Fill one listing form and stop before Next/Publish.
 
@@ -271,24 +302,9 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         _select_option(page, S.F_CONDITION_FIELD, payload.get("condition"), "condition", results,
                        exact=True)
 
-        # Reveal the optional/detail controls without changing any global click helper.
-        expanded = False
-        for label in ("More details", "Show more details", "More Details"):
-            try:
-                loc = page.get_by_text(label, exact=False).first
-                if loc.is_visible(timeout=700):
-                    loc.click(timeout=2500)
-                    human.human_pause(200, 400)
-                    expanded = True
-                    break
-            except Exception:
-                continue
-        _record(results, "more_details", True, expanded,
-                "INFO" if expanded else "UNCERTAIN",
-                "Detail section expansion status")
-
-        _fill_text(page, S.F_DESCRIPTION, "description", payload.get("description"), results)
-
+        # --- More details: state-aware expansion (F-A / F-B / F-C) ---
+        # Hoist the detail-field config BEFORE the gate so both branches
+        # report honestly (configured vs missing).
         availability_raw = (payload.get("availability") or "")
         availability_map = {
             "in_stock": "List as in stock",
@@ -299,33 +315,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             "list as single item": "List as single item",
         }
         availability_label = availability_map.get(str(availability_raw).strip().lower())
-        if availability_label:
-            _select_option(page, S.F_AVAILABILITY_FIELD, availability_label,
-                           "availability", results, exact=False,
-                           production_sequence=True)
-        elif availability_raw:
-            _record(results, "availability", availability_raw, "", "SKIPPED",
-                    "Saved availability value has no known exact Facebook label mapping")
-        else:
-            _record(results, "availability", None, "", "SKIPPED",
-                    "No saved value configured")
-
         location = payload.get("location")
-        if location and str(location).strip():
-            try:
-                driver._select_location(page, str(location).strip())
-                actual = _field_value(page, S.F_LOCATION)
-                status = "VERIFIED" if str(location).split(",")[0].strip().lower() in actual.lower() else "UNCERTAIN"
-                _record(results, "location", location, actual, status,
-                        "Uses existing location suggestion picker; verify selected suggestion")
-            except Exception as exc:
-                _record(results, "location", location, "", "FAILED",
-                        f"{type(exc).__name__}: {str(exc)[:180]}")
-        else:
-            _record(results, "location", None, "", "SKIPPED", "No saved value configured")
-
-        # Delivery values come from product configuration only. Never toggle an
-        # unconfigured option, and inspect state before clicking to avoid deselection.
         delivery_selectors = {
             "public_meetup": S.F_DELIVERY_MEETUP,
             "door_pickup": S.F_DELIVERY_PICKUP,
@@ -337,47 +327,144 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 delivery_values = json.loads(delivery_values)
             except Exception:
                 delivery_values = [delivery_values]
-        if not delivery_values:
-            _record(results, "delivery_options", None, "", "SKIPPED",
-                    "No delivery options configured")
-        for option_key in delivery_values:
-            selector = delivery_selectors.get(option_key)
-            if not selector:
-                _record(results, f"delivery:{option_key}", option_key, "", "SKIPPED",
-                        "Unrecognized configured delivery key")
-                continue
+
+        # F-A: read the toggle's current aria-expanded BEFORE deciding.
+        _md_state, _md_btn = _more_details_state(page)
+        if _md_state == "true":
+            # Already open — clicking would COLLAPSE it, so do NOT click.
+            pass
+        elif _md_state == "false":
+            # F-B: exactly one production-style human click.
             try:
-                loc = S.to_playwright(page, selector)
-                loc.wait_for(timeout=6000)
+                human.human_click(page, _md_btn)
+                human.human_pause(200, 400)
+            except Exception:
+                pass
+        else:
+            # Requirement 2: no blind toggle on unknown/missing state.
+            _record(results, "more_details", "expanded", _md_state, "UNCERTAIN",
+                    "More details toggle state unreadable — no blind click performed")
+
+        # F-C: click execution is NOT success. Verify the aria flip AND the
+        # description control's actual DOM presence before trusting expansion.
+        expanded_verified = False
+        if _md_state in ("true", "false"):
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const btns = [...document.querySelectorAll('[role="button"][aria-expanded]')];
+                        const md = btns.find(e => (e.innerText || '').toLowerCase().includes('more details'));
+                        return !!md && md.getAttribute('aria-expanded') === 'true';
+                    }""", timeout=6000)
+            except Exception:
+                pass
+            _md_state_after, _ = _more_details_state(page)
+            try:
+                S.to_playwright(page, S.F_DESCRIPTION).wait_for(timeout=8000)
+                expanded_verified = True
+            except Exception:
+                expanded_verified = False
+            _record(results, "more_details", True, expanded_verified,
+                    "INFO" if expanded_verified else "UNCERTAIN",
+                    (f"aria-expanded {_md_state}->{_md_state_after}; description control present"
+                     if expanded_verified else "More details expansion not verified"))
+
+        if expanded_verified:
+            _fill_text(page, S.F_DESCRIPTION, "description", payload.get("description"), results)
+
+            if availability_label:
+                _select_option(page, S.F_AVAILABILITY_FIELD, availability_label,
+                               "availability", results, exact=False,
+                               production_sequence=True)
+            elif availability_raw:
+                _record(results, "availability", availability_raw, "", "SKIPPED",
+                        "Saved availability value has no known exact Facebook label mapping")
+            else:
+                _record(results, "availability", None, "", "SKIPPED",
+                        "No saved value configured")
+
+            if location and str(location).strip():
                 try:
-                    loc.scroll_into_view_if_needed(timeout=2500)
-                except Exception:
-                    pass
-                # Fix 5: read state from the actual checkbox/toggle element,
-                # not the text label (a span has no .checked / aria-checked).
-                state_el = loc
-                for _xp in ("ancestor::*[@role='checkbox'][1]",
-                            "ancestor::*[@role='switch'][1]",
-                            "ancestor::label[1]//input[@type='checkbox']"):
+                    driver._select_location(page, str(location).strip())
+                    actual = _field_value(page, S.F_LOCATION)
+                    status = "VERIFIED" if str(location).split(",")[0].strip().lower() in actual.lower() else "UNCERTAIN"
+                    _record(results, "location", location, actual, status,
+                            "Uses existing location suggestion picker; verify selected suggestion")
+                except Exception as exc:
+                    _record(results, "location", location, "", "FAILED",
+                            f"{type(exc).__name__}: {str(exc)[:180]}")
+            else:
+                _record(results, "location", None, "", "SKIPPED", "No saved value configured")
+
+            # Delivery values come from product configuration only. Never toggle an
+            # unconfigured option, and inspect state before clicking to avoid deselection.
+            if not delivery_values:
+                _record(results, "delivery_options", None, "", "SKIPPED",
+                        "No delivery options configured")
+            for option_key in delivery_values:
+                selector = delivery_selectors.get(option_key)
+                if not selector:
+                    _record(results, f"delivery:{option_key}", option_key, "", "SKIPPED",
+                            "Unrecognized configured delivery key")
+                    continue
+                try:
+                    loc = S.to_playwright(page, selector)
+                    loc.wait_for(timeout=6000)
                     try:
-                        _cand = loc.locator(f"xpath={_xp}")
-                        if _cand.count() > 0:
-                            state_el = _cand.first
-                            break
+                        loc.scroll_into_view_if_needed(timeout=2500)
                     except Exception:
-                        continue
-                _state_js = ("e => e.checked !== undefined ? e.checked : "
-                             "e.getAttribute('aria-checked')")
-                state = state_el.evaluate(_state_js)
-                if state not in (True, "true"):
-                    loc.click(timeout=3000)
-                state_after = state_el.evaluate(_state_js)
-                status = "VERIFIED" if state_after in (True, "true") else "UNCERTAIN"
-                _record(results, f"delivery:{option_key}", option_key, state_after,
-                        status, "Checkbox/toggle state after action")
-            except Exception as exc:
-                _record(results, f"delivery:{option_key}", option_key, "", "FAILED",
-                        f"{type(exc).__name__}: {str(exc)[:180]}")
+                        pass
+                    # Fix 5: read state from the actual checkbox/toggle element,
+                    # not the text label (a span has no .checked / aria-checked).
+                    state_el = loc
+                    for _xp in ("ancestor::*[@role='checkbox'][1]",
+                                "ancestor::*[@role='switch'][1]",
+                                "ancestor::label[1]//input[@type='checkbox']"):
+                        try:
+                            _cand = loc.locator(f"xpath={_xp}")
+                            if _cand.count() > 0:
+                                state_el = _cand.first
+                                break
+                        except Exception:
+                            continue
+                    _state_js = ("e => e.checked !== undefined ? e.checked : "
+                                 "e.getAttribute('aria-checked')")
+                    state = state_el.evaluate(_state_js)
+                    if state not in (True, "true"):
+                        loc.click(timeout=3000)
+                    state_after = state_el.evaluate(_state_js)
+                    status = "VERIFIED" if state_after in (True, "true") else "UNCERTAIN"
+                    _record(results, f"delivery:{option_key}", option_key, state_after,
+                            status, "Checkbox/toggle state after action")
+                except Exception as exc:
+                    _record(results, f"delivery:{option_key}", option_key, "", "FAILED",
+                            f"{type(exc).__name__}: {str(exc)[:180]}")
+        else:
+            # F-C (requirement 4): shared diagnostic — never blame the
+            # individual field selectors when the section itself did not open.
+            _shared_err = "More details expansion not verified"
+            if payload.get("description"):
+                _record(results, "description", payload.get("description"), "",
+                        "FAILED", _shared_err)
+            if availability_label:
+                _record(results, "availability", availability_raw, "", "FAILED",
+                        _shared_err)
+            elif availability_raw:
+                _record(results, "availability", availability_raw, "", "SKIPPED",
+                        "Saved availability value has no known exact Facebook label mapping")
+            else:
+                _record(results, "availability", None, "", "SKIPPED",
+                        "No saved value configured")
+            if location and str(location).strip():
+                _record(results, "location", location, "", "FAILED", _shared_err)
+            else:
+                _record(results, "location", None, "", "SKIPPED", "No saved value configured")
+            if delivery_values:
+                _record(results, "delivery_options", delivery_values, "", "FAILED",
+                        _shared_err)
+            else:
+                _record(results, "delivery_options", None, "", "SKIPPED",
+                        "No delivery options configured")
 
         # Hide-from-friends is a global run setting, not product data. Apply only
         # when explicitly true in the supplied payload, and never toggle OFF.
