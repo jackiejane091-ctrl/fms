@@ -1040,6 +1040,11 @@ class PlaywrightDriver(BaseDriver):
                 try:
                     dloc = S.to_playwright(page, S.F_DESCRIPTION)
                     dloc.wait_for(timeout=8000)
+                    # v0.2.95: ensure visible before fill (user: fix Description only)
+                    try:
+                        dloc.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
                     dloc.click()
                     human.human_pause(200, 400)
                     # fill() sets the value instantly (paste-like).
