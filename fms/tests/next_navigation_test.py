@@ -1,16 +1,18 @@
-"""Targeted navigation tests for the v0.2.105 Next-only flow.
+"""Targeted navigation tests for the Next-when-enabled flow (v0.2.106).
 
 Runs the REAL fms.single_post_test.run_single_post_test (ChatGPT's file,
 applied verbatim) in a local headless Chromium against a full-form
 fixture with click counters on the Next and Publish buttons:
 
-1. Happy path: every configured field verifies -> Next is clicked
-   EXACTLY ONCE, the transition to the destination screen is verified,
-   Publish is NEVER clicked, and the report says publish_attempted=False.
-2. Blocked path: an unverifiable category -> the verification gate
-   blocks navigation (Next clicked ZERO times) and reports FAILED.
-3. Unconfirmed path: Next click produces no transition -> the row is
-   UNCERTAIN (never claimed as success), Publish still never clicked.
+1. Happy path: every field verifies -> Next is clicked EXACTLY ONCE,
+   the transition is verified, Publish is NEVER clicked.
+2. UNCERTAIN field (location picked fine, but the report read-back
+   cannot confirm it): Facebook's enabled Next is the only gate, so
+   Next is STILL clicked once and the transition verified.
+3. Next disabled by the page: no click is attempted, the row reports
+   the disabled state clearly, Publish untouched.
+4. Unconfirmed path: Next click produces no transition -> the row is
+   UNCERTAIN (never claimed as success), Publish never clicked.
 
 Run:  python -m fms.tests.next_navigation_test
 """
@@ -205,16 +207,37 @@ def t_happy_next_once_no_publish():
     assert report["publish_attempted"] is False, report["publish_attempted"]
 
 
-def t_blocked_gate_never_clicks_next():
-    payload = dict(PAYLOAD, category="Boats")
-    report, clicks = _run(FORM_HTML + NEXT_OK_JS, payload)
-    cat = _rows(report, "category")
-    assert cat and cat[0]["status"] in ("FAILED", "UNCERTAIN"), cat
+def t_uncertain_field_does_not_block_next():
+    # Location input WITHOUT a <label> association (section layout):
+    # the real picker still selects it, but the report's label-based
+    # read-back cannot confirm it -> location row is UNCERTAIN. The
+    # page's Next button is enabled, and per v0.2.106 that is the only
+    # gate: Next must still be clicked exactly once.
+    html = FORM_HTML.replace(
+        '<label>Location <input type="text" id="locinput"></label>',
+        '<div class="sec-head"><span><span>Location</span></span></div>'
+        '<div class="slot"><input type="text" id="locinput"></div>')
+    assert html != FORM_HTML
+    report, clicks = _run(html + NEXT_OK_JS, dict(PAYLOAD))
+    loc = _rows(report, "location")
+    assert loc and loc[0]["status"] == "UNCERTAIN", loc
+    nxt = _rows(report, "next_button")
+    assert nxt and nxt[0]["status"] == "VERIFIED", nxt
+    assert clicks == {"next": 1, "pub": 0}, clicks
+    assert report["publish_attempted"] is False, report["publish_attempted"]
+
+
+def t_next_disabled_never_clicked():
+    html = FORM_HTML.replace(
+        '<button type="button" id="nextbtn">Next</button>',
+        '<button type="button" id="nextbtn" disabled>Next</button>')
+    assert html != FORM_HTML
+    report, clicks = _run(html + NEXT_OK_JS, dict(PAYLOAD))
     nxt = _rows(report, "next_button")
     assert nxt and nxt[0]["status"] == "FAILED", nxt
-    assert nxt[0]["expected_value"] == "not clicked", nxt
+    assert nxt[0]["actual_value"] == "disabled", nxt
+    assert "disabled" in nxt[0]["detail"].lower(), nxt
     assert clicks == {"next": 0, "pub": 0}, clicks
-    assert report["next_clicked"] is False, report["next_clicked"]
     assert report["publish_attempted"] is False, report["publish_attempted"]
 
 
@@ -230,8 +253,10 @@ def main() -> int:
     print("FMS Next-only navigation tests (local Chromium)\n")
     check("happy: Next once, transition verified, Publish never clicked",
           t_happy_next_once_no_publish)
-    check("blocked: unverified field -> gate stops, Next never clicked",
-          t_blocked_gate_never_clicks_next)
+    check("uncertain field: does NOT block an enabled Next",
+          t_uncertain_field_does_not_block_next)
+    check("disabled Next: never clicked, reported clearly",
+          t_next_disabled_never_clicked)
     check("unconfirmed: click without transition -> UNCERTAIN, no Publish",
           t_unconfirmed_transition_is_uncertain)
     print(f"\n{PASS} passed, {FAIL} failed")

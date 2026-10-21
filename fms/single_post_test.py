@@ -1,6 +1,6 @@
 """Experimental one-product Marketplace form test.
 
-This module clicks Next once after successful field verification, then stops.
+This module clicks Next once after form filling whenever Facebook enables it, then stops.
 It never clicks Publish, saves a draft, or alters product data. It accepts the already-built payload and an already-started
 PlaywrightDriver instance from FMS. The GUI/integration layer should call
 run_single_post_test(driver, payload) on a dedicated test action.
@@ -494,25 +494,10 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             _record(results, "hide_from_friends", payload.get("hide_from_friends"), "",
                     "SKIPPED", "Setting is not explicitly enabled")
 
-        # Click Next only after every configured field has been verified.
+        # Facebook itself disables Next while required form fields are missing.
+        # Do not add a second FMS verification gate here: once filling is complete,
+        # click Next exactly once if the actual Facebook button is visible/enabled.
         # This test must stop on the next screen and must NEVER click Publish.
-        blocking_statuses = {"FAILED", "UNCERTAIN"}
-        blockers = []
-        for row in results:
-            if row["status"] in blocking_statuses:
-                # Informational section-state rows are not field values; all other
-                # FAILED/UNCERTAIN results block navigation safely.
-                blockers.append(f"{row['field']}={row['status']}")
-        if blockers:
-            try:
-                next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
-                next_state = "enabled" if next_button.is_enabled(timeout=1500) else "disabled"
-            except Exception:
-                next_state = "not found"
-            _record(results, "next_button", "not clicked", next_state, "FAILED",
-                    "Required verification did not pass; stopped before navigation: " + ", ".join(blockers))
-            return _report(started, results, page)
-
         try:
             next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
             next_button.wait_for(state="visible", timeout=5000)
@@ -548,7 +533,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 transitioned = page.url != url_before
             if transitioned:
                 _record(results, "next_button", "clicked once", "navigation verified", "VERIFIED",
-                        "Next clicked after field verification; stopped on destination screen; Publish not clicked")
+                        "Next clicked because Facebook enabled it; stopped on destination screen; Publish not clicked")
             else:
                 _record(results, "next_button", "clicked once", "transition not confirmed", "UNCERTAIN",
                         "Click was sent, but destination-screen transition could not be verified; Publish not clicked")
