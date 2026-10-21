@@ -1526,11 +1526,10 @@ class PlaywrightDriver(BaseDriver):
     def publish_filled_form(self, page, payload: dict, approve_fn) -> dict:
         """Continue an ALREADY filled form to at most ONE Publish click.
 
-        The single-post test may already have clicked Next and landed on the
-        final audience/review screen. If Publish is already visible, do not
-        click Next a second time. Otherwise, require Next to be enabled, click
-        it once, then inspect the final screen. Publishing always requires the
-        existing fresh explicit approval callback, and is never retried.
+        Reuse the final audience/review screen if it is already open; otherwise
+        click enabled Next once and wait for Publish. When the actual Facebook
+        Publish button is visible and enabled, click it exactly once without an
+        additional in-app approval gate. Never retry; verify the outcome.
         """
         def _abort(step: str, detail: str) -> dict:
             return {"status": "aborted", "step": step,
@@ -1589,18 +1588,9 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             pass
 
-        # Explicit approval remains required for a live Publish click.
-        try:
-            approved = bool(approve_fn())
-        except Exception:
-            approved = False
-        if not approved:
-            return _abort("approval",
-                          f"No approval received — Publish NOT clicked "
-                          f"({screen_note})")
-
-        # Re-validate the actual Publish control immediately before the ONE
-        # click; the screen may have changed while awaiting approval.
+        # No separate in-app approval gate: the user explicitly started the
+        # Publish ONE Listing (LIVE) action. Re-validate Facebook's actual
+        # Publish control immediately before the ONE click.
         try:
             pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
             pub.wait_for(state="enabled", timeout=5000)

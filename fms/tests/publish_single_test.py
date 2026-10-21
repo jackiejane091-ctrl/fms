@@ -1,13 +1,18 @@
 """Safety tests for the gated single-listing LIVE publish (v0.2.100).
 
 Layer 1 drives the REAL PlaywrightDriver.publish_filled_form against a
-fake page (no browser, no Facebook): the approval gate, the single-click
-rule and the live/uncertain verification are exercised directly.
+fake page (no browser, no Facebook): the single-click rule, the
+disabled/unexpected-screen aborts, the publish-screen reuse
+(v0.2.107) and the live/uncertain verification are exercised directly.
+Since v0.2.108 the real driver has NO in-app approval gate: the
+approval callback is never consulted.
 
 Layer 2 drives the engine's publish_single flow with MockDriver and a
 stubbed single-post-test fill report: approval freshness (stale signals
 are discarded), Stop/timeout, duplicate protection, verification gate
-and the uncertain-outcome no-retry rule.
+and the uncertain-outcome no-retry rule. (The MockDriver still honors
+the approval callback, so Layer 2 keeps covering the engine's
+bookkeeping around the callback contract.)
 
 Run:  python -m fms.tests.publish_single_test
 """
@@ -148,14 +153,18 @@ PAYLOAD = {"title": "Oak Table", "price": "5.00",
 
 
 # ------------------------------------------------------- layer 1: driver ---
-def t_driver_no_approval():
-    # v0.2.107: the fake page starts ON the final Publish screen, so the
-    # reuse path applies — no Next click happens before the gate either.
+def t_driver_no_approval_gate():
+    # v0.2.108: the in-app Approve Publish gate is REMOVED from the real
+    # driver. The approval callback is never consulted — even one that
+    # would deny cannot block. On the already-open Publish screen the
+    # flow re-validates the control and clicks Publish exactly once.
+    # (This fake page shows no confirmation afterwards, so the verified
+    # outcome is 'uncertain': clicked once, never retried.)
     page = _FakePage(body_text="Oak Table review")
     with _ClickRecorder() as rec:
         res = _driver().publish_filled_form(page, PAYLOAD, lambda: False)
-    assert res["status"] == "aborted" and res["step"] == "approval", res
-    assert rec.clicks == [], rec.clicks  # zero Publish clicks, zero Next
+    assert rec.clicks == ["publish"], rec.clicks
+    assert res["status"] == "uncertain", res
 
 
 def t_driver_next_disabled():
@@ -419,7 +428,8 @@ def t_engine_uncertain_no_retry_and_blocked():
 def main() -> int:
     print("FMS publish_single safety tests (mock only — no real Facebook)\n")
     print("Layer 1 — driver gate (real publish_filled_form, fake page):")
-    check("no approval -> zero Publish clicks", t_driver_no_approval)
+    check("approval gate removed -> denying callback cannot block",
+          t_driver_no_approval_gate)
     check("Next disabled -> zero clicks", t_driver_next_disabled)
     check("unexpected screen -> zero Publish clicks", t_driver_unexpected_screen)
     check("approved -> exactly one click, LIVE", t_driver_approved_one_click_live)
