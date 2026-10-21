@@ -1593,11 +1593,22 @@ class PlaywrightDriver(BaseDriver):
         # Publish control immediately before the ONE click.
         try:
             pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
-            pub.wait_for(state="enabled", timeout=5000)
-        except Exception:
-            return _abort("publish_screen_changed",
-                          "Publish button gone/disabled after approval — "
-                          "Publish NOT clicked")
+            # Playwright Locator.wait_for() supports attached/detached/visible/hidden,
+            # NOT state="enabled". Waiting for "enabled" raises an exception and
+            # silently sends the live flow into this abort branch even when Facebook's
+            # Publish button is visibly enabled. Wait for visibility, then explicitly
+            # check the real button enabled state before the one allowed click.
+            pub.wait_for(state="visible", timeout=5000)
+            if not pub.is_enabled():
+                return _abort(
+                    "publish_screen_changed",
+                    "Facebook Publish button is visible but disabled — "
+                    "Publish NOT clicked")
+        except Exception as exc:
+            return _abort(
+                "publish_screen_changed",
+                f"Facebook Publish button could not be confirmed visible/enabled "
+                f"({type(exc).__name__}: {str(exc)[:120]}) — Publish NOT clicked")
         human.human_click(page, pub)
         human.human_pause(3000, 6000)
 

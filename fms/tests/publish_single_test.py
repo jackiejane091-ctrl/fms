@@ -69,6 +69,9 @@ class _FakeLocator:
     def first(self):
         return self
 
+    def is_enabled(self):
+        return self.enabled
+
     def wait_for(self, state=None, timeout=None):
         if not self.present:
             raise Exception("TimeoutError: locator not found")
@@ -86,9 +89,10 @@ class _FakeAnchor:
 
 class _FakePage:
     def __init__(self, next_enabled=True, publish_present=True,
-                 body_text="", confirm_links=()):
+                 publish_enabled=True, body_text="", confirm_links=()):
         self.next_loc = _FakeLocator("next", enabled=next_enabled)
-        self.pub_loc = _FakeLocator("publish", present=publish_present)
+        self.pub_loc = _FakeLocator("publish", present=publish_present,
+                                    enabled=publish_enabled)
         self._body = body_text
         self._links = [_FakeAnchor(h) for h in confirm_links]
         self.url = "https://www.facebook.com/marketplace/create/item"
@@ -228,6 +232,20 @@ def t_driver_form_screen_next_clicked_once():
         res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
     assert res["status"] == "live" and res["listing_id"] == "626262", res
     assert rec.clicks == ["next", "publish"], rec.clicks
+
+
+def t_driver_publish_disabled_zero_clicks():
+    # v0.2.109 regression: Playwright wait_for() has no state="enabled";
+    # the old re-validation always raised and aborted before the click.
+    # Now: wait visible, then is_enabled(). A visible-but-DISABLED
+    # Publish button must produce zero clicks and a safe abort.
+    page = _FakePage(publish_enabled=False, body_text="Oak Table review")
+    with _ClickRecorder() as rec:
+        res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
+    assert res["status"] == "aborted", res
+    assert res["step"] == "publish_screen_changed", res
+    assert "disabled" in res["detail"].lower(), res
+    assert rec.clicks == [], rec.clicks
 
 
 # ------------------------------------------------------- layer 2: engine ---
@@ -438,6 +456,8 @@ def main() -> int:
           t_driver_reuse_publish_screen_no_next)
     check("form screen -> Next clicked exactly once, then Publish",
           t_driver_form_screen_next_clicked_once)
+    check("publish visible but disabled -> zero clicks, safe abort",
+          t_driver_publish_disabled_zero_clicks)
     print("\nLayer 2 — engine flow (MockDriver):")
     check("no approval (timeout) -> zero Publish calls", t_engine_no_approval)
     check("Stop during wait -> zero Publish calls", t_engine_timeout_and_stop)
