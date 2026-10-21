@@ -1117,60 +1117,90 @@ class RunController:
             # of only before the next one.
             self._wait_if_paused()
 
-    # -- mode: test_single_post (experimental, v0.2.96) -------------------------
+    # -- mode: test_single_post (multi-listing queue, v0.2.112) -----------------
     def _test_single_flow(self, account: dict, driver, account_idx: int) -> None:
-        """Run ChatGPT's single_post_test.py against the FIRST selected
-        product on this logged-in session. Fills the form, verifies each
-        field, clicks Next once, clicks the final Publish button once,
-        and opens the Marketplace Selling page. The browser stays open
-        so the user can inspect the result."""
+        """Process each selected product independently using the configured
+        Min/Max Listings target. Reuse the existing browser/tab and publishing
+        routine; never mix product payloads or rotate into another product's
+        details while fulfilling a product's own target.
+        """
         from . import single_post_test as _spt
         label = account["label"]
         aid = account["id"]
-        # Keep the browser open afterwards for visual inspection.
         try:
             driver.keep_open = True
         except Exception:
             pass
+
         product_ids = list(self.cfg.product_ids or [])
         if not product_ids:
-            self.log(f"[{label}] Test Single Post: no product selected — "
-                     f"select a product first", level="error",
-                     account_id=aid)
-            return
-        pid = product_ids[0]
-        product = products_mod.get_product(self.db, pid)
-        if product is None:
-            self.log(f"[{label}] Test Single Post: product {pid} not found",
+            self.log(f"[{label}] Test Single Post: no product selected — select a product first",
                      level="error", account_id=aid)
             return
-        payload = self._rotation(product, account_idx)
-        self.log(f"[{label}] Test Single Post: product '{product.get('name')}' "
-                 f"(id={pid}) — filling form, then Next once, Publish once, "
-                 f"and the Selling page", account_id=aid)
-        try:
-            report = _spt.run_single_post_test(driver, payload)
-        except Exception as exc:
-            self.log(f"[{label}] Test Single Post crashed: "
-                     f"{type(exc).__name__}: {exc}", level="error",
+
+        total_targets = 0
+        total_attempts = 0
+        for pid in product_ids:
+            self._wait_if_paused()
+            product = products_mod.get_product(self.db, pid)
+            if product is None:
+                self.log(f"[{label}] product {pid} not found — skipping this product",
+                         level="error", account_id=aid)
+                continue
+
+            # The same configured range applies independently to every
+            # selected product. Equal min/max produces a fixed target.
+            target = random.randint(int(self.cfg.min_ads), int(self.cfg.max_ads))
+            total_targets += target
+            product_name = product.get("name") or f"product {pid}"
+            self.log(f"[{label}] Product '{product_name}' (id={pid}): target={target} listing(s); using only this product's saved details",
                      account_id=aid)
-            return
-        # Field-by-field report into the account logs.
-        self.log(f"[{label}] ===== TEST SINGLE POST REPORT =====",
-                 account_id=aid)
-        for row in report.get("fields", []):
-            status = row.get("status", "?")
-            lvl = "error" if status == "FAILED" else "info"
-            self.log(f"[{label}] {row.get('field')}: {status} | "
-                     f"expected='{row.get('expected_value', '')}' | "
-                     f"actual='{row.get('actual_value', '')}' | "
-                     f"{row.get('detail', '')}", level=lvl, account_id=aid)
-        self.log(f"[{label}] Summary: {report.get('summary', {})}",
-                 account_id=aid)
-        self.log(f"[{label}] Publish attempted: "
-                 f"{report.get('publish_attempted')} | Next clicked: "
-                 f"{report.get('next_clicked')}", account_id=aid)
-        self.log(f"[{label}] ================================",
+            product_attempts = 0
+
+            for listing_index in range(target):
+                self._wait_if_paused()
+                # Re-fetch product for each listing so current saved settings
+                # are used, then build its own payload (including price range).
+                product = products_mod.get_product(self.db, pid)
+                if product is None:
+                    self.log(f"[{label}] product {pid} disappeared — stopping its queue",
+                             level="error", account_id=aid)
+                    break
+                payload = self._rotation(product, account_idx)
+                self.log(f"[{label}] Product '{product_name}' listing {listing_index + 1}/{target}: publishing",
+                         account_id=aid)
+                try:
+                    report = _spt.run_single_post_test(driver, payload)
+                except Exception as exc:
+                    self.log(f"[{label}] Product '{product_name}' listing {listing_index + 1}/{target} crashed: {type(exc).__name__}: {exc}",
+                             level="error", account_id=aid)
+                    break
+
+                for row in report.get("fields", []):
+                    status = row.get("status", "?")
+                    lvl = "error" if status == "FAILED" else "info"
+                    self.log(f"[{label}] product={pid} listing={listing_index + 1}/{target} | {row.get('field')}: {status} | {row.get('detail', '')}",
+                             level=lvl, account_id=aid)
+
+                publish_attempted = bool(report.get("publish_attempted"))
+                publish_status = next((r.get("status") for r in report.get("fields", [])
+                                       if r.get("field") == "publish_click"), "NOT_REPORTED")
+                self.log(f"[{label}] product={pid} listing={listing_index + 1}/{target}: publish_attempted={publish_attempted}, publish_status={publish_status}, summary={report.get('summary', {})}",
+                         account_id=aid)
+                if not publish_attempted:
+                    self.log(f"[{label}] product={pid}: stopping this product's queue because Publish was not reached",
+                             level="error", account_id=aid)
+                    break
+
+                product_attempts += 1
+                total_attempts += 1
+                if listing_index + 1 < target:
+                    self._inter_post_delay()
+
+            self.log(f"[{label}] Product '{product_name}' finished: publish attempts {product_attempts}/{target}",
+                     account_id=aid)
+
+        self.log(f"[{label}] Multi-listing queue finished: attempts={total_attempts}, assigned_targets={total_targets}, selected_products={len(product_ids)}",
                  account_id=aid)
 
     # -- mode: draft_publish (full two-phase flow) ----------------------------------
