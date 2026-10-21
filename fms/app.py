@@ -76,6 +76,7 @@ class ProductIn(BaseModel):
     append_title_count: int = 0
     main_image_folder: str | None = None
     extra_image_folder: str | None = None
+    extra_image_count: int = 0
     delivery_options: list[str] | None = None
     descriptions: list[str] | None = None
 
@@ -511,6 +512,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
             append_title_count=data.append_title_count,
             main_image_folder=data.main_image_folder,
             extra_image_folder=data.extra_image_folder,
+            extra_image_count=max(0, int(data.extra_image_count or 0)),
             delivery_options=data.delivery_options,
             descriptions=data.descriptions)
         if data.titles:

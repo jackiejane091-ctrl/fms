@@ -200,6 +200,7 @@ class Database:
             ("append_title_count", "ALTER TABLE products ADD COLUMN append_title_count INTEGER NOT NULL DEFAULT 0"),
             ("main_image_folder", "ALTER TABLE products ADD COLUMN main_image_folder TEXT"),
             ("extra_image_folder", "ALTER TABLE products ADD COLUMN extra_image_folder TEXT"),
+            ("extra_image_count", "ALTER TABLE products ADD COLUMN extra_image_count INTEGER NOT NULL DEFAULT 0"),
             ("delivery_options_json", "ALTER TABLE products ADD COLUMN delivery_options_json TEXT"),
         ]:
             if not _has_column("products", _col):

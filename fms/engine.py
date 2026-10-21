@@ -443,15 +443,25 @@ class _Rotator:
             price = product.get("base_price")
 
         main_images = product.get("main_images") or []
-        extra_images = product.get("extra_images") or []
+        # All product photos come from Main Images. Extra Images is only the
+        # requested number of additional files from that same folder.
+        try:
+            requested_extra_count = max(0, int(product.get("extra_image_count") or 0))
+        except (TypeError, ValueError):
+            requested_extra_count = 0
         image_paths: list[str] = []
-        if main_images or extra_images:
-            # Main images always first, then extra images rotated by offset.
-            ordered = list(main_images)
-            if extra_images:
-                start = seq % len(extra_images)
-                ordered += extra_images[start:] + extra_images[:start]
-            image_paths = ordered[:10]
+        if main_images:
+            # One main photo per listing; rotate the selected main photo and
+            # then choose extras from the remaining files in the same folder.
+            main_index = seq % len(main_images)
+            main_photo = main_images[main_index]
+            remaining_images = main_images[:main_index] + main_images[main_index + 1:]
+            image_paths = [main_photo]
+            available_extra_count = min(requested_extra_count, len(remaining_images), 9)
+            if available_extra_count:
+                extra_start = seq % len(remaining_images)
+                rotated_extras = remaining_images[extra_start:] + remaining_images[:extra_start]
+                image_paths.extend(rotated_extras[:available_extra_count])
             products_mod.record_image_usage(self.db, pid, image_paths)
 
         if product.get("tags"):

@@ -33,7 +33,7 @@
           {% for c in categories %}<option value="{{ c|replace(' > ', '||') }}">{{ c }}</option>{% endfor %}
         </select>
       </label>
-      <label>Extra Images (folder) <input name="extra_image_folder" id="f_extra_image_folder"> <button type="button" class="browse-btn" onclick="pickFolder('f_extra_image_folder')">📁 Browse</button></label>
+      <label>Extra Images (number, optional) <input name="extra_image_count" id="f_extra_image_count" type="number" min="0" step="1" placeholder="0 = main photo only"></label>
       <label>Availability
         <select name="availability" id="f_availability">
           <option value="">Select Availability</option>
@@ -144,7 +144,7 @@ async function editProd(id){
   $('f_tags').value = p.tags || '';
   $('f_main_image_folder').value = p.main_image_folder || '';
   $('f_category').value = p.category || '';
-  $('f_extra_image_folder').value = p.extra_image_folder || '';
+  $('f_extra_image_count').value = p.extra_image_count ?? 0;
   $('f_availability').value = p.availability || '';
   $('f_video_path').value = p.video_path || '';
   $('f_titles').value = (p.titles || []).join('\n');
@@ -167,7 +167,7 @@ $('prodForm').addEventListener('submit', async (e)=>{
     tags: $('f_tags').value || null,
     main_image_folder: $('f_main_image_folder').value || null,
     category: $('f_category').value || null,
-    extra_image_folder: $('f_extra_image_folder').value || null,
+    extra_image_count: Math.max(0, parseInt($('f_extra_image_count').value || '0', 10) || 0),
     availability: $('f_availability').value || null,
     video_path: $('f_video_path').value || null,
     titles: lines($('f_titles').value),

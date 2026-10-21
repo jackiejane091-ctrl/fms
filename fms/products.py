@@ -97,6 +97,7 @@ def create_product(
     append_title_count: int = 0,
     main_image_folder: str | None = None,
     extra_image_folder: str | None = None,
+    extra_image_count: int = 0,
     delivery_options: list[str] | None = None,
     descriptions: list[str] | None = None,
 ) -> int:
@@ -112,8 +113,8 @@ def create_product(
            (name, base_price, description, tags, category, attributes_json,
             image_folder, video_path, listing_type, condition, availability,
             append_title_count, main_image_folder, extra_image_folder,
-            delivery_options_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            extra_image_count, delivery_options_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             name,
             base_price,
@@ -129,6 +130,7 @@ def create_product(
             int(append_title_count or 0),
             main_image_folder,
             extra_image_folder,
+            max(0, int(extra_image_count or 0)),
             json.dumps([o for o in (delivery_options or []) if o in DELIVERY_OPTIONS]),
             utcnow(),
         ),
@@ -160,6 +162,7 @@ def clone_product(db: Database, product_id: int) -> int:
         append_title_count=src.get("append_title_count") or 0,
         main_image_folder=src.get("main_image_folder"),
         extra_image_folder=src.get("extra_image_folder"),
+        extra_image_count=src.get("extra_image_count") or 0,
         delivery_options=src.get("delivery_options"),
         descriptions=src.get("descriptions"),
     )
@@ -234,7 +237,7 @@ def update_product(db: Database, product_id: int, **fields) -> None:
     allowed = {"name", "base_price", "description", "tags", "category",
                "image_folder", "video_path", "listing_type", "condition",
                "availability", "append_title_count", "main_image_folder",
-               "extra_image_folder"}
+               "extra_image_folder", "extra_image_count"}
     sets, params = [], []
     for key, value in fields.items():
         if key == "attributes":
