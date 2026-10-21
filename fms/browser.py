@@ -116,13 +116,6 @@ class BaseDriver(ABC):
         """
         return None
 
-    def publish_filled_form(self, page, payload: dict, approve_fn) -> dict:
-        """Continue an ALREADY filled+verified form to at most ONE Publish
-        click, gated by approve_fn() -> bool. Returns a result dict with
-        status live|uncertain|aborted. See PlaywrightDriver for the real
-        implementation."""
-        raise NotImplementedError
-
     # -- Phase 2: drafts, manual-publish, relist/edit, scrap, activities --------
     def create_draft(self, payload: dict) -> str | None:
         """Fill the form but SAVE AS DRAFT instead of publishing.
@@ -1523,126 +1516,6 @@ class PlaywrightDriver(BaseDriver):
             self._last_error = f"{type(exc).__name__}: {str(exc)[:180]} @ {url}"
             return None
 
-    def publish_filled_form(self, page, payload: dict, approve_fn) -> dict:
-        """Continue an ALREADY filled form to at most ONE Publish click.
-
-        Reuse the final audience/review screen if it is already open; otherwise
-        click enabled Next once and wait for Publish. When the actual Facebook
-        Publish button is visible and enabled, click it exactly once without an
-        additional in-app approval gate. Never retry; verify the outcome.
-        """
-        def _abort(step: str, detail: str) -> dict:
-            return {"status": "aborted", "step": step,
-                    "listing_id": None, "detail": detail}
-
-        # 1. Reuse the final screen if the single-post test already navigated
-        # there. This avoids clicking Next twice and leaving the Publish page.
-        pub = None
-        try:
-            candidate = S.to_playwright(page, S.F_PUBLISH_BUTTON)
-            candidate.wait_for(timeout=2500)
-            pub = candidate
-        except Exception:
-            pub = None
-
-        if pub is None:
-            # Final Publish control is not present yet: Next must exist/enabled.
-            try:
-                nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
-                nxt.wait_for(timeout=15000)
-                try:
-                    nxt.wait_for(state="enabled", timeout=10000)
-                except Exception:
-                    shot = self._snap(page, "next-disabled")
-                    return _abort(
-                        "next_disabled",
-                        "Next is disabled (form incomplete) — Publish NOT clicked"
-                        + (f" | Screenshot: {shot}" if shot else ""))
-            except Exception as exc:
-                return _abort("next_missing",
-                              f"Neither final Publish screen nor Next button "
-                              f"was confirmed: {type(exc).__name__} "
-                              "— Publish NOT clicked")
-            human.human_click(page, nxt)
-            human.human_pause(2000, 3500)
-
-            try:
-                pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
-                pub.wait_for(timeout=15000)
-            except Exception:
-                shot = self._snap(page, "publish-screen")
-                return _abort(
-                    "publish_screen",
-                    "Publish button not found after Next — unexpected screen, "
-                    "nothing published"
-                    + (f" | Screenshot: {shot}" if shot else ""))
-
-        # Screen summary so the approver's log shows what was on screen.
-        screen_note = "screen text unreadable"
-        try:
-            body_text = page.inner_text("body") or ""
-            title = payload.get("title") or ""
-            screen_note = ("review screen shows the product title"
-                           if title and title in body_text else
-                           "product title not visible in review text")
-        except Exception:
-            pass
-
-        # No separate in-app approval gate: the user explicitly started the
-        # Publish ONE Listing (LIVE) action. Re-validate Facebook's actual
-        # Publish control immediately before the ONE click.
-        try:
-            pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
-            # Playwright Locator.wait_for() supports attached/detached/visible/hidden,
-            # NOT state="enabled". Waiting for "enabled" raises an exception and
-            # silently sends the live flow into this abort branch even when Facebook's
-            # Publish button is visibly enabled. Wait for visibility, then explicitly
-            # check the real button enabled state before the one allowed click.
-            pub.wait_for(state="visible", timeout=5000)
-            if not pub.is_enabled():
-                return _abort(
-                    "publish_screen_changed",
-                    "Facebook Publish button is visible but disabled — "
-                    "Publish NOT clicked")
-        except Exception as exc:
-            return _abort(
-                "publish_screen_changed",
-                f"Facebook Publish button could not be confirmed visible/enabled "
-                f"({type(exc).__name__}: {str(exc)[:120]}) — Publish NOT clicked")
-        human.human_click(page, pub)
-        human.human_pause(3000, 6000)
-
-        # Verify live result. A click alone does not prove publication.
-        url = ""
-        try:
-            url = page.url or ""
-        except Exception:
-            pass
-        if "/marketplace/item/" in url:
-            lid = url.rstrip("/").split("/")[-1].split("?")[0]
-            if lid:
-                return {"status": "live", "step": "verify",
-                        "listing_id": lid,
-                        "detail": f"Listing live at {url[:100]} ({screen_note})"}
-        try:
-            links = page.locator("a[href*='/marketplace/item/']").all()
-            for a in links[:10]:
-                href = a.get_attribute("href") or ""
-                if "/marketplace/item/" in href:
-                    lid = href.rstrip("/").split("/")[-1].split("?")[0]
-                    if lid:
-                        return {"status": "live", "step": "verify",
-                                "listing_id": lid,
-                                "detail": "Listing link found on the "
-                                          f"confirmation page ({screen_note})"}
-        except Exception:
-            pass
-        shot = self._snap(page, "publish-uncertain")
-        return {"status": "uncertain", "step": "verify", "listing_id": None,
-                "detail": "Publish clicked ONCE but no listing confirmation "
-                          f"found (url={url[:80]}) — manual review required"
-                          + (f" | Screenshot: {shot}" if shot else "")}
-
     # -- Phase 2: drafts --------------------------------------------------------
     def create_draft(self, payload: dict) -> str | None:
         """Fill the form and SAVE AS DRAFT (tab closes as each draft completes)."""
@@ -2160,7 +2033,6 @@ class MockDriver(BaseDriver):
     fake_listings: list[dict] = []  # get_my_listings() returns this (per test)
     fake_scrapes: dict[str, dict] = {}  # scrape_listing(url) returns this
     fake_take_action: list[dict] = []  # get_take_action_listings() returns this
-    publish_outcome: str = "live"  # publish_filled_form outcome: live|uncertain|screen_missing
 
     def __init__(self, account: dict):
         super().__init__(account)
@@ -2177,7 +2049,6 @@ class MockDriver(BaseDriver):
             cls.fake_listings = []
             cls.fake_scrapes = {}
             cls.fake_take_action = []
-            cls.publish_outcome = "live"
             cls.fake_tabs = []
             cls.fake_draft_count = 2
             cls._draft_seq = 0
@@ -2237,30 +2108,6 @@ class MockDriver(BaseDriver):
                 cls.calls.append({"event": "post_end", "label": self.account["label"],
                                   "t": time.time()})
                 cls._active -= 1
-
-    def publish_filled_form(self, page, payload: dict, approve_fn) -> dict:
-        """Mock of the gated publish: honors approve_fn exactly like the
-        real driver — zero publish clicks without approval, exactly one
-        with it. Outcome scripted via the publish_outcome class knob."""
-        cls = type(self)
-        with cls._lock:
-            cls.calls.append({"event": "publish_gate",
-                              "label": self.account["label"],
-                              "title": payload.get("title")})
-        if cls.publish_outcome == "screen_missing":
-            return {"status": "aborted", "step": "publish_screen",
-                    "listing_id": None, "detail": "mock: no publish button"}
-        if not approve_fn():
-            return {"status": "aborted", "step": "approval",
-                    "listing_id": None, "detail": "mock: no approval"}
-        with cls._lock:
-            cls.calls.append({"event": "publish_click",
-                              "label": self.account["label"]})
-        if cls.publish_outcome == "uncertain":
-            return {"status": "uncertain", "step": "verify",
-                    "listing_id": None, "detail": "mock: uncertain result"}
-        return {"status": "live", "step": "verify",
-                "listing_id": "mock-live-1", "detail": "mock: listing live"}
 
     def close(self) -> None:
         if getattr(self, "keep_open", False):

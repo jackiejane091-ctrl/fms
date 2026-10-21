@@ -1,9 +1,11 @@
-"""Experimental one-product Marketplace form test.
+"""One-product Marketplace workflow: fill, publish once, open Selling.
 
-This module clicks Next once after form filling whenever Facebook enables it, then stops.
-It never clicks Publish, saves a draft, or alters product data. It accepts the already-built payload and an already-started
-PlaywrightDriver instance from FMS. The GUI/integration layer should call
-run_single_post_test(driver, payload) on a dedicated test action.
+This module fills the form, clicks Next once whenever Facebook enables it,
+then clicks Facebook's final Publish button exactly once and navigates to
+the Marketplace Selling page. It never saves a draft or alters product data.
+It accepts the already-built payload and an already-started PlaywrightDriver
+instance from FMS. The GUI/integration layer should call
+run_single_post_test(driver, payload) on the Test Single Post action.
 
 The existing production _fill_form() is not called. The established photo
 upload mechanism is retained here without changing production photo code.
@@ -495,52 +497,87 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                     "SKIPPED", "Setting is not explicitly enabled")
 
         # Facebook itself disables Next while required form fields are missing.
-        # Do not add a second FMS verification gate here: once filling is complete,
-        # click Next exactly once if the actual Facebook button is visible/enabled.
-        # This test must stop on the next screen and must NEVER click Publish.
+        # Once filling is complete: if the final Publish screen is already
+        # open, use it directly; otherwise click Next exactly once when
+        # Facebook enabled it. Then click the final Publish button exactly
+        # once and open the Selling page. No approval gate; never retry.
         try:
-            next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
-            next_button.wait_for(state="visible", timeout=5000)
-            if not next_button.is_enabled(timeout=2000):
-                _record(results, "next_button", "click once", "disabled", "FAILED",
-                        "Next button is disabled; stopped safely")
-                return _report(started, results, page)
-            url_before = page.url
-            next_button.click(timeout=5000)
-            # Facebook may use SPA navigation without changing the URL. Verify
-            # a real transition by URL change, Next disappearing, or Publish
-            # becoming visible; do not click any button on the destination screen.
-            transitioned = False
+            S.to_playwright(page, S.F_PUBLISH_BUTTON).wait_for(state="visible", timeout=1800)
+            _record(results, "next_button", "not needed", "final screen already open", "SKIPPED",
+                    "Publish button already visible; Next was not clicked")
+        except Exception:
             try:
-                page.wait_for_function(
-                    """(beforeUrl) => {
-                        if (location.href !== beforeUrl) return true;
-                        const visible = (el) => {
-                          if (!el) return false;
-                          const r = el.getBoundingClientRect();
-                          const s = getComputedStyle(el);
-                          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-                        };
-                        const buttons = [...document.querySelectorAll('button,[role=button]')];
-                        const next = buttons.find(e => /\\bnext\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
-                        const publish = buttons.find(e => /\\bpublish\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
-                        return (next && !visible(next)) || visible(publish);
-                    }""", arg=url_before, timeout=10000)
-                transitioned = True
-            except Exception:
-                # Some flows retain a visible Next button during a delayed render;
-                # do not infer success merely because click() returned.
-                transitioned = page.url != url_before
-            if transitioned:
-                _record(results, "next_button", "clicked once", "navigation verified", "VERIFIED",
-                        "Next clicked because Facebook enabled it; stopped on destination screen; Publish not clicked")
-            else:
-                _record(results, "next_button", "clicked once", "transition not confirmed", "UNCERTAIN",
-                        "Click was sent, but destination-screen transition could not be verified; Publish not clicked")
+                next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
+                next_button.wait_for(state="visible", timeout=5000)
+                if not next_button.is_enabled(timeout=2000):
+                    _record(results, "next_button", "click once", "disabled", "FAILED",
+                            "Next button is disabled; stopped safely")
+                    return _report(started, results, page)
+                url_before = page.url
+                next_button.click(timeout=5000)
+                # Facebook may use SPA navigation without changing the URL. Verify
+                # a real transition by URL change, Next disappearing, or Publish
+                # becoming visible.
+                transitioned = False
+                try:
+                    page.wait_for_function(
+                        """(beforeUrl) => {
+                            if (location.href !== beforeUrl) return true;
+                            const visible = (el) => {
+                              if (!el) return false;
+                              const r = el.getBoundingClientRect();
+                              const s = getComputedStyle(el);
+                              return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                            };
+                            const buttons = [...document.querySelectorAll('button,[role=button]')];
+                            const next = buttons.find(e => /\\bnext\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
+                            const publish = buttons.find(e => /\\bpublish\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
+                            return (next && !visible(next)) || visible(publish);
+                        }""", arg=url_before, timeout=10000)
+                    transitioned = True
+                except Exception:
+                    # Some flows retain a visible Next button during a delayed render;
+                    # do not infer success merely because click() returned.
+                    transitioned = page.url != url_before
+                if transitioned:
+                    _record(results, "next_button", "clicked once", "navigation verified", "VERIFIED",
+                            "Next clicked once because Facebook enabled it; proceeding to the Publish step")
+                else:
+                    _record(results, "next_button", "clicked once", "transition not confirmed", "UNCERTAIN",
+                            "Click was sent, but destination-screen transition could not be verified; checking for the Publish button")
+            except Exception as exc:
+                _record(results, "next_button", "click once", "failed", "FAILED",
+                        f"{type(exc).__name__}: {str(exc)[:180]}")
+        # Final step: click Facebook's actual Publish button exactly once,
+        # let Facebook process the click, then open the Selling page.
+        try:
+            publish_button = S.to_playwright(page, S.F_PUBLISH_BUTTON)
+            publish_button.wait_for(state="visible", timeout=12000)
         except Exception as exc:
-            _record(results, "next_button", "click once", "failed", "FAILED",
-                    f"{type(exc).__name__}: {str(exc)[:180]}; Publish not clicked")
+            _record(results, "publish_click", "one click", "not attempted", "FAILED",
+                    f"Publish button did not appear: {type(exc).__name__}")
+            return _report(started, results, page)
+        try:
+            human.human_click(page, publish_button)
+            _record(results, "publish_click", "one click", "clicked", "ATTEMPTED",
+                    "Clicked Facebook's final Publish button once")
+        except Exception as exc:
+            _record(results, "publish_click", "one click", "click failed", "FAILED",
+                    f"{type(exc).__name__}: {str(exc)[:180]}")
+            return _report(started, results, page)
+        human.human_pause(4000, 6000)
+        selling_url = "https://www.facebook.com/marketplace/you/selling/"
+        try:
+            page.goto(selling_url, wait_until="domcontentloaded", timeout=20000)
+            human.human_pause(1200, 2000)
+            _record(results, "selling_page", selling_url, page.url,
+                    "VERIFIED" if "/marketplace/you/selling" in page.url else "UNCERTAIN",
+                    "Opened the Marketplace Selling page after the Publish click")
+        except Exception as exc:
+            _record(results, "selling_page", selling_url, "", "UNCERTAIN",
+                    f"Navigation after the Publish click failed: {type(exc).__name__}: {str(exc)[:150]}")
         return _report(started, results, page)
+
     except Exception as exc:
         _record(results, "fatal", "complete form test", "", "FAILED",
                 f"{type(exc).__name__}: {str(exc)[:220]}")
@@ -560,7 +597,7 @@ def _report(started: str, results: list[dict[str, str]], page=None) -> dict[str,
         "started_at_utc": started,
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
         "page_url": current_url,
-        "publish_attempted": False,
+        "publish_attempted": any(row["field"] == "publish_click" and row["status"] == "ATTEMPTED" for row in results),
         "next_clicked": any(row["field"] == "next_button" and row["expected_value"] == "clicked once" and row["status"] in {"VERIFIED", "UNCERTAIN", "FAILED"} for row in results),
         "summary": counts,
         "fields": results,

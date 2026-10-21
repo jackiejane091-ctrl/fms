@@ -1,18 +1,19 @@
-"""Targeted navigation tests for the Next-when-enabled flow (v0.2.106).
+"""Targeted navigation tests for the Test Single Post flow (v0.2.110).
 
-Runs the REAL fms.single_post_test.run_single_post_test (ChatGPT's file,
-applied verbatim) in a local headless Chromium against a full-form
-fixture with click counters on the Next and Publish buttons:
+Runs the REAL fms.single_post_test.run_single_post_test in a local
+headless Chromium against a full-form fixture with click counters on
+the Next and Publish buttons (counted via route-intercepted beacons,
+so they survive the final navigation):
 
-1. Happy path: every field verifies -> Next is clicked EXACTLY ONCE,
-   the transition is verified, Publish is NEVER clicked.
-2. UNCERTAIN field (location picked fine, but the report read-back
-   cannot confirm it): Facebook's enabled Next is the only gate, so
-   Next is STILL clicked once and the transition verified.
-3. Next disabled by the page: no click is attempted, the row reports
-   the disabled state clearly, Publish untouched.
-4. Unconfirmed path: Next click produces no transition -> the row is
-   UNCERTAIN (never claimed as success), Publish never clicked.
+1. Happy path: every field verifies -> Next clicked EXACTLY ONCE,
+   transition verified, Publish clicked EXACTLY ONCE, and the flow
+   lands on the Marketplace Selling page (route-served fixture).
+2. UNCERTAIN field (location read-back cannot confirm it): no gate —
+   Next and Publish are still clicked once each.
+3. Next disabled by the page: no click is attempted at all and the
+   row reports the disabled state clearly.
+4. Unconfirmed path: Next click produces no transition and no Publish
+   button ever appears -> publish_click FAILED, Publish never clicked.
 
 Run:  python -m fms.tests.next_navigation_test
 """
@@ -71,7 +72,7 @@ button{padding:10px 20px}
 </div>
 <div id="screen2" style="display:none">
   <div>Publish your listing</div>
-  <button type="button" id="pubbtn">Publish</button>
+  <button type="submit" id="pubbtn">Publish</button>
 </div>
 <script>
 window.__nextClicks = 0; window.__pubClicks = 0;
@@ -112,13 +113,14 @@ sug.querySelector('[role="option"]').addEventListener('click', function(e){
   loc.value = e.target.textContent.trim();
   sug.style.display = 'none';
 });
-document.getElementById('pubbtn').addEventListener('click', function(){ window.__pubClicks++; });
+document.getElementById('pubbtn').addEventListener('click', function(){ window.__pubClicks++; fetch('https://fixture.local/click/pub').catch(function(){}); });
 </script>
 </body></html>"""
 
 NEXT_OK_JS = """<script>
 document.getElementById('nextbtn').addEventListener('click', function(){
   window.__nextClicks++;
+  fetch('https://fixture.local/click/next').catch(function(){});
   document.getElementById('screen1').style.display = 'none';
   document.getElementById('screen2').style.display = 'block';
 });
@@ -127,6 +129,7 @@ document.getElementById('nextbtn').addEventListener('click', function(){
 NEXT_DEAD_JS = """<script>
 document.getElementById('nextbtn').addEventListener('click', function(){
   window.__nextClicks++;
+  fetch('https://fixture.local/click/next').catch(function(){});
 });
 </script>"""
 
@@ -180,39 +183,58 @@ def check(name, fn):
 
 def _run(html, payload):
     from playwright.sync_api import sync_playwright
+    counts = {"next": 0, "pub": 0}
+
+    def _route(route):
+        url = route.request.url
+        if url.startswith("https://fixture.local/click/"):
+            key = url.rsplit("/", 1)[-1]
+            if key in counts:
+                counts[key] += 1
+            route.fulfill(status=200, body="")
+        elif "/marketplace/you/selling" in url:
+            route.fulfill(status=200, content_type="text/html",
+                          body="<html><body>Your listings (fixture)</body></html>")
+        else:
+            route.continue_()
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         page = browser.new_page()
+        page.route("**/*", _route)
         page.set_content(html)
         report = run_single_post_test(_FakeDriver(page), payload)
-        clicks = page.evaluate(
-            "() => ({next: window.__nextClicks, pub: window.__pubClicks})")
+        page.wait_for_timeout(300)  # let any in-flight click beacon land
         browser.close()
-        return report, clicks
+        return report, counts
 
 
 def _rows(report, field):
     return [r for r in report["fields"] if r["field"] == field]
 
 
-def t_happy_next_once_no_publish():
+def t_happy_next_once_publish_once_selling():
     report, clicks = _run(FORM_HTML + NEXT_OK_JS, dict(PAYLOAD))
     bad = [r for r in report["fields"]
            if r["status"] in ("FAILED", "UNCERTAIN")]
     assert not bad, bad
     nxt = _rows(report, "next_button")
     assert nxt and nxt[0]["status"] == "VERIFIED", nxt
-    assert clicks == {"next": 1, "pub": 0}, clicks
+    pub = _rows(report, "publish_click")
+    assert pub and pub[0]["status"] == "ATTEMPTED", pub
+    sell = _rows(report, "selling_page")
+    assert sell and sell[0]["status"] == "VERIFIED", sell
+    assert clicks == {"next": 1, "pub": 1}, clicks
     assert report["next_clicked"] is True, report["next_clicked"]
-    assert report["publish_attempted"] is False, report["publish_attempted"]
+    assert report["publish_attempted"] is True, report["publish_attempted"]
+    assert "/marketplace/you/selling" in report["page_url"], report["page_url"]
 
 
-def t_uncertain_field_does_not_block_next():
+def t_uncertain_field_does_not_block_publish():
     # Location input WITHOUT a <label> association (section layout):
     # the real picker still selects it, but the report's label-based
-    # read-back cannot confirm it -> location row is UNCERTAIN. The
-    # page's Next button is enabled, and per v0.2.106 that is the only
-    # gate: Next must still be clicked exactly once.
+    # read-back cannot confirm it -> location row is UNCERTAIN. There
+    # is no gate: Next and Publish are still clicked once each.
     html = FORM_HTML.replace(
         '<label>Location <input type="text" id="locinput"></label>',
         '<div class="sec-head"><span><span>Location</span></span></div>'
@@ -223,8 +245,8 @@ def t_uncertain_field_does_not_block_next():
     assert loc and loc[0]["status"] == "UNCERTAIN", loc
     nxt = _rows(report, "next_button")
     assert nxt and nxt[0]["status"] == "VERIFIED", nxt
-    assert clicks == {"next": 1, "pub": 0}, clicks
-    assert report["publish_attempted"] is False, report["publish_attempted"]
+    assert clicks == {"next": 1, "pub": 1}, clicks
+    assert report["publish_attempted"] is True, report["publish_attempted"]
 
 
 def t_next_disabled_never_clicked():
@@ -245,19 +267,21 @@ def t_unconfirmed_transition_is_uncertain():
     report, clicks = _run(FORM_HTML + NEXT_DEAD_JS, dict(PAYLOAD))
     nxt = _rows(report, "next_button")
     assert nxt and nxt[0]["status"] == "UNCERTAIN", nxt
+    pub = _rows(report, "publish_click")
+    assert pub and pub[0]["status"] == "FAILED", pub
     assert clicks == {"next": 1, "pub": 0}, clicks
     assert report["publish_attempted"] is False, report["publish_attempted"]
 
 
 def main() -> int:
-    print("FMS Next-only navigation tests (local Chromium)\n")
-    check("happy: Next once, transition verified, Publish never clicked",
-          t_happy_next_once_no_publish)
-    check("uncertain field: does NOT block an enabled Next",
-          t_uncertain_field_does_not_block_next)
+    print("FMS Test Single Post navigation tests (local Chromium)\n")
+    check("happy: Next once, Publish once, Selling page reached",
+          t_happy_next_once_publish_once_selling)
+    check("uncertain field: does NOT block Next or Publish",
+          t_uncertain_field_does_not_block_publish)
     check("disabled Next: never clicked, reported clearly",
           t_next_disabled_never_clicked)
-    check("unconfirmed: click without transition -> UNCERTAIN, no Publish",
+    check("unconfirmed: no Publish button -> FAILED, Publish never clicked",
           t_unconfirmed_transition_is_uncertain)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

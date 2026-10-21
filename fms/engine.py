@@ -53,14 +53,13 @@ ACTIONS = [
     ("change_location", "Change Marketplace Location"),
     ("scrap_data", "Scrap Data"),
     ("test_single_post", "Test Single Post"),
-    ("publish_single", "Publish ONE Listing (LIVE)"),
 ]
 MODES = (tuple(key for key, _ in ACTIONS)
          + ("manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
 POSTING_MODES = {"complete", "draft_publish", "manual_publish", "relist_edit",
                  "create_drafts", "publish_drafts", "delete_relist",
-                 "publish_single"}
+                 "delete_relist"}
 PUBLISH_MODES = ("all_together", "one_by_one")
 
 
@@ -506,10 +505,6 @@ class RunController:
         self._rotator = _Rotator(db)
         self._product_cycle = itertools.cycle(cfg.product_ids)
         self._signals: dict[str, threading.Event] = {}
-        # publish_single (gated LIVE publish): approval wait budget and the
-        # one-account-per-run claim flag.
-        self.publish_approval_timeout_s: float = 600.0
-        self._publish_single_claimed: bool = False
         # Slot-refill queue state (v0.2.23, FBM Robo style): batch_size
         # workers pull accounts from _queue; a freed slot immediately takes
         # the next pending account. _acct_state maps account_id ->
@@ -668,24 +663,6 @@ class RunController:
         while not self.stop_event.is_set():
             if ev.wait(timeout=poll_s):
                 return True
-        return False
-
-    def wait_publish_approval(self, timeout_s: float = 600.0) -> bool:
-        """Block until the dashboard sends a FRESH 'approve_publish' signal.
-
-        Any stale signal (sent before this wait began) is discarded first,
-        so approval is always bound to this run and this wait. Returns
-        False on timeout or when the run is stopped — and re-checks the
-        stop flag immediately before returning True.
-        """
-        ev = self._signals.setdefault("approve_publish", threading.Event())
-        ev.clear()
-        deadline = time.time() + max(0.0, timeout_s)
-        while time.time() < deadline:
-            if self.stop_event.is_set():
-                return False
-            if ev.wait(timeout=0.25):
-                return not self.stop_event.is_set()
         return False
 
     # -- public controls -------------------------------------------------------
@@ -932,8 +909,6 @@ class RunController:
             self._scrap_flow(account, driver, account_idx)
         elif mode == "test_single_post":
             self._test_single_flow(account, driver, account_idx)
-        elif mode == "publish_single":
-            self._publish_single_flow(account, driver, account_idx)
         else:
             self._complete_flow(account, driver, quota, account_idx)
         # v0.2.62: log the video recording path so the user can send it
@@ -1136,8 +1111,9 @@ class RunController:
     def _test_single_flow(self, account: dict, driver, account_idx: int) -> None:
         """Run ChatGPT's single_post_test.py against the FIRST selected
         product on this logged-in session. Fills the form, verifies each
-        field, and stops before Next/Publish. The browser stays open so
-        the user can inspect the filled form."""
+        field, clicks Next once, clicks the final Publish button once,
+        and opens the Marketplace Selling page. The browser stays open
+        so the user can inspect the result."""
         from . import single_post_test as _spt
         label = account["label"]
         aid = account["id"]
@@ -1160,8 +1136,8 @@ class RunController:
             return
         payload = self._rotation(product, account_idx)
         self.log(f"[{label}] Test Single Post: product '{product.get('name')}' "
-                 f"(id={pid}) — filling form, will STOP before Next/Publish",
-                 account_id=aid)
+                 f"(id={pid}) — filling form, then Next once, Publish once, "
+                 f"and the Selling page", account_id=aid)
         try:
             report = _spt.run_single_post_test(driver, payload)
         except Exception as exc:
@@ -1186,162 +1162,6 @@ class RunController:
                  f"{report.get('next_clicked')}", account_id=aid)
         self.log(f"[{label}] ================================",
                  account_id=aid)
-
-    # -- mode: publish_single (gated LIVE single publish, v0.2.100) ------------
-    def _publish_single_flow(self, account: dict, driver,
-                             account_idx: int) -> None:
-        """Publish exactly ONE listing, safely:
-
-        duplicate pre-check -> verified fill (the Test Single Post
-        machinery) -> driver.publish_filled_form (Next -> screen check ->
-        EXPLICIT dashboard approval -> ONE Publish click -> live verify).
-
-        One account per run. The browser stays open throughout. Without
-        fresh approval, Publish is never clicked.
-        """
-        from . import single_post_test as _spt
-        label = account["label"]
-        aid = account["id"]
-        # One listing per run: only the first account proceeds.
-        if getattr(self, "_publish_single_claimed", False):
-            self.log(f"[{label}] Publish ONE Listing: skipped — this run "
-                     f"publishes on one account only", account_id=aid)
-            return
-        self._publish_single_claimed = True
-        try:
-            driver.keep_open = True
-        except Exception:
-            pass
-        product_ids = list(self.cfg.product_ids or [])
-        if not product_ids:
-            self.log(f"[{label}] Publish ONE Listing: no product selected — "
-                     f"select a product first", level="error", account_id=aid)
-            return
-        pid = product_ids[0]
-        product = products_mod.get_product(self.db, pid)
-        if product is None:
-            self.log(f"[{label}] Publish ONE Listing: product {pid} not found",
-                     level="error", account_id=aid)
-            return
-        payload = self._rotation(product, account_idx)
-        title = payload.get("title") or ""
-        self.log(f"[{label}] Publish ONE Listing (LIVE): '{title}' — "
-                 f"duplicate check -> verified fill -> Next -> YOUR approval "
-                 f"-> one Publish click", account_id=aid)
-
-        def _norm(t) -> str:
-            return " ".join(str(t or "").lower().split())
-
-        # 1. Duplicate protection. A prior posted/uncertain DB record for
-        # this account+product blocks any new attempt (manual review first).
-        row = self.db.fetchone(
-            """SELECT COUNT(*) AS c FROM listings
-               WHERE account_id = ? AND product_id = ?
-                 AND status IN ('posted', 'uncertain')""", (aid, pid))
-        if row and row["c"]:
-            self.log(f"[{label}] MANUAL REVIEW: this product already has a "
-                     f"posted/uncertain record on this account — publish "
-                     f"stopped before filling. Review it first.",
-                     level="error", account_id=aid)
-            return
-        # Live check in THIS account's listings. A matching title alone is
-        # ambiguous, so any plausible match stops for manual review —
-        # never auto-publish, never silently skip.
-        try:
-            existing = driver.get_my_listings() or []
-        except Exception:
-            existing = []
-        matches = [li for li in existing
-                   if _norm(li.get("title")) and _norm(li.get("title")) == _norm(title)]
-        if matches:
-            self._record_posted(account, pid, payload,
-                                str(matches[0].get("id") or ""),
-                                status="manual_review")
-            self.log(f"[{label}] MANUAL REVIEW: a live listing with the "
-                     f"same title already exists (id={matches[0].get('id')}) "
-                     f"— publish stopped. If it is NOT this product, delete "
-                     f"or rename it and re-run.", level="error", account_id=aid)
-            return
-
-        # 2. Verified fill (same read-back machinery as Test Single Post).
-        try:
-            report = _spt.run_single_post_test(driver, payload)
-        except Exception as exc:
-            self.log(f"[{label}] Publish ONE Listing: fill crashed: "
-                     f"{type(exc).__name__}: {exc}", level="error",
-                     account_id=aid)
-            return
-        bad: list[str] = []
-        for r in report.get("fields", []):
-            if r.get("field") in ("next_button", "more_details"):
-                continue
-            exp = r.get("expected_value")
-            if exp is None or exp is False or str(exp).strip() == "":
-                continue  # not configured — nothing to verify
-            if r.get("status") != "VERIFIED":
-                bad.append(f"{r.get('field')}={r.get('status')}")
-        # Photos are mandatory when the product has images.
-        if payload.get("image_paths"):
-            prow = next((r for r in report.get("fields", [])
-                         if r.get("field") == "photos"), None)
-            if prow is None or prow.get("status") != "VERIFIED":
-                bad.append("photos=NOT_VERIFIED")
-        if bad:
-            self._record_failed(account, pid, payload,
-                                "verification failed: " + ", ".join(bad))
-            self.log(f"[{label}] Publish ONE Listing ABORTED — fields not "
-                     f"verified: {', '.join(bad)} — Publish NOT clicked",
-                     level="error", account_id=aid)
-            return
-        self.log(f"[{label}] All configured fields VERIFIED — proceeding "
-                 f"to Next", account_id=aid)
-
-        # 3. Approval gate + publish continuation. The driver clicks
-        # Publish at most once, and only if _approve() returns True.
-        def _approve() -> bool:
-            self.log(f"[{label}] READY TO PUBLISH: '{title}'"
-                     + (f" @ {payload.get('location')}"
-                        if payload.get("location") else "")
-                     + f" — inspect the browser, then click 'Approve "
-                       f"Publish' on the run page within 10 minutes. "
-                       f"No approval = NO publish.", account_id=aid)
-            ok = self.wait_publish_approval(self.publish_approval_timeout_s)
-            self.log(f"[{label}] Approval: "
-                     f"{'APPROVED' if ok else 'NOT approved (timeout/stop)'}",
-                     account_id=aid)
-            return ok
-
-        try:
-            result = driver.publish_filled_form(
-                getattr(driver, "_page", None), payload, _approve)
-        except Exception as exc:
-            self._record_failed(
-                account, pid, payload,
-                f"publish step crashed: {type(exc).__name__}: {exc}")
-            self.log(f"[{label}] Publish ONE Listing crashed: "
-                     f"{type(exc).__name__}: {exc}", level="error",
-                     account_id=aid)
-            return
-        status = (result or {}).get("status")
-        detail = (result or {}).get("detail", "")
-        step = (result or {}).get("step", "")
-        if status == "live":
-            self._record_posted(account, pid, payload,
-                                str(result.get("listing_id") or "posted"),
-                                status="posted")
-            self.log(f"[{label}] LISTING LIVE: id={result.get('listing_id')} "
-                     f"— {detail}", account_id=aid)
-        elif status == "uncertain":
-            self._record_posted(account, pid, payload, "", status="uncertain")
-            self.log(f"[{label}] UNCERTAIN — Publish was clicked ONCE but "
-                     f"live status could not be confirmed: {detail} — do "
-                     f"NOT re-run until you check this account's listings "
-                     f"manually.", level="error", account_id=aid)
-        else:
-            self._record_failed(account, pid, payload,
-                                f"publish aborted at {step}: {detail}")
-            self.log(f"[{label}] Publish ONE Listing aborted at {step}: "
-                     f"{detail}", level="error", account_id=aid)
 
     # -- mode: draft_publish (full two-phase flow) ----------------------------------
     def _draft_count(self, account_id: int) -> int:

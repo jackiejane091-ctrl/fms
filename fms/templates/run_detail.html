@@ -14,9 +14,6 @@
   {% if run.mode == 'download_images_titles' and run.live %}
   <button onclick="signal('download_start')" class="primary">Start Download</button>
   {% endif %}
-  {% if run.mode == 'publish_single' and run.live %}
-  <button onclick="signal('approve_publish')" class="primary">Approve Publish</button>
-  {% endif %}
   <a href="/logs?run_id={{ run.id }}">View logs</a>
 </div>
 
