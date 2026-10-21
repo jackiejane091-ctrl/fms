@@ -88,6 +88,7 @@ class _FakePage:
         self._links = [_FakeAnchor(h) for h in confirm_links]
         self.url = "https://www.facebook.com/marketplace/create/item"
         self.on_publish = None  # callable(page) fired by the click recorder
+        self.on_next = None     # callable(page) fired on a Next click
 
     def get_by_text(self, text, exact=False):
         return self.next_loc
@@ -122,6 +123,8 @@ class _ClickRecorder:
             rec.clicks.append(name)
             if name == "publish" and getattr(page, "on_publish", None):
                 page.on_publish(page)
+            if name == "next" and getattr(page, "on_next", None):
+                page.on_next(page)
             return True
 
         human_mod.human_click = fake_click
@@ -146,15 +149,18 @@ PAYLOAD = {"title": "Oak Table", "price": "5.00",
 
 # ------------------------------------------------------- layer 1: driver ---
 def t_driver_no_approval():
+    # v0.2.107: the fake page starts ON the final Publish screen, so the
+    # reuse path applies — no Next click happens before the gate either.
     page = _FakePage(body_text="Oak Table review")
     with _ClickRecorder() as rec:
         res = _driver().publish_filled_form(page, PAYLOAD, lambda: False)
     assert res["status"] == "aborted" and res["step"] == "approval", res
-    assert rec.clicks == ["next"], rec.clicks  # zero Publish clicks
+    assert rec.clicks == [], rec.clicks  # zero Publish clicks, zero Next
 
 
 def t_driver_next_disabled():
-    page = _FakePage(next_enabled=False)
+    # Next path only exists when the final Publish screen is NOT open.
+    page = _FakePage(next_enabled=False, publish_present=False)
     with _ClickRecorder() as rec:
         res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
     assert res["status"] == "aborted" and res["step"] == "next_disabled", res
@@ -185,6 +191,34 @@ def t_driver_uncertain_no_retry():
         res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
     assert res["status"] == "uncertain", res
     assert rec.clicks.count("publish") == 1, rec.clicks  # clicked once, never retried
+
+
+def t_driver_reuse_publish_screen_no_next():
+    # v0.2.107 headline case: the single-post test already clicked Next
+    # and landed on the final screen — Publish present, Next ALSO still
+    # resolvable. The workflow must reuse the screen: Next is never
+    # clicked again, approval still gates, Publish clicked once.
+    page = _FakePage(body_text="Oak Table review")
+    page.on_publish = lambda p: setattr(
+        p, "url", "https://www.facebook.com/marketplace/item/515151/")
+    with _ClickRecorder() as rec:
+        res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
+    assert res["status"] == "live" and res["listing_id"] == "515151", res
+    assert rec.clicks == ["publish"], rec.clicks  # no "next" at all
+
+
+def t_driver_form_screen_next_clicked_once():
+    # The form screen is still showing (no Publish control yet): Next
+    # may be clicked exactly once, which reveals the Publish screen;
+    # then approval gates the single Publish click as before.
+    page = _FakePage(publish_present=False, body_text="Oak Table review")
+    page.on_next = lambda p: setattr(p.pub_loc, "present", True)
+    page.on_publish = lambda p: setattr(
+        p, "url", "https://www.facebook.com/marketplace/item/626262/")
+    with _ClickRecorder() as rec:
+        res = _driver().publish_filled_form(page, PAYLOAD, lambda: True)
+    assert res["status"] == "live" and res["listing_id"] == "626262", res
+    assert rec.clicks == ["next", "publish"], rec.clicks
 
 
 # ------------------------------------------------------- layer 2: engine ---
@@ -390,6 +424,10 @@ def main() -> int:
     check("unexpected screen -> zero Publish clicks", t_driver_unexpected_screen)
     check("approved -> exactly one click, LIVE", t_driver_approved_one_click_live)
     check("uncertain result -> one click, no retry", t_driver_uncertain_no_retry)
+    check("publish screen already open -> Next NOT clicked again",
+          t_driver_reuse_publish_screen_no_next)
+    check("form screen -> Next clicked exactly once, then Publish",
+          t_driver_form_screen_next_clicked_once)
     print("\nLayer 2 — engine flow (MockDriver):")
     check("no approval (timeout) -> zero Publish calls", t_engine_no_approval)
     check("Stop during wait -> zero Publish calls", t_engine_timeout_and_stop)

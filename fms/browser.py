@@ -1524,52 +1524,60 @@ class PlaywrightDriver(BaseDriver):
             return None
 
     def publish_filled_form(self, page, payload: dict, approve_fn) -> dict:
-        """Continue a form ALREADY filled+verified (e.g. by the single-post
-        test) to at most ONE Publish click, gated by approve_fn().
+        """Continue an ALREADY filled form to at most ONE Publish click.
 
-        Flow: Next (must be enabled) -> click -> inspect the next screen
-        (the Publish control must be present) -> approve_fn() gate ->
-        re-validate Publish -> ONE click -> verify the listing is live.
-
-        Returns {"status": "live"|"uncertain"|"aborted", "step": str,
-        "listing_id": str|None, "detail": str}. Publish is clicked at most
-        once, only after approval, and is NEVER retried automatically.
+        The single-post test may already have clicked Next and landed on the
+        final audience/review screen. If Publish is already visible, do not
+        click Next a second time. Otherwise, require Next to be enabled, click
+        it once, then inspect the final screen. Publishing always requires the
+        existing fresh explicit approval callback, and is never retried.
         """
         def _abort(step: str, detail: str) -> dict:
             return {"status": "aborted", "step": step,
                     "listing_id": None, "detail": detail}
 
-        # 1. Next must exist and be enabled (a disabled Next = incomplete form).
+        # 1. Reuse the final screen if the single-post test already navigated
+        # there. This avoids clicking Next twice and leaving the Publish page.
+        pub = None
         try:
-            nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
-            nxt.wait_for(timeout=15000)
-            try:
-                nxt.wait_for(state="enabled", timeout=10000)
-            except Exception:
-                shot = self._snap(page, "next-disabled")
-                return _abort(
-                    "next_disabled",
-                    "Next is disabled (form incomplete) — Publish NOT clicked"
-                    + (f" | Screenshot: {shot}" if shot else ""))
-        except Exception as exc:
-            return _abort("next_missing",
-                          f"Next button not found: {type(exc).__name__} "
-                          f"— Publish NOT clicked")
-        human.human_click(page, nxt)
-        human.human_pause(2000, 3500)
-
-        # 2. Inspect the screen after Next: the Publish control must be
-        # present. Anything else is an unexpected screen — stop safely.
-        try:
-            pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
-            pub.wait_for(timeout=15000)
+            candidate = S.to_playwright(page, S.F_PUBLISH_BUTTON)
+            candidate.wait_for(timeout=2500)
+            pub = candidate
         except Exception:
-            shot = self._snap(page, "publish-screen")
-            return _abort(
-                "publish_screen",
-                "Publish button not found after Next — unexpected screen, "
-                "nothing published"
-                + (f" | Screenshot: {shot}" if shot else ""))
+            pub = None
+
+        if pub is None:
+            # Final Publish control is not present yet: Next must exist/enabled.
+            try:
+                nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
+                nxt.wait_for(timeout=15000)
+                try:
+                    nxt.wait_for(state="enabled", timeout=10000)
+                except Exception:
+                    shot = self._snap(page, "next-disabled")
+                    return _abort(
+                        "next_disabled",
+                        "Next is disabled (form incomplete) — Publish NOT clicked"
+                        + (f" | Screenshot: {shot}" if shot else ""))
+            except Exception as exc:
+                return _abort("next_missing",
+                              f"Neither final Publish screen nor Next button "
+                              f"was confirmed: {type(exc).__name__} "
+                              "— Publish NOT clicked")
+            human.human_click(page, nxt)
+            human.human_pause(2000, 3500)
+
+            try:
+                pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
+                pub.wait_for(timeout=15000)
+            except Exception:
+                shot = self._snap(page, "publish-screen")
+                return _abort(
+                    "publish_screen",
+                    "Publish button not found after Next — unexpected screen, "
+                    "nothing published"
+                    + (f" | Screenshot: {shot}" if shot else ""))
+
         # Screen summary so the approver's log shows what was on screen.
         screen_note = "screen text unreadable"
         try:
@@ -1581,7 +1589,7 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             pass
 
-        # 3. EXPLICIT APPROVAL GATE — no approval, no click. Ever.
+        # Explicit approval remains required for a live Publish click.
         try:
             approved = bool(approve_fn())
         except Exception:
@@ -1591,8 +1599,8 @@ class PlaywrightDriver(BaseDriver):
                           f"No approval received — Publish NOT clicked "
                           f"({screen_note})")
 
-        # 4. Re-validate the Publish control immediately before the ONE
-        # click (the screen may have changed while awaiting approval).
+        # Re-validate the actual Publish control immediately before the ONE
+        # click; the screen may have changed while awaiting approval.
         try:
             pub = S.to_playwright(page, S.F_PUBLISH_BUTTON)
             pub.wait_for(state="enabled", timeout=5000)
@@ -1600,10 +1608,10 @@ class PlaywrightDriver(BaseDriver):
             return _abort("publish_screen_changed",
                           "Publish button gone/disabled after approval — "
                           "Publish NOT clicked")
-        human.human_click(page, pub)  # <-- the single Publish click
+        human.human_click(page, pub)
         human.human_pause(3000, 6000)
 
-        # 5. Verify the listing is actually live; a click proves nothing.
+        # Verify live result. A click alone does not prove publication.
         url = ""
         try:
             url = page.url or ""
