@@ -1,7 +1,7 @@
 """Experimental one-product Marketplace form test.
 
-This module intentionally does NOT publish, click Next, save a draft, or alter
-product data. It accepts the already-built payload and an already-started
+This module clicks Next once after successful field verification, then stops.
+It never clicks Publish, saves a draft, or alters product data. It accepts the already-built payload and an already-started
 PlaywrightDriver instance from FMS. The GUI/integration layer should call
 run_single_post_test(driver, payload) on a dedicated test action.
 
@@ -265,7 +265,7 @@ def _more_details_state(page) -> tuple[str, Any]:
 
 
 def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
-    """Fill one listing form and stop before Next/Publish.
+    """Fill one listing form, verify fields, click Next once, then stop before Publish.
 
     Args:
         driver: a logged-in FMS PlaywrightDriver instance. Its browser/session
@@ -494,14 +494,67 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             _record(results, "hide_from_friends", payload.get("hide_from_friends"), "",
                     "SKIPPED", "Setting is not explicitly enabled")
 
-        # Deliberately DO NOT click Next, Publish, Save, or submit any form.
+        # Click Next only after every configured field has been verified.
+        # This test must stop on the next screen and must NEVER click Publish.
+        blocking_statuses = {"FAILED", "UNCERTAIN"}
+        blockers = []
+        for row in results:
+            if row["status"] in blocking_statuses:
+                # Informational section-state rows are not field values; all other
+                # FAILED/UNCERTAIN results block navigation safely.
+                blockers.append(f"{row['field']}={row['status']}")
+        if blockers:
+            try:
+                next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
+                next_state = "enabled" if next_button.is_enabled(timeout=1500) else "disabled"
+            except Exception:
+                next_state = "not found"
+            _record(results, "next_button", "not clicked", next_state, "FAILED",
+                    "Required verification did not pass; stopped before navigation: " + ", ".join(blockers))
+            return _report(started, results, page)
+
         try:
             next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
-            next_state = "enabled" if next_button.is_enabled(timeout=1500) else "disabled"
-        except Exception:
-            next_state = "not found"
-        _record(results, "next_button", "not clicked", next_state, "INFO",
-                "Safety guard: experimental test never clicks Next or Publish")
+            next_button.wait_for(state="visible", timeout=5000)
+            if not next_button.is_enabled(timeout=2000):
+                _record(results, "next_button", "click once", "disabled", "FAILED",
+                        "Next button is disabled; stopped safely")
+                return _report(started, results, page)
+            url_before = page.url
+            next_button.click(timeout=5000)
+            # Facebook may use SPA navigation without changing the URL. Verify
+            # a real transition by URL change, Next disappearing, or Publish
+            # becoming visible; do not click any button on the destination screen.
+            transitioned = False
+            try:
+                page.wait_for_function(
+                    """(beforeUrl) => {
+                        if (location.href !== beforeUrl) return true;
+                        const visible = (el) => {
+                          if (!el) return false;
+                          const r = el.getBoundingClientRect();
+                          const s = getComputedStyle(el);
+                          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                        };
+                        const buttons = [...document.querySelectorAll('button,[role=button]')];
+                        const next = buttons.find(e => /\\bnext\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
+                        const publish = buttons.find(e => /\\bpublish\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
+                        return (next && !visible(next)) || visible(publish);
+                    }""", arg=url_before, timeout=10000)
+                transitioned = True
+            except Exception:
+                # Some flows retain a visible Next button during a delayed render;
+                # do not infer success merely because click() returned.
+                transitioned = page.url != url_before
+            if transitioned:
+                _record(results, "next_button", "clicked once", "navigation verified", "VERIFIED",
+                        "Next clicked after field verification; stopped on destination screen; Publish not clicked")
+            else:
+                _record(results, "next_button", "clicked once", "transition not confirmed", "UNCERTAIN",
+                        "Click was sent, but destination-screen transition could not be verified; Publish not clicked")
+        except Exception as exc:
+            _record(results, "next_button", "click once", "failed", "FAILED",
+                    f"{type(exc).__name__}: {str(exc)[:180]}; Publish not clicked")
         return _report(started, results, page)
     except Exception as exc:
         _record(results, "fatal", "complete form test", "", "FAILED",
@@ -523,7 +576,7 @@ def _report(started: str, results: list[dict[str, str]], page=None) -> dict[str,
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
         "page_url": current_url,
         "publish_attempted": False,
-        "next_clicked": False,
+        "next_clicked": any(row["field"] == "next_button" and row["expected_value"] == "clicked once" and row["status"] in {"VERIFIED", "UNCERTAIN", "FAILED"} for row in results),
         "summary": counts,
         "fields": results,
     }
