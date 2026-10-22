@@ -21,6 +21,18 @@ from typing import Any
 from . import human, selectors as S
 
 
+def _pause_checkpoint(payload: dict) -> None:
+    """Pause only at a safe boundary between Test Single Post UI phases.
+
+    The callback is the same run-controller checkpoint used by production
+    posting. Each field/action is allowed to finish; the next checkpoint
+    blocks until Continue, or raises on Stop.
+    """
+    callback = payload.get("_pause_checkpoint")
+    if callable(callback):
+        callback()
+
+
 def _parse_amount(text: Any) -> float | None:
     """Extract a numeric amount from currency-formatted text like "£5" or "5.00"."""
     cleaned = re.sub(r"[^\d.\-]", "", str(text or ""))
@@ -281,10 +293,12 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
     results: list[dict[str, str]] = []
     page = None
     try:
+        _pause_checkpoint(payload)
         driver._ensure()
         page = driver._page
         if page is None:
             raise RuntimeError("FMS driver did not provide an active page")
+        _pause_checkpoint(payload)
         ok, detail = driver._open_create_item_form(page)
         if not ok:
             _record(results, "form_open", True, detail, "FAILED", "Create form did not open")
@@ -292,15 +306,20 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
 
         # Keep the existing working photo upload behavior isolated from the
         # experimental field logic.
+        _pause_checkpoint(payload)
         _upload_photos_unchanged(page, payload, results)
 
+        _pause_checkpoint(payload)
         _fill_text(page, S.F_TITLE, "title", payload.get("title"), results)
+        _pause_checkpoint(payload)
         price = payload.get("price")
         _fill_text(page, S.F_PRICE, "price",
                    ("{:.2f}".format(float(price)) if price not in (None, "") else None), results,
                    numeric_compare=True)
+        _pause_checkpoint(payload)
         _select_option(page, S.F_CATEGORY, payload.get("category"), "category", results,
                        exact=False, production_sequence=True)
+        _pause_checkpoint(payload)
         _select_option(page, S.F_CONDITION_FIELD, payload.get("condition"), "condition", results,
                        exact=True)
 
@@ -331,6 +350,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 delivery_values = [delivery_values]
 
         # F-A: read the toggle's current aria-expanded BEFORE deciding.
+        _pause_checkpoint(payload)
         _md_state, _md_btn = _more_details_state(page)
         if _md_state == "true":
             # Already open — clicking would COLLAPSE it, so do NOT click.
@@ -372,9 +392,11 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                      if expanded_verified else "More details expansion not verified"))
 
         if expanded_verified:
+            _pause_checkpoint(payload)
             _fill_text(page, S.F_DESCRIPTION, "description", payload.get("description"), results)
 
             if availability_label:
+                _pause_checkpoint(payload)
                 _select_option(page, S.F_AVAILABILITY_FIELD, availability_label,
                                "availability", results, exact=False,
                                production_sequence=True)
@@ -386,6 +408,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                         "No saved value configured")
 
             if location and str(location).strip():
+                _pause_checkpoint(payload)
                 try:
                     _loc_ok, _loc_detail = driver._select_location(
                         page, str(location).strip())
@@ -413,6 +436,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 _record(results, "delivery_options", None, "", "SKIPPED",
                         "No delivery options configured")
             for option_key in delivery_values:
+                _pause_checkpoint(payload)
                 selector = delivery_selectors.get(option_key)
                 if not selector:
                     _record(results, f"delivery:{option_key}", option_key, "", "SKIPPED",
@@ -480,6 +504,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         # Hide-from-friends is a global run setting, not product data. Apply only
         # when explicitly true in the supplied payload, and never toggle OFF.
         if payload.get("hide_from_friends") is True:
+            _pause_checkpoint(payload)
             try:
                 hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
                 hff.wait_for(state="visible", timeout=6000)
@@ -501,6 +526,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         # open, use it directly; otherwise click Next exactly once when
         # Facebook enabled it. Then click the final Publish button exactly
         # once and open the Selling page. No approval gate; never retry.
+        _pause_checkpoint(payload)
         try:
             S.to_playwright(page, S.F_PUBLISH_BUTTON).wait_for(state="visible", timeout=1800)
             _record(results, "next_button", "not needed", "final screen already open", "SKIPPED",
@@ -557,6 +583,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             _record(results, "publish_click", "one click", "not attempted", "FAILED",
                     f"Publish button did not appear: {type(exc).__name__}")
             return _report(started, results, page)
+        _pause_checkpoint(payload)
         try:
             human.human_click(page, publish_button)
             _record(results, "publish_click", "one click", "clicked", "ATTEMPTED",
@@ -566,6 +593,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                     f"{type(exc).__name__}: {str(exc)[:180]}")
             return _report(started, results, page)
         human.human_pause(4000, 6000)
+        _pause_checkpoint(payload)
         selling_url = "https://www.facebook.com/marketplace/you/selling/"
         try:
             page.goto(selling_url, wait_until="domcontentloaded", timeout=20000)

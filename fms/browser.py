@@ -494,9 +494,30 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             pass
 
+    def _bind_pause_checkpoint(self, page=None) -> None:
+        """Bind the run's Pause All callback to a page for shared UI helpers."""
+        page = page or self._page
+        callback = getattr(self, "_pause_checkpoint_callback", None)
+        if page is not None and callable(callback):
+            try:
+                setattr(page, "_fms_pause_checkpoint", callback)
+            except Exception:
+                pass
+
+    def _pause_checkpoint(self) -> None:
+        """Wait at a safe UI-action boundary when the owning run is paused."""
+        self._bind_pause_checkpoint()
+        callback = getattr(self, "_pause_checkpoint_callback", None)
+        if callable(callback):
+            callback()
+
     def _ensure(self) -> None:
         if self._page is None:
             self._launch()
+        self._bind_pause_checkpoint()
+        # Every public browser operation enters through _ensure; this gives
+        # all modes a common checkpoint even when they use separate workflows.
+        self._pause_checkpoint()
 
     def prepare_listing_tabs(self, count: int = 1) -> int:
         """Prepare a finite pool of logged-in tabs for sequential listing work.
@@ -522,6 +543,8 @@ class PlaywrightDriver(BaseDriver):
             except Exception:
                 break
         self._listing_tabs = existing[:requested] or [self._page]
+        for tab in self._listing_tabs:
+            self._bind_pause_checkpoint(tab)
         for idx, tab in enumerate(self._listing_tabs):
             try:
                 if not tab.url.startswith("https://www.facebook.com/marketplace/create/item"):
@@ -548,6 +571,8 @@ class PlaywrightDriver(BaseDriver):
         self._listing_tabs = tabs
         self._listing_tab_index = int(index) % len(tabs)
         self._page = tabs[self._listing_tab_index]
+        self._bind_pause_checkpoint(self._page)
+        self._pause_checkpoint()
         try:
             self._page.bring_to_front()
         except Exception:
@@ -1843,12 +1868,16 @@ class PlaywrightDriver(BaseDriver):
         page = self._page
         assert page is not None
         try:
+            self._pause_checkpoint()
             page.goto(f"https://www.facebook.com/marketplace/item/{listing_id}/",
                       wait_until="domcontentloaded")
+            self._pause_checkpoint()
             human.human_pause(1500, 3000)
             human.human_click(page, S.to_playwright(page, S.F_DELETE_LISTING_BUTTON))
+            self._pause_checkpoint()
             human.human_pause(1000, 2000)
             human.human_click(page, S.to_playwright(page, S.F_CONFIRM_DELETE_BUTTON))
+            self._pause_checkpoint()
             human.human_pause(2500, 4000)
             return True
         except Exception:
@@ -1910,10 +1939,13 @@ class PlaywrightDriver(BaseDriver):
         page = self._page
         assert page is not None
         try:
+            self._pause_checkpoint()
             page.goto(f"https://www.facebook.com/marketplace/item/{listing_id}/",
                       wait_until="domcontentloaded")
+            self._pause_checkpoint()
             human.human_pause(1500, 3000)
             human.human_click(page, S.to_playwright(page, S.F_RENEW_BUTTON))
+            self._pause_checkpoint()
             human.human_pause(2500, 4000)
             return True
         except Exception:
@@ -2012,6 +2044,7 @@ class PlaywrightDriver(BaseDriver):
         end = time.time() + max(0.0, minutes) * 60.0
         n = 0
         while time.time() < end:
+            self._pause_checkpoint()
             n += 1
             human.human_scroll(page)
             if n % 3 == 0:  # occasionally pause longer, like reading
@@ -2042,7 +2075,10 @@ class PlaywrightDriver(BaseDriver):
                       wait_until="domcontentloaded")
         except Exception:
             return
-        time.sleep(max(0.0, seconds))
+        end = time.time() + max(0.0, seconds)
+        while time.time() < end:
+            self._pause_checkpoint()
+            time.sleep(min(0.2, max(0.0, end - time.time())))
 
     def scroll_messages(self, seconds: float,
                         probs: dict | None = None) -> None:
@@ -2056,8 +2092,12 @@ class PlaywrightDriver(BaseDriver):
             return
         end = time.time() + max(0.0, seconds)
         while time.time() < end:
+            self._pause_checkpoint()
             human.human_scroll(page, 300)
-            time.sleep(2)
+            # Short sleeps keep Pause All responsive without interrupting scroll.
+            for _ in range(10):
+                self._pause_checkpoint()
+                time.sleep(0.2)
 
     def goto_messages(self) -> None:
         self._ensure()

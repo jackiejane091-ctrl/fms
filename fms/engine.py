@@ -791,6 +791,15 @@ class RunController:
             try:
                 driver = self.driver_factory(_driver_creds(self.db, self.cfg,
                                                            account))
+                # Shared Pause All callback for browser tasks that contain their
+                # own cooperative action loops (scrolling, notifications, etc.).
+                try:
+                    driver._pause_checkpoint_callback = self._wait_if_paused
+                    binder = getattr(driver, "_bind_pause_checkpoint", None)
+                    if callable(binder):
+                        binder()
+                except Exception:
+                    pass
                 # v0.2.49: instant Failed the moment the user closes the
                 # browser window (no waiting for the worker's next call).
                 try:
@@ -2332,6 +2341,13 @@ class ScriptRunController:
         label = account["label"]
         creds = _driver_creds(self.db, self.cfg, account)
         driver = self.driver_factory(creds)
+        try:
+            driver._pause_checkpoint_callback = self._wait_if_paused
+            binder = getattr(driver, "_bind_pause_checkpoint", None)
+            if callable(binder):
+                binder()
+        except Exception:
+            pass
         try:
             if not driver.login():
                 # v0.2.39: no permanent locking — just log and mark done.

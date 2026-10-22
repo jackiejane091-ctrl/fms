@@ -206,9 +206,11 @@ def type_text(
     text = text or ""
     if cfg.mode == "fast_js":
         js_fill(locator, text)
+        _pause_checkpoint(locator)
         return "fast_js"
     if cfg.mode == "clipboard":
         clipboard_paste(locator, text)
+        _pause_checkpoint(locator)
         return "clipboard"
     # human mode
     if hybrid_ok and len(text) > cfg.hybrid_threshold_chars:
@@ -217,7 +219,28 @@ def type_text(
         _paste(locator, head + text[HYBRID_TYPE_CHARS:])
     else:
         human_type_cfg(locator, text, cfg)
+    _pause_checkpoint(locator)
     return "human"
+
+
+def _pause_checkpoint(target=None) -> None:
+    """Cooperative Pause All hook at safe boundaries in human UI helpers.
+
+    Real pages receive this callback from PlaywrightDriver. Test doubles and
+    standalone use remain unchanged when no callback is attached.
+    """
+    page = target
+    if page is not None and not hasattr(page, "keyboard"):
+        try:
+            page = target.page
+        except Exception:
+            pass
+    try:
+        callback = getattr(page, "_fms_pause_checkpoint", None)
+        if callable(callback):
+            callback()
+    except AttributeError:
+        pass
 
 
 def rand_delay(a_ms: float, b_ms: float) -> None:
@@ -352,12 +375,14 @@ def human_move(page, x: float, y: float, steps: int | None = None) -> None:
 
 def human_click(page, locator) -> None:
     """Move to the element's center with a curve, then click with a tiny delay."""
+    _pause_checkpoint(page)
     # v0.2.94: UNIVERSAL scroll (user instruction).
     # Wherever needed, scroll. Not per-field. One place, all fields.
     try:
         locator.scroll_into_view_if_needed(timeout=2000)
     except Exception:
         pass
+    _pause_checkpoint(page)
     try:
         box = locator.bounding_box()
     except Exception:
@@ -370,13 +395,16 @@ def human_click(page, locator) -> None:
         try:
             page.mouse.click(x, y)
             _save_pos(page, x, y)
+            _pause_checkpoint(page)
             return
         except Exception:
             pass
     locator.click(delay=random.randint(20, 90))
+    _pause_checkpoint(page)
 
 
 def human_scroll(page, amount: int | None = None) -> None:
+    _pause_checkpoint(page)
     amount = amount if amount is not None else random.randint(250, 700)
     try:
         page.mouse.wheel(0, amount)
@@ -385,6 +413,7 @@ def human_scroll(page, amount: int | None = None) -> None:
             page.evaluate(f"window.scrollBy(0, {amount})")
         except Exception:
             pass
+    _pause_checkpoint(page)
     rand_delay(300, 900)
 
 
