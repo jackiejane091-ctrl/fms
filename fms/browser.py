@@ -236,6 +236,8 @@ class PlaywrightDriver(BaseDriver):
         self._browser = None
         self._context = None
         self._page = None
+        self._listing_tabs = []
+        self._listing_tab_index = 0
         # v0.2.49: set by the engine — called the instant the browser window
         # is closed so the account flips to Failed immediately.
         self._on_close_callback = None
@@ -495,6 +497,62 @@ class PlaywrightDriver(BaseDriver):
     def _ensure(self) -> None:
         if self._page is None:
             self._launch()
+
+    def prepare_listing_tabs(self, count: int = 1) -> int:
+        """Prepare a finite pool of logged-in tabs for sequential listing work.
+
+        Tabs are reused one at a time; this method does not publish concurrently.
+        The create-item page is loaded in each tab before the queue starts.
+        """
+        self._ensure()
+        if self._context is None:
+            return 1
+        try:
+            requested = max(1, int(count or 1))
+        except (TypeError, ValueError):
+            requested = 1
+        # Avoid accidentally exhausting memory/browser resources from a typo.
+        requested = min(requested, 20)
+        existing = [pg for pg in (self._listing_tabs or []) if not pg.is_closed()]
+        if not existing:
+            existing = [self._page] if self._page is not None and not self._page.is_closed() else []
+        while len(existing) < requested:
+            try:
+                existing.append(self._context.new_page())
+            except Exception:
+                break
+        self._listing_tabs = existing[:requested] or [self._page]
+        for idx, tab in enumerate(self._listing_tabs):
+            try:
+                if not tab.url.startswith("https://www.facebook.com/marketplace/create/item"):
+                    tab.goto(S.MKT_CREATE_ITEM_URL, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    tab.wait_for_load_state("load", timeout=15000)
+                except Exception:
+                    # Facebook can keep subresources active; DOM readiness is enough
+                    # to begin the existing form-opening routine.
+                    tab.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception as exc:
+                print(f"[Tabs Without Limit] tab {idx + 1} pre-load warning: {type(exc).__name__}: {str(exc)[:120]}", flush=True)
+        self.activate_listing_tab(0)
+        return len(self._listing_tabs)
+
+    def activate_listing_tab(self, index: int) -> bool:
+        """Select one prepared tab; callers must process listings sequentially."""
+        self._ensure()
+        tabs = [pg for pg in (self._listing_tabs or []) if not pg.is_closed()]
+        if not tabs:
+            tabs = [self._page] if self._page is not None and not self._page.is_closed() else []
+        if not tabs:
+            return False
+        self._listing_tabs = tabs
+        self._listing_tab_index = int(index) % len(tabs)
+        self._page = tabs[self._listing_tab_index]
+        try:
+            self._page.bring_to_front()
+        except Exception:
+            pass
+        return True
 
     # -- login -----------------------------------------------------------------
     def _is_logged_in(self) -> bool:

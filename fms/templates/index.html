@@ -173,7 +173,7 @@ async function _doStartRun(){
     max_parallel_browsers: parseInt(s.max_parallel_browsers) || 5,
     account_start_gap_s: parseFloat(s.account_start_gap_s) || 5,
     retry_count: parseInt(s.retry_count) || 3,
-    tabs_without_limit: parseInt(s.tabs_without_limit) || 2,
+    tabs_without_limit: (s.tabs_without_limit === undefined || String(s.tabs_without_limit).trim() === '') ? 1 : Math.max(1, parseInt(s.tabs_without_limit, 10) || 1),
     tabs_draft_publish: parseInt(s.tabs_draft_publish) || 6,
     typing_mode: s.typing_mode || 'human',
     typing_preset: s.typing_preset || 'normal',

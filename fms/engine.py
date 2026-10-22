@@ -129,7 +129,7 @@ class RunConfig:
     account_start_gap_s: float = 5.0  # delay between starting accounts in a wave
     max_parallel_browsers: int = 5   # hard cap on parallel browser contexts
     retry_count: int = 3             # retries per account before giving up
-    tabs_without_limit: int = 2      # tab group size for the limit-bypass path
+    tabs_without_limit: int = 2      # total reusable tabs; sequential publishing only
     tabs_draft_publish: int = 6      # draft batch size for draft & publish
     action_urls: list[str] = field(default_factory=list)  # scrap_data / download_images_titles
     scrap_include_description: bool = True   # scrap_data: also copy description
@@ -1082,14 +1082,24 @@ class RunController:
                 driver.human_warmup()
             except Exception:
                 pass
-        # Tabs Without Limit: the quota is worked in tab-groups of N, like the
-        # real tool opening N tabs at a time for the limit-bypass path.
-        chunk = max(1, int(self.cfg.tabs_without_limit))
+        # Tabs Without Limit is a finite tab pool for time-saving, sequential
+        # work. A listing is processed completely before the next tab is used.
+        try:
+            tab_count = max(1, int(self.cfg.tabs_without_limit or 1))
+        except (TypeError, ValueError):
+            tab_count = 1
+        tab_count = min(tab_count, 20)
+        if hasattr(driver, "prepare_listing_tabs"):
+            prepared = driver.prepare_listing_tabs(tab_count)
+            tab_count = max(1, int(prepared or 1))
+            self.log(f"[{label}] prepared {tab_count} listing tab(s); sequential mode",
+                     account_id=account["id"])
         for i in range(remaining):
-            if remaining > chunk and i % chunk == 0:
-                self.log(f"[{label}] tab group: "
-                         f"{min(chunk, remaining - i)} tab(s)",
-                         account_id=account["id"])
+            if hasattr(driver, "activate_listing_tab"):
+                driver.activate_listing_tab(i % tab_count)
+            if remaining > tab_count and i % tab_count == 0:
+                self.log(f"[{label}] tab cycle: listing {i + 1}/{remaining}, "
+                         f"tab 1/{tab_count}", account_id=account["id"])
             self._wait_if_paused()
             pid, product = self._next_product(account_idx)
             if product is None:
@@ -1131,6 +1141,16 @@ class RunController:
             driver.keep_open = True
         except Exception:
             pass
+        try:
+            tab_count = max(1, int(self.cfg.tabs_without_limit or 1))
+        except (TypeError, ValueError):
+            tab_count = 1
+        tab_count = min(tab_count, 20)
+        if hasattr(driver, "prepare_listing_tabs"):
+            prepared = driver.prepare_listing_tabs(tab_count)
+            tab_count = max(1, int(prepared or 1))
+            self.log(f"[{label}] prepared {tab_count} listing tab(s); sequential mode",
+                     account_id=aid)
 
         product_ids = list(self.cfg.product_ids or [])
         if not product_ids:
@@ -1140,6 +1160,7 @@ class RunController:
 
         total_targets = 0
         total_attempts = 0
+        tab_sequence_index = 0
         for pid in product_ids:
             self._wait_if_paused()
             product = products_mod.get_product(self.db, pid)
@@ -1159,6 +1180,10 @@ class RunController:
 
             for listing_index in range(target):
                 self._wait_if_paused()
+                if hasattr(driver, "activate_listing_tab"):
+                    # Round-robin tabs; one listing finishes before the next starts.
+                    driver.activate_listing_tab(tab_sequence_index % tab_count)
+                tab_sequence_index += 1
                 # Re-fetch product for each listing so current saved settings
                 # are used, then build its own payload (including price range).
                 product = products_mod.get_product(self.db, pid)
