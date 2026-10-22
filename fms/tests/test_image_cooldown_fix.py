@@ -6,7 +6,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from fms.engine import _Rotator, _record_published_image_usage
+from fms.engine import (_Rotator, _record_published_image_usage,
+                        _record_test_single_post_images_if_confirmed)
 
 
 class FakeDB:
@@ -84,6 +85,19 @@ class ImageCooldownFixTests(unittest.TestCase):
         db.usage[(101, canonical)] = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat(timespec="seconds")
         payload = rotator.payload(p, config(), as_draft=False, account_id=101)
         self.assertEqual(payload["image_paths"], ["/tmp/main-a.jpg"])
+
+    def test_test_single_post_records_only_when_success_is_confirmed(self):
+        db = FakeDB()
+        payload = {"image_paths": ["/tmp/tsp-main.jpg", "/tmp/tsp-extra.jpg"]}
+        # A Publish click/attempt without success confirmation must not record.
+        self.assertFalse(_record_test_single_post_images_if_confirmed(
+            db, 101, None, payload, {"publish_attempted": True}))
+        self.assertEqual(db.usage, {})
+        # Confirmed success records every selected image for this account.
+        self.assertTrue(_record_test_single_post_images_if_confirmed(
+            db, 101, None, payload, {"publish_success_confirmed": True}))
+        self.assertEqual(len(db.usage), 2)
+        self.assertTrue(all(account_id == 101 for account_id, _ in db.usage))
 
     def test_scraped_item_images_obey_cooldown_without_premature_recording(self):
         db = FakeDB()

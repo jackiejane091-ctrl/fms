@@ -386,6 +386,17 @@ def _record_published_image_usage(db: Database, account_id: int, product_id: int
             products_mod.record_image_usage(db, int(product_id), [path])
 
 
+def _record_test_single_post_images_if_confirmed(
+        db: Database, account_id: int, product_id: int | None,
+        payload: dict, report: dict) -> bool:
+    """Record Test Single Post photos only when Facebook success is confirmed."""
+    if report.get("publish_success_confirmed") is not True:
+        return False
+    _record_published_image_usage(
+        db, account_id, product_id, payload.get("image_paths"))
+    return True
+
+
 class _Rotator:
     """Per-run rotation state: titles, descriptions, locations, images.
 
@@ -1300,6 +1311,29 @@ class RunController:
                     self.log(f"[{label}] Product '{product_name}' listing {listing_index + 1}/{target} crashed: {type(exc).__name__}: {exc}",
                              level="error", account_id=aid)
                     break
+
+                # v0.2.117 follow-up: Test Single Post must update the same
+                # per-account cooldown only when Facebook success is confirmed.
+                # A Publish click attempt by itself is not proof of publication.
+                if report.get("publish_success_confirmed") is True:
+                    try:
+                        _record_test_single_post_images_if_confirmed(
+                            self.db, int(aid), int(pid), payload, report)
+                        self.log(
+                            f"[{label}] Test Single Post: confirmed publication; "
+                            f"recorded {len(payload.get('image_paths') or [])} image(s) "
+                            f"for the {self._rotator._cooldown_days()}-day account cooldown",
+                            account_id=aid)
+                    except Exception as exc:
+                        self.log(
+                            f"[{label}] Test Single Post: publication was confirmed "
+                            f"but image cooldown recording failed: {type(exc).__name__}: {exc}",
+                            level="error", account_id=aid)
+                else:
+                    self.log(
+                        f"[{label}] Test Single Post: publication not confirmed; "
+                        "image cooldown history was not changed",
+                        level="warning", account_id=aid)
 
                 for row in report.get("fields", []):
                     status = row.get("status", "?")

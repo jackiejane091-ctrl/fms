@@ -273,6 +273,33 @@ def t_unconfirmed_transition_is_uncertain():
     assert report["publish_attempted"] is False, report["publish_attempted"]
 
 
+
+
+def t_explicit_facebook_success_is_reported():
+    html = FORM_HTML + NEXT_OK_JS
+    old = "window.__pubClicks++; fetch('https://fixture.local/click/pub').catch(function(){});"
+    new = ("window.__pubClicks++; "
+           "document.body.innerText = 'Your listing has been published'; "
+           "fetch('https://fixture.local/click/pub').catch(function(){});")
+    assert old in html
+    html = html.replace(old, new, 1)
+    report, clicks = _run(html, dict(PAYLOAD))
+    assert clicks == {"next": 1, "pub": 1}, clicks
+    assert report["publish_attempted"] is True
+    assert report["publish_success_confirmed"] is True, report
+    confirmation = _rows(report, "publish_confirmation")
+    assert confirmation and confirmation[0]["status"] == "VERIFIED", confirmation
+
+
+def t_publish_click_without_success_signal_is_not_confirmed():
+    report, clicks = _run(FORM_HTML + NEXT_OK_JS, dict(PAYLOAD))
+    assert clicks == {"next": 1, "pub": 1}, clicks
+    assert report["publish_attempted"] is True
+    assert report["publish_success_confirmed"] is False, report
+    confirmation = _rows(report, "publish_confirmation")
+    assert confirmation and confirmation[0]["status"] == "NOT_CONFIRMED", confirmation
+
+
 def main() -> int:
     print("FMS Test Single Post navigation tests (local Chromium)\n")
     check("happy: Next once, Publish once, Selling page reached",
@@ -283,6 +310,10 @@ def main() -> int:
           t_next_disabled_never_clicked)
     check("unconfirmed: no Publish button -> FAILED, Publish never clicked",
           t_unconfirmed_transition_is_uncertain)
+    check("explicit Facebook success is reported",
+          t_explicit_facebook_success_is_reported)
+    check("Publish click alone is not treated as success",
+          t_publish_click_without_success_signal_is_not_confirmed)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

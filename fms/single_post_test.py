@@ -278,6 +278,96 @@ def _more_details_state(page) -> tuple[str, Any]:
     return "unknown", None
 
 
+
+
+def _snapshot_existing_listing_ids(driver) -> set[str] | None:
+    """Best-effort baseline of listing IDs, using a temporary tab.
+
+    This lets the post-publish check distinguish a newly created listing from
+    an older listing that happens to have the same title. Failure to obtain a
+    baseline is non-fatal; in that case only an explicit Facebook success
+    signal or a new listing-item URL can confirm success.
+    """
+    context = getattr(driver, "_context", None)
+    if context is None:
+        return None
+    probe = None
+    try:
+        probe = context.new_page()
+        probe.goto("https://www.facebook.com/marketplace/you/selling/",
+                   wait_until="domcontentloaded", timeout=12000)
+        try:
+            probe.wait_for_timeout(1400)
+        except Exception:
+            pass
+        ids: set[str] = set()
+        for link in probe.locator("a[href*='/marketplace/item/']").all()[:100]:
+            try:
+                href = link.get_attribute("href") or ""
+                match = re.search(r"/marketplace/item/([^/?#]+)", href)
+                if match:
+                    ids.add(match.group(1))
+            except Exception:
+                continue
+        # An empty set can mean Facebook did not render listing cards yet;
+        # treat that as an unavailable baseline rather than risking a false
+        # success match against an older same-title listing.
+        return ids if ids else None
+    except Exception:
+        return None
+    finally:
+        if probe is not None:
+            try:
+                probe.close()
+            except Exception:
+                pass
+
+
+def _explicit_publish_success(page) -> bool:
+    """Return True only for an explicit Facebook success message/item URL."""
+    try:
+        url = str(page.url or "")
+        match = re.search(r"/marketplace/item/([^/?#]+)", url)
+        if match and match.group(1):
+            return True
+    except Exception:
+        pass
+    try:
+        body = re.sub(r"\s+", " ", (page.locator("body").inner_text(timeout=1500) or "").lower())
+    except Exception:
+        body = ""
+    patterns = (
+        r"\byour listing (?:has been |was |is )?(?:now )?(?:published|live|active)\b",
+        r"\blisting (?:has been |was )?published successfully\b",
+        r"\byour item is now listed\b",
+        r"\bpublished successfully\b",
+    )
+    return any(re.search(pattern, body) for pattern in patterns)
+
+
+def _new_listing_link_matches(page, title: str, baseline_ids: set[str] | None) -> bool:
+    """Check for the expected title on a listing ID not present before publish."""
+    if baseline_ids is None or not str(title or "").strip():
+        return False
+    wanted = re.sub(r"\s+", " ", str(title)).strip().casefold()
+    try:
+        links = page.locator("a[href*='/marketplace/item/']").all()[:100]
+    except Exception:
+        return False
+    for link in links:
+        try:
+            href = link.get_attribute("href") or ""
+            match = re.search(r"/marketplace/item/([^/?#]+)", href)
+            if not match or match.group(1) in baseline_ids:
+                continue
+            text = re.sub(r"\s+", " ", (link.inner_text(timeout=1000) or "")).strip().casefold()
+            if text and (text == wanted or wanted in text):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
     """Fill one listing form, verify fields, click Next once, then stop before Publish.
 
@@ -298,6 +388,10 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         page = driver._page
         if page is None:
             raise RuntimeError("FMS driver did not provide an active page")
+        # Capture existing listing IDs in a temporary tab before creating the
+        # new listing. This avoids treating an older same-title listing as proof
+        # that this Publish attempt succeeded.
+        _baseline_listing_ids = _snapshot_existing_listing_ids(driver)
         _pause_checkpoint(payload)
         ok, detail = driver._open_create_item_form(page)
         if not ok:
@@ -594,16 +688,28 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             return _report(started, results, page)
         human.human_pause(4000, 6000)
         _pause_checkpoint(payload)
+        # Capture any explicit Facebook success toast or item-detail URL before
+        # leaving the post-publish screen.
+        publish_confirmed = _explicit_publish_success(page)
         selling_url = "https://www.facebook.com/marketplace/you/selling/"
         try:
             page.goto(selling_url, wait_until="domcontentloaded", timeout=20000)
             human.human_pause(1200, 2000)
+            if not publish_confirmed:
+                publish_confirmed = _new_listing_link_matches(
+                    page, payload.get("title", ""), _baseline_listing_ids)
             _record(results, "selling_page", selling_url, page.url,
                     "VERIFIED" if "/marketplace/you/selling" in page.url else "UNCERTAIN",
                     "Opened the Marketplace Selling page after the Publish click")
         except Exception as exc:
             _record(results, "selling_page", selling_url, "", "UNCERTAIN",
                     f"Navigation after the Publish click failed: {type(exc).__name__}: {str(exc)[:150]}")
+        _record(results, "publish_confirmation", True,
+                "confirmed" if publish_confirmed else "not confirmed",
+                "VERIFIED" if publish_confirmed else "NOT_CONFIRMED",
+                ("Facebook showed a success signal or a newly created listing was found"
+                 if publish_confirmed else
+                 "Publish click alone is not proof of success; image cooldown history was not updated"))
         return _report(started, results, page)
 
     except Exception as exc:
@@ -626,6 +732,7 @@ def _report(started: str, results: list[dict[str, str]], page=None) -> dict[str,
         "finished_at_utc": datetime.now(timezone.utc).isoformat(),
         "page_url": current_url,
         "publish_attempted": any(row["field"] == "publish_click" and row["status"] == "ATTEMPTED" for row in results),
+        "publish_success_confirmed": any(row["field"] == "publish_confirmation" and row["status"] == "VERIFIED" for row in results),
         "next_clicked": any(row["field"] == "next_button" and row["expected_value"] == "clicked once" and row["status"] in {"VERIFIED", "UNCERTAIN", "FAILED"} for row in results),
         "summary": counts,
         "fields": results,
