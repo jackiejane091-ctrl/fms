@@ -35,7 +35,8 @@ from .human import TYPING_MODES, TYPING_PRESETS
 # in the script builder's OTHER category, but stays a valid run mode so old
 # runs/API calls keep working.
 ACTIONS = [
-    ("complete", "Post"),
+    # The sole visible Post action now uses the existing Test Single Post flow.
+    ("test_single_post", "Post"),
     ("relist_edit", "Relist & Edit"),
     ("draft_publish", "Draft & Publish"),
     ("create_drafts", "Create Drafts"),
@@ -53,14 +54,14 @@ ACTIONS = [
     ("download_images_titles", "Download Images & Titles"),
     ("change_location", "Change Marketplace Location"),
     ("scrap_data", "Scrap Data"),
-    ("test_single_post", "Test Single Post"),
 ]
+# Keep the former complete mode valid for saved/older runs and API clients,
+# but do not expose it as a separate visible Post action.
 MODES = (tuple(key for key, _ in ACTIONS)
-         + ("manual_publish", "script", "wait_next_turn"))
+         + ("complete", "manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
-POSTING_MODES = {"complete", "draft_publish", "manual_publish", "relist_edit",
-                 "create_drafts", "publish_drafts", "delete_relist",
-                 "delete_relist"}
+POSTING_MODES = {"complete", "test_single_post", "draft_publish", "manual_publish",
+                 "relist_edit", "create_drafts", "publish_drafts", "delete_relist"}
 PUBLISH_MODES = ("all_together", "one_by_one")
 
 

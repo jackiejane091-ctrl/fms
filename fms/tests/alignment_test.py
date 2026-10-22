@@ -113,6 +113,12 @@ EXPECTED_ORDER = ["Post", "Relist & Edit", "Draft & Publish", "Create Drafts",
 
 def t_actions_order():
     assert [label for _, label in ACTIONS] == EXPECTED_ORDER
+    # There is exactly one visible Post action, routed through the established
+    # Test Single Post publishing flow. The old complete flow remains internal.
+    post_actions = [(key, label) for key, label in ACTIONS if label == "Post"]
+    assert post_actions == [("test_single_post", "Post")], post_actions
+    assert "test_single_post" in MODES
+    assert "complete" in MODES  # backward compatibility for saved/API runs
 
 
 def t_delete_duplicate():
