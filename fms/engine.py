@@ -11,6 +11,7 @@ import collections
 import hashlib
 import heapq
 import itertools
+from pathlib import Path
 import json
 import random
 import threading
@@ -381,7 +382,7 @@ class _Rotator:
         self._loc_cycles: dict[int, Any] = {}
         self._seq = 0
 
-    def payload(self, product: dict, cfg: "RunConfig", as_draft: bool) -> dict:
+    def payload(self, product: dict, cfg: "RunConfig", as_draft: bool, account_id: int | None = None) -> dict:
         # Scraped products post from their scraped items (cycled), not from
         # the title/location lists.
         scraped = product.get("scraped_items")
@@ -443,16 +444,47 @@ class _Rotator:
             price = product.get("base_price")
 
         main_images = product.get("main_images") or []
-        # All product photos come from Main Images. Extra Images is only the
-        # requested number of additional files from that same folder.
+        # Per-account image cooldown. The stable DB account ID is used, not
+        # worker index or display label. The history table survives restarts.
         try:
             requested_extra_count = max(0, int(product.get("extra_image_count") or 0))
         except (TypeError, ValueError):
             requested_extra_count = 0
         image_paths: list[str] = []
-        if main_images:
-            # One main photo per listing; rotate the selected main photo and
-            # then choose extras from the remaining files in the same folder.
+        if main_images and account_id is not None:
+            try:
+                from datetime import datetime, timedelta, timezone
+                row = self.db.fetchone("SELECT value FROM app_settings WHERE key = ?", ("skip_images_days",))
+                cooldown_days = max(0, int((row["value"] if row else "8") or "8"))
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=cooldown_days)).isoformat()
+                eligible = []
+                for path in main_images:
+                    canonical = str(Path(path).expanduser().resolve())
+                    used = self.db.fetchone(
+                        "SELECT last_used_at FROM account_image_usage WHERE account_id = ? AND image_path = ?",
+                        (int(account_id), canonical))
+                    if not used or not used["last_used_at"] or used["last_used_at"] < cutoff:
+                        eligible.append((path, canonical))
+                # Rotate eligible choices so repeated listings don't always pick
+                # the same first photo. Never fall back to a cooling-down image.
+                if eligible:
+                    offset = seq % len(eligible)
+                    eligible = eligible[offset:] + eligible[:offset]
+                    chosen = eligible[:min(1 + requested_extra_count, 10, len(eligible))]
+                    image_paths = [item[0] for item in chosen]
+                    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    for _path, canonical in chosen:
+                        self.db.execute(
+                            "INSERT INTO account_image_usage(account_id, image_path, last_used_at) VALUES (?, ?, ?) "
+                            "ON CONFLICT(account_id, image_path) DO UPDATE SET last_used_at=excluded.last_used_at",
+                            (int(account_id), canonical, now))
+                products_mod.record_image_usage(self.db, pid, image_paths)
+            except Exception as exc:
+                # Fail closed rather than accidentally bypassing cooldown.
+                image_paths = []
+                print(f"[IMAGE COOLDOWN] Could not select eligible images for account {account_id}: {exc}", flush=True)
+        elif main_images:
+            # Legacy non-account context (e.g. old callers) retains prior behavior.
             main_index = seq % len(main_images)
             main_photo = main_images[main_index]
             remaining_images = main_images[:main_index] + main_images[main_index + 1:]
@@ -711,12 +743,15 @@ class RunController:
             self._wait_if_paused()
             time.sleep(0.2)
 
-    def _rotation(self, product: dict, account_idx: int) -> dict:
+    def _rotation(self, product: dict, account_idx: int, account_id: int | None = None) -> dict:
         """Build one listing payload with rotated title/price/location/images."""
         _payload = self._rotator.payload(
-            product, self.cfg, as_draft=self.cfg.mode == "draft_publish")
+            product, self.cfg, as_draft=self.cfg.mode == "draft_publish", account_id=account_id)
         # v0.2.70: LOG runtime config via self.log() so it appears in FMS Logs.
         # Sanitized: folder path truncated, no secrets.
+        # Browser invokes this only between atomic UI actions; an in-flight
+        # field action is allowed to finish before Pause All takes effect.
+        _payload["_pause_checkpoint"] = self._wait_if_paused
         try:
             _pid = product.get("id", "?")
             _img_folder = str(product.get("image_folder") or "")[:50]
@@ -960,7 +995,7 @@ class RunController:
                 self.log(f"[{label}] product vanished — listing stays deleted",
                          level="warning", account_id=account["id"])
                 continue
-            payload = self._rotation(product, account_idx)
+            payload = self._rotation(product, account_idx, account_id=account["id"])
             new_id = driver.post_listing(payload)
             if new_id:
                 self._record_posted(account, pid, payload, new_id,
@@ -1106,7 +1141,7 @@ class RunController:
                 self.log(f"[{label}] product {pid} vanished — skipping",
                          level="warning", account_id=account["id"])
                 continue
-            payload = self._rotation(product, account_idx)
+            payload = self._rotation(product, account_idx, account_id=account["id"])
             # v0.2.25: "Change Marketplace Location Before Listing — Change
             # Everytime": set the group's location before every post.
             if (self.cfg.group_loc_change_mode == "change_everytime"
@@ -1191,7 +1226,7 @@ class RunController:
                     self.log(f"[{label}] product {pid} disappeared — stopping its queue",
                              level="error", account_id=aid)
                     break
-                payload = self._rotation(product, account_idx)
+                payload = self._rotation(product, account_idx, account_id=account["id"])
                 self.log(f"[{label}] Product '{product_name}' listing {listing_index + 1}/{target}: publishing",
                          account_id=aid)
                 try:
@@ -1260,7 +1295,7 @@ class RunController:
                 pid, product = self._next_product(account_idx)
                 if product is None:
                     continue
-                payload = self._rotation(product, account_idx)
+                payload = self._rotation(product, account_idx, account_id=account["id"])
                 draft_id = driver.create_draft(payload)
                 if draft_id:
                     self.db.execute(
@@ -1572,7 +1607,7 @@ class RunController:
             pid, product = self._next_product(account_idx)
             if product is None:
                 continue
-            payload = self._rotation(product, account_idx)
+            payload = self._rotation(product, account_idx, account_id=account["id"])
             tab_ref = driver.fill_listing_form(payload)
             self.db.execute(
                 """INSERT INTO manual_tabs
@@ -1609,7 +1644,7 @@ class RunController:
             pid, product = self._next_product(account_idx)
             if product is None:
                 continue
-            payload = self._rotation(product, account_idx)
+            payload = self._rotation(product, account_idx, account_id=account["id"])
             ok = driver.edit_listing(l["id"], payload)
             if ok:
                 self._record_posted(account, pid, payload, l["id"],
@@ -1898,9 +1933,11 @@ class ScriptRunController:
             self._wait_if_paused()
             time.sleep(0.2)
 
-    def _rotation(self, product: dict) -> dict:
+    def _rotation(self, product: dict, account_id: int | None = None) -> dict:
         """One listing payload, rotated (mirrors RunController._rotation)."""
-        return self._rotator.payload(product, self.cfg, as_draft=False)
+        payload = self._rotator.payload(product, self.cfg, as_draft=False, account_id=account_id)
+        payload["_pause_checkpoint"] = self._wait_if_paused
+        return payload
 
     def _record(self, account: dict, pid: int, payload: dict,
                 listing_id: str | None, status: str) -> None:
@@ -1994,7 +2031,7 @@ class ScriptRunController:
             n = random.randint(p.get("count_min", 1), p.get("count_max", 1))
             for _ in range(n):
                 self._wait_if_paused()
-                payload = self._rotation(product)
+                payload = self._rotation(product, account_id=account["id"])
                 lid = driver.post_listing(payload)
                 self._record(account, product["id"], payload, lid,
                              "posted" if lid else "failed")
@@ -2009,7 +2046,7 @@ class ScriptRunController:
             n = random.randint(p.get("count_min", 1), p.get("count_max", 1))
             for _ in range(n):
                 self._wait_if_paused()
-                payload = self._rotation(product)
+                payload = self._rotation(product, account_id=account["id"])
                 did = driver.create_draft(payload)
                 self._record(account, product["id"], payload, did,
                              "draft" if did else "failed")
@@ -2132,7 +2169,7 @@ class ScriptRunController:
                     continue
                 self._record_no_product(account, lid, "deleted",
                                         l.get("title", ""))
-                payload = self._rotation(product)
+                payload = self._rotation(product, account_id=account["id"])
                 new_id = driver.post_listing(payload)
                 self._record(account, product["id"], payload, new_id,
                              "relisted" if new_id else "failed")
@@ -2156,7 +2193,7 @@ class ScriptRunController:
                        if l.get("id")][:max(0, n)]
             for l in targets:
                 self._wait_if_paused()
-                payload = self._rotation(product)
+                payload = self._rotation(product, account_id=account["id"])
                 ok = driver.edit_listing(l["id"], payload)
                 self._record(account, product["id"], payload, l["id"],
                              "relisted" if ok else "failed")

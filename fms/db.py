@@ -219,6 +219,18 @@ class Database:
                    use_count INTEGER NOT NULL DEFAULT 0,
                    PRIMARY KEY (product_id, image_path))"""
         )
+        # v0.2.114: persistent per-account image cooldown history.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS account_image_usage (
+                   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                   image_path TEXT NOT NULL,
+                   last_used_at TEXT NOT NULL,
+                   PRIMARY KEY (account_id, image_path))"""
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO app_settings(key, value) VALUES (?, ?)",
+            ("skip_images_days", "8")
+        )
         # v0.2.25: FBM Robo-style General Settings per group.
         for _col, _ddl in [
             ("locations", "ALTER TABLE groups ADD COLUMN locations TEXT NOT NULL DEFAULT '[]'"),

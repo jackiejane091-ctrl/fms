@@ -1099,6 +1099,11 @@ class PlaywrightDriver(BaseDriver):
         # required fields pass (ChatGPT's debugging plan).
         checklist = {}
         checklist_lines = []
+        def _pause_checkpoint():
+            # Check only at safe boundaries between browser UI actions.
+            callback = payload.get("_pause_checkpoint")
+            if callable(callback):
+                callback()
         def _check(field, status, detail=""):
             checklist[field] = {"status": status, "detail": detail}
             line = f"[CHECKLIST] {field}: {status}" + (f" — {detail}" if detail else "")
@@ -1125,6 +1130,7 @@ class PlaywrightDriver(BaseDriver):
             # THEN Next becomes clickable -> Publish.
 
             # 1. Photos FIRST (before any text).
+            _pause_checkpoint()
             # v0.2.79: Use file_chooser (Playwright recommended).
             images = payload.get("image_paths") or []
             if not images:
@@ -1189,6 +1195,7 @@ class PlaywrightDriver(BaseDriver):
             # 3. Title (v0.2.59: INDEPENDENT — a Title failure must NOT
             # block pictures/price/category/etc. FBM Robo style: try it,
             # log the result, move on to the next field).
+            _pause_checkpoint()
             _check("title", "attempted")
             try:
                 title = S.to_playwright(page, S.F_TITLE)
@@ -1205,6 +1212,7 @@ class PlaywrightDriver(BaseDriver):
 
             # v0.2.60: Price is FULLY INDEPENDENT — never references 'title'.
             # (The old code crashed with NameError if Title had failed.)
+            _pause_checkpoint()
             price_val = str(payload.get("price", ""))
             _check("price", "attempted", f"value='{price_val}'")
             if price_val:
@@ -1299,6 +1307,7 @@ class PlaywrightDriver(BaseDriver):
                         f"{type(exc_co).__name__}")
                     _check("condition", "failed", type(exc_co).__name__)
 
+            _pause_checkpoint()
             # 5b. Click "More details" to reveal Description, Availability,
             # Location, Delivery, Hide from friends (user's exact order).
             for _md_text in ("More details", "Show more details",
@@ -1314,6 +1323,7 @@ class PlaywrightDriver(BaseDriver):
 
             # 6. Description: COPY-PASTE, not typing (v0.2.55 — user's
             # explicit instruction: simple and easy, no character-by-character).
+            _pause_checkpoint()
             desc = payload.get("description") or ""
             if desc:
                 try:
@@ -1337,6 +1347,7 @@ class PlaywrightDriver(BaseDriver):
             # 7. Availability: dropdown -> select "List as in stock"
             # (user: product saves availability as "list as stock").
             # Tags and SKU are SKIPPED (user's explicit instruction).
+            _pause_checkpoint()
             _avail = (payload.get("availability") or "").strip().lower()
             # Map product values to the FB option text.
             _avail_map = {
