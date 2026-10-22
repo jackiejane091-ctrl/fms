@@ -363,6 +363,29 @@ def _persist_ix_profile(db: Database, account: dict, driver) -> None:
         accounts_mod.set_ix_profile_id(db, account["id"], pid)
 
 
+def _record_published_image_usage(db: Database, account_id: int, product_id: int | None,
+                                  image_paths: list[str] | None) -> None:
+    """Persist image cooldown only after Facebook confirms a listing publish.
+
+    Main and extra photos are treated identically. Paths are canonicalized so
+    the same file cannot bypass the cooldown through relative-path aliases.
+    """
+    from pathlib import Path as _Path
+    images = list(dict.fromkeys(str(p) for p in (image_paths or []) if p))
+    if not images:
+        return
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for path in images:
+        canonical = str(_Path(path).expanduser().resolve())
+        db.execute(
+            "INSERT INTO account_image_usage(account_id, image_path, last_used_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(account_id, image_path) DO UPDATE SET last_used_at=excluded.last_used_at",
+            (int(account_id), canonical, now),
+        )
+        if product_id is not None:
+            products_mod.record_image_usage(db, int(product_id), [path])
+
+
 class _Rotator:
     """Per-run rotation state: titles, descriptions, locations, images.
 
@@ -382,6 +405,33 @@ class _Rotator:
         self._loc_cycles: dict[int, Any] = {}
         self._seq = 0
 
+    def _cooldown_days(self) -> int:
+        row = self.db.fetchone("SELECT value FROM app_settings WHERE key = ?", ("skip_images_days",))
+        try:
+            return max(0, int((row["value"] if row else "8") or "8"))
+        except (TypeError, ValueError):
+            return 8
+
+    def _eligible_images(self, paths: list[str], account_id: int, cooldown_days: int):
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=cooldown_days)).isoformat()
+        eligible = []
+        seen = set()
+        for path in paths:
+            if not path:
+                continue
+            canonical = str(Path(path).expanduser().resolve())
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            used = self.db.fetchone(
+                "SELECT last_used_at FROM account_image_usage WHERE account_id = ? AND image_path = ?",
+                (int(account_id), canonical),
+            )
+            if not used or not used["last_used_at"] or used["last_used_at"] < cutoff:
+                eligible.append((path, canonical))
+        return eligible
+
     def payload(self, product: dict, cfg: "RunConfig", as_draft: bool, account_id: int | None = None) -> dict:
         # Scraped products post from their scraped items (cycled), not from
         # the title/location lists.
@@ -391,6 +441,16 @@ class _Rotator:
                 seq = self._seq
                 self._seq += 1
             item = scraped[seq % len(scraped)]
+            raw_images = list(item.get("photo_paths") or [])[:10]
+            image_paths = raw_images
+            if account_id is not None and raw_images:
+                try:
+                    cooldown_days = self._cooldown_days()
+                    eligible = self._eligible_images(raw_images, int(account_id), cooldown_days)
+                    image_paths = [p for p, _canonical in eligible[:10]]
+                except Exception as exc:
+                    image_paths = []
+                    print(f"[IMAGE COOLDOWN] Could not select scraped images for account {account_id}: {exc}", flush=True)
             return {
                 "title": item.get("title"),
                 "price": item.get("price") or product.get("base_price"),
@@ -404,7 +464,7 @@ class _Rotator:
                 "tags": product.get("tags"),
                 "listing_type": product.get("listing_type") or "item",
                 "delivery_options": product.get("delivery_options") or [],
-                "image_paths": item.get("photo_paths") or [],
+                "image_paths": image_paths,
                 "video_path": product.get("video_path"),
                 "as_draft": as_draft,
                 "hide_from_friends": cfg.hide_from_friends,
@@ -444,57 +504,51 @@ class _Rotator:
             price = product.get("base_price")
 
         main_images = product.get("main_images") or []
-        # Per-account image cooldown. The stable DB account ID is used, not
-        # worker index or display label. The history table survives restarts.
+        extra_images = product.get("extra_images") or []
         try:
             requested_extra_count = max(0, int(product.get("extra_image_count") or 0))
         except (TypeError, ValueError):
             requested_extra_count = 0
         image_paths: list[str] = []
-        if main_images and account_id is not None:
+        if account_id is not None:
             try:
-                from datetime import datetime, timedelta, timezone
-                row = self.db.fetchone("SELECT value FROM app_settings WHERE key = ?", ("skip_images_days",))
-                cooldown_days = max(0, int((row["value"] if row else "8") or "8"))
-                cutoff = (datetime.now(timezone.utc) - timedelta(days=cooldown_days)).isoformat()
-                eligible = []
-                for path in main_images:
-                    canonical = str(Path(path).expanduser().resolve())
-                    used = self.db.fetchone(
-                        "SELECT last_used_at FROM account_image_usage WHERE account_id = ? AND image_path = ?",
-                        (int(account_id), canonical))
-                    if not used or not used["last_used_at"] or used["last_used_at"] < cutoff:
-                        eligible.append((path, canonical))
-                # Rotate eligible choices so repeated listings don't always pick
-                # the same first photo. Never fall back to a cooling-down image.
-                if eligible:
-                    offset = seq % len(eligible)
-                    eligible = eligible[offset:] + eligible[:offset]
-                    chosen = eligible[:min(1 + requested_extra_count, 10, len(eligible))]
-                    image_paths = [item[0] for item in chosen]
-                    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    for _path, canonical in chosen:
-                        self.db.execute(
-                            "INSERT INTO account_image_usage(account_id, image_path, last_used_at) VALUES (?, ?, ?) "
-                            "ON CONFLICT(account_id, image_path) DO UPDATE SET last_used_at=excluded.last_used_at",
-                            (int(account_id), canonical, now))
-                products_mod.record_image_usage(self.db, pid, image_paths)
+                cooldown_days = self._cooldown_days()
+                eligible_main = self._eligible_images(list(main_images), int(account_id), cooldown_days)
+                eligible_extra = self._eligible_images(list(extra_images), int(account_id), cooldown_days)
+                # Preserve the intended order: one main image first when available,
+                # then eligible extra-folder images, then other eligible main images.
+                # If all main photos are cooling down, use an eligible extra photo
+                # rather than reusing a recent main photo or silently blocking publish.
+                if eligible_main:
+                    main_offset = seq % len(eligible_main)
+                    rotated_main = eligible_main[main_offset:] + eligible_main[:main_offset]
+                    first = rotated_main[:1]
+                    remaining_main = rotated_main[1:]
+                else:
+                    first = eligible_extra[:1]
+                    remaining_main = []
+                    eligible_extra = eligible_extra[1:] if first else eligible_extra
+                extra_capacity = min(requested_extra_count, 9, max(0, 10 - len(first)))
+                selected_extras = eligible_extra[:extra_capacity]
+                remaining_capacity = min(extra_capacity - len(selected_extras), max(0, 10 - len(first) - len(selected_extras)))
+                selected_more_main = remaining_main[:remaining_capacity]
+                chosen = first + selected_extras + selected_more_main
+                image_paths = [item[0] for item in chosen]
+                # IMPORTANT: selection does not write cooldown history. The image is
+                # recorded only by the successful-publish paths below.
+                if not image_paths and (main_images or extra_images):
+                    print(f"[IMAGE COOLDOWN] No eligible photos for account {account_id}; continuing listing without photos rather than reusing a photo inside the cooldown.", flush=True)
             except Exception as exc:
-                # Fail closed rather than accidentally bypassing cooldown.
                 image_paths = []
-                print(f"[IMAGE COOLDOWN] Could not select eligible images for account {account_id}: {exc}", flush=True)
-        elif main_images:
-            # Legacy non-account context (e.g. old callers) retains prior behavior.
-            main_index = seq % len(main_images)
-            main_photo = main_images[main_index]
-            remaining_images = main_images[:main_index] + main_images[main_index + 1:]
-            image_paths = [main_photo]
-            available_extra_count = min(requested_extra_count, len(remaining_images), 9)
-            if available_extra_count:
-                extra_start = seq % len(remaining_images)
-                rotated_extras = remaining_images[extra_start:] + remaining_images[:extra_start]
-                image_paths.extend(rotated_extras[:available_extra_count])
-            products_mod.record_image_usage(self.db, pid, image_paths)
+                print(f"[IMAGE COOLDOWN] Could not select eligible images for account {account_id}: {exc}; continuing listing without photos.", flush=True)
+        else:
+            # Legacy non-account callers retain simple rotation, now including
+            # the separate Extra Images folder.
+            all_images = list(dict.fromkeys(list(main_images) + list(extra_images)))
+            if all_images:
+                offset = seq % len(all_images)
+                all_images = all_images[offset:] + all_images[:offset]
+                image_paths = all_images[:min(1 + requested_extra_count, 10, len(all_images))]
 
         if product.get("tags"):
             description = (description + "\n" + product["tags"]).strip()
@@ -1039,6 +1093,8 @@ class RunController:
              json.dumps(payload["image_paths"]),
              status, listing_id, utcnow()),
         )
+        if status in ("posted", "relisted"):
+            _record_published_image_usage(self.db, account["id"], pid, payload.get("image_paths"))
         if status == "posted":
             self.db.execute(
                 "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
@@ -1350,6 +1406,11 @@ class RunController:
                     "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
                     (self.run_id,),
                 )
+                try:
+                    _draft_images = json.loads(d["images_used"] or "[]")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    _draft_images = []
+                _record_published_image_usage(self.db, account["id"], d["product_id"], _draft_images)
                 self.log(f"[{label}] published '{d['title_used']}'",
                          account_id=account["id"])
             else:
@@ -1365,11 +1426,11 @@ class RunController:
         """Draft rows for an account: this run only, or any run (standalone)."""
         if any_run:
             return self.db.fetchall(
-                """SELECT id, fb_listing_id, title_used FROM listings
+                """SELECT id, fb_listing_id, title_used, product_id, images_used FROM listings
                    WHERE account_id = ? AND status = 'draft' ORDER BY id""",
                 (account_id,))
         return self.db.fetchall(
-            """SELECT id, fb_listing_id, title_used FROM listings
+            """SELECT id, fb_listing_id, title_used, product_id, images_used FROM listings
                WHERE run_id = ? AND account_id = ? AND status = 'draft'
                ORDER BY id""",
             (self.run_id, account_id),
@@ -1960,6 +2021,8 @@ class ScriptRunController:
              json.dumps(payload["image_paths"]), status,
              listing_id, utcnow()),
         )
+        if status in ("posted", "relisted"):
+            _record_published_image_usage(self.db, account["id"], pid, payload.get("image_paths"))
         if status == "posted":
             self.db.execute(
                 "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
@@ -2065,7 +2128,7 @@ class ScriptRunController:
 
         if btype == "publish_drafts":
             drafts = self.db.fetchall(
-                """SELECT id, fb_listing_id, title_used FROM listings
+                """SELECT id, fb_listing_id, title_used, product_id, images_used FROM listings
                    WHERE run_id = ? AND account_id = ? AND status = 'draft'
                    ORDER BY id""",
                 (self.run_id, account["id"]),
@@ -2081,8 +2144,13 @@ class ScriptRunController:
                         "UPDATE listings SET status='posted', posted_at=? WHERE id=?",
                         (utcnow(), d["id"]))
                     self.db.execute(
-                        "UPDATE runs SET total_posted = total_posted + 1 WHERE id=?",
+                        "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
                         (self.run_id,))
+                    try:
+                        _draft_images = json.loads(d["images_used"] or "[]")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        _draft_images = []
+                    _record_published_image_usage(self.db, account["id"], d["product_id"], _draft_images)
                 else:
                     self.db.execute(
                         "UPDATE listings SET status='failed' WHERE id=?", (d["id"],))
