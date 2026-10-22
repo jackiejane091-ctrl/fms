@@ -390,7 +390,7 @@ def _record_published_image_usage(db: Database, account_id: int, product_id: int
 def _record_test_single_post_images_if_confirmed(
         db: Database, account_id: int, product_id: int | None,
         payload: dict, report: dict) -> bool:
-    """Record Test Single Post photos only when Facebook success is confirmed."""
+    """Legacy helper for callers that explicitly require confirmed publication."""
     if report.get("publish_success_confirmed") is not True:
         return False
     _record_published_image_usage(
@@ -1306,6 +1306,26 @@ class RunController:
                 payload = self._rotation(product, account_idx, account_id=account["id"])
                 self.log(f"[{label}] Product '{product_name}' listing {listing_index + 1}/{target}: publishing",
                          account_id=aid)
+                # Record the selected images immediately when the Facebook Publish
+                # button is clicked. The callback is invoked synchronously by
+                # single_post_test.py at the click point, without waiting for a
+                # Facebook success toast, URL, or listing-card confirmation.
+                def _on_publish_clicked(_aid=int(aid), _pid=int(pid), _payload=payload, _label=label):
+                    try:
+                        _record_published_image_usage(
+                            self.db, _aid, _pid, _payload.get("image_paths"))
+                        self.log(
+                            f"[{_label}] Publish clicked: recorded "
+                            f"{len(_payload.get('image_paths') or [])} image(s) "
+                            f"for the {self._rotator._cooldown_days()}-day account cooldown",
+                            account_id=_aid)
+                    except Exception as _record_exc:
+                        self.log(
+                            f"[{_label}] Publish was clicked but image cooldown recording failed: "
+                            f"{type(_record_exc).__name__}: {_record_exc}",
+                            level="error", account_id=_aid)
+                        raise
+                payload["_on_publish_clicked"] = _on_publish_clicked
                 try:
                     report = _spt.run_single_post_test(driver, payload)
                 except Exception as exc:
@@ -1313,28 +1333,7 @@ class RunController:
                              level="error", account_id=aid)
                     break
 
-                # v0.2.117 follow-up: Test Single Post must update the same
-                # per-account cooldown only when Facebook success is confirmed.
-                # A Publish click attempt by itself is not proof of publication.
-                if report.get("publish_success_confirmed") is True:
-                    try:
-                        _record_test_single_post_images_if_confirmed(
-                            self.db, int(aid), int(pid), payload, report)
-                        self.log(
-                            f"[{label}] Test Single Post: confirmed publication; "
-                            f"recorded {len(payload.get('image_paths') or [])} image(s) "
-                            f"for the {self._rotator._cooldown_days()}-day account cooldown",
-                            account_id=aid)
-                    except Exception as exc:
-                        self.log(
-                            f"[{label}] Test Single Post: publication was confirmed "
-                            f"but image cooldown recording failed: {type(exc).__name__}: {exc}",
-                            level="error", account_id=aid)
-                else:
-                    self.log(
-                        f"[{label}] Test Single Post: publication not confirmed; "
-                        "image cooldown history was not changed",
-                        level="warning", account_id=aid)
+                # Cooldown is recorded synchronously at the Publish click via callback above.
 
                 for row in report.get("fields", []):
                     status = row.get("status", "?")

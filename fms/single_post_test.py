@@ -377,7 +377,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         payload: payload built from the selected product's latest DB data using
                  the existing product loader/payload builder.
 
-    Returns a JSON-serializable report. This function never calls Next/Publish.
+    Returns a JSON-serializable report. This flow clicks Next and the final Publish button.
     """
     started = datetime.now(timezone.utc).isoformat()
     results: list[dict[str, str]] = []
@@ -682,6 +682,20 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             human.human_click(page, publish_button)
             _record(results, "publish_click", "one click", "clicked", "ATTEMPTED",
                     "Clicked Facebook's final Publish button once")
+            # User-required policy: a Publish click immediately consumes the
+            # listing's photos for this account's 8-day cooldown. Do not wait
+            # for Facebook's success wording, URL, or listing-card confirmation.
+            _cooldown_callback = payload.get("_on_publish_clicked")
+            if callable(_cooldown_callback):
+                try:
+                    _cooldown_callback()
+                    _record(results, "image_cooldown", "record selected photos",
+                            "recorded at Publish click", "VERIFIED",
+                            "Image cooldown was written immediately after the Publish click")
+                except Exception as _cooldown_exc:
+                    _record(results, "image_cooldown", "record selected photos",
+                            "record failed", "FAILED",
+                            f"{type(_cooldown_exc).__name__}: {str(_cooldown_exc)[:180]}")
         except Exception as exc:
             _record(results, "publish_click", "one click", "click failed", "FAILED",
                     f"{type(exc).__name__}: {str(exc)[:180]}")
@@ -709,7 +723,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                 "VERIFIED" if publish_confirmed else "NOT_CONFIRMED",
                 ("Facebook showed a success signal or a newly created listing was found"
                  if publish_confirmed else
-                 "Publish click alone is not proof of success; image cooldown history was not updated"))
+                 "Publish success was not confirmed; image cooldown was already recorded at the Publish click"))
         return _report(started, results, page)
 
     except Exception as exc:
