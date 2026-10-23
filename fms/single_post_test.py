@@ -615,67 +615,62 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             _record(results, "hide_from_friends", payload.get("hide_from_friends"), "",
                     "SKIPPED", "Setting is not explicitly enabled")
 
-        # Facebook itself disables Next while required form fields are missing.
-        # Once filling is complete: if the final Publish screen is already
-        # open, use it directly; otherwise click Next exactly once when
-        # Facebook enabled it. Then click the final Publish button exactly
-        # once and open the Selling page. No approval gate; never retry.
+        # Navigation policy: prioritize Facebook's actual Next button. A generic
+        # button[type=submit] is NOT evidence that Publish is ready: Facebook may
+        # render Next as a submit button. If Next is visible and enabled, click it
+        # once, then locate the specifically labelled final Publish button.
         _pause_checkpoint(payload)
         try:
-            S.to_playwright(page, S.F_PUBLISH_BUTTON).wait_for(state="visible", timeout=1800)
-            _record(results, "next_button", "not needed", "final screen already open", "SKIPPED",
-                    "Publish button already visible; Next was not clicked")
-        except Exception:
-            try:
-                next_button = S.to_playwright(page, S.F_NEXT_BUTTON)
-                next_button.wait_for(state="visible", timeout=5000)
-                if not next_button.is_enabled(timeout=2000):
-                    _record(results, "next_button", "click once", "disabled", "FAILED",
-                            "Next button is disabled; stopped safely")
-                    return _report(started, results, page)
-                url_before = page.url
+            next_button = page.get_by_role("button", name="Next", exact=True).first
+            next_button.wait_for(state="visible", timeout=5000)
+            if next_button.is_enabled():
                 next_button.click(timeout=5000)
-                # Facebook may use SPA navigation without changing the URL. Verify
-                # a real transition by URL change, Next disappearing, or Publish
-                # becoming visible.
-                transitioned = False
+                _record(results, "next_button", "click once when enabled", "clicked", "VERIFIED",
+                        "Next was visible and enabled; clicked once before checking final Publish")
+                # Facebook may transition as a SPA without changing the URL.
+                # Wait briefly for the explicitly labelled Publish control.
                 try:
-                    page.wait_for_function(
-                        """(beforeUrl) => {
-                            if (location.href !== beforeUrl) return true;
-                            const visible = (el) => {
-                              if (!el) return false;
-                              const r = el.getBoundingClientRect();
-                              const s = getComputedStyle(el);
-                              return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-                            };
-                            const buttons = [...document.querySelectorAll('button,[role=button]')];
-                            const next = buttons.find(e => /\\bnext\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
-                            const publish = buttons.find(e => /\\bpublish\\b/i.test((e.innerText || e.getAttribute('aria-label') || '').trim()));
-                            return (next && !visible(next)) || visible(publish);
-                        }""", arg=url_before, timeout=10000)
-                    transitioned = True
+                    S.to_playwright(page, S.F_FINAL_PUBLISH_BUTTON).wait_for(
+                        state="visible", timeout=12000)
                 except Exception:
-                    # Some flows retain a visible Next button during a delayed render;
-                    # do not infer success merely because click() returned.
-                    transitioned = page.url != url_before
-                if transitioned:
-                    _record(results, "next_button", "clicked once", "navigation verified", "VERIFIED",
-                            "Next clicked once because Facebook enabled it; proceeding to the Publish step")
+                    pass  # final lookup below records the actual outcome
+            else:
+                final_now = S.to_playwright(page, S.F_FINAL_PUBLISH_BUTTON)
+                if final_now.is_visible():
+                    _record(results, "next_button", "not needed", "final Publish visible", "SKIPPED",
+                            "Next was disabled and the actual final Publish button was already visible")
                 else:
-                    _record(results, "next_button", "clicked once", "transition not confirmed", "UNCERTAIN",
-                            "Click was sent, but destination-screen transition could not be verified; checking for the Publish button")
-            except Exception as exc:
-                _record(results, "next_button", "click once", "failed", "FAILED",
-                        f"{type(exc).__name__}: {str(exc)[:180]}")
-        # Final step: click Facebook's actual Publish button exactly once,
-        # let Facebook process the click, then open the Selling page.
+                    _record(results, "next_button", "click once", "disabled", "FAILED",
+                            "Next is disabled and final Publish is not visible")
+                    return _report(started, results, page)
+        except Exception as next_exc:
+            # Only the specifically labelled Publish button can establish that
+            # the flow is already on the final screen; generic submit buttons do not.
+            final_now = S.to_playwright(page, S.F_FINAL_PUBLISH_BUTTON)
+            try:
+                final_visible = final_now.is_visible()
+            except Exception:
+                final_visible = False
+            if final_visible:
+                _record(results, "next_button", "not needed", "final Publish visible", "SKIPPED",
+                        "Next was not present; actual final Publish button is visible")
+            else:
+                _record(results, "next_button", "click once", "not found", "FAILED",
+                        f"Next was not found and final Publish was not visible: {type(next_exc).__name__}: {str(next_exc)[:140]}")
+                return _report(started, results, page)
+
+        # Final step uses a dedicated Publish-labelled selector, never the
+        # legacy generic submit selector that can match Next.
         try:
-            publish_button = S.to_playwright(page, S.F_PUBLISH_BUTTON)
+            publish_button = S.to_playwright(page, S.F_FINAL_PUBLISH_BUTTON)
             publish_button.wait_for(state="visible", timeout=12000)
+            if not publish_button.is_enabled():
+                _record(results, "publish_click", "one click", "disabled", "FAILED",
+                        "Final Publish button is visible but disabled")
+                return _report(started, results, page)
         except Exception as exc:
             _record(results, "publish_click", "one click", "not attempted", "FAILED",
-                    f"Publish button did not appear: {type(exc).__name__}")
+                    f"Actual Publish button did not appear: {type(exc).__name__}: {str(exc)[:150]}")
             return _report(started, results, page)
         _pause_checkpoint(payload)
         try:
@@ -747,7 +742,7 @@ def _report(started: str, results: list[dict[str, str]], page=None) -> dict[str,
         "page_url": current_url,
         "publish_attempted": any(row["field"] == "publish_click" and row["status"] == "ATTEMPTED" for row in results),
         "publish_success_confirmed": any(row["field"] == "publish_confirmation" and row["status"] == "VERIFIED" for row in results),
-        "next_clicked": any(row["field"] == "next_button" and row["expected_value"] == "clicked once" and row["status"] in {"VERIFIED", "UNCERTAIN", "FAILED"} for row in results),
+        "next_clicked": any(row["field"] == "next_button" and row["expected_value"] == "click once when enabled" and row["status"] in {"VERIFIED", "UNCERTAIN", "FAILED"} for row in results),
         "summary": counts,
         "fields": results,
     }

@@ -230,6 +230,21 @@ def t_happy_next_once_publish_once_selling():
     assert "/marketplace/you/selling" in report["page_url"], report["page_url"]
 
 
+def t_next_submit_type_is_not_mistaken_for_publish():
+    # Regression for v0.2.119: Next can be rendered as type=submit. It must
+    # still be clicked before the actual Publish step is located.
+    html = FORM_HTML.replace(
+        '<button type="button" id="nextbtn">Next</button>',
+        '<button type="submit" id="nextbtn">Next</button>')
+    assert html != FORM_HTML
+    report, clicks = _run(html + NEXT_OK_JS, dict(PAYLOAD))
+    nxt = _rows(report, "next_button")
+    pub = _rows(report, "publish_click")
+    assert nxt and nxt[0]["status"] == "VERIFIED", nxt
+    assert pub and pub[0]["status"] == "ATTEMPTED", pub
+    assert clicks == {"next": 1, "pub": 1}, clicks
+
+
 def t_uncertain_field_does_not_block_publish():
     # Location input WITHOUT a <label> association (section layout):
     # the real picker still selects it, but the report's label-based
@@ -263,10 +278,13 @@ def t_next_disabled_never_clicked():
     assert report["publish_attempted"] is False, report["publish_attempted"]
 
 
-def t_unconfirmed_transition_is_uncertain():
+def t_dead_transition_next_clicked_publish_fails():
+    # v0.2.120 semantics: the new navigation records the Next click as
+    # VERIFIED at click time (the retired UNCERTAIN transition state is
+    # gone); the missing final Publish button is what fails the listing.
     report, clicks = _run(FORM_HTML + NEXT_DEAD_JS, dict(PAYLOAD))
     nxt = _rows(report, "next_button")
-    assert nxt and nxt[0]["status"] == "UNCERTAIN", nxt
+    assert nxt and nxt[0]["status"] == "VERIFIED", nxt
     pub = _rows(report, "publish_click")
     assert pub and pub[0]["status"] == "FAILED", pub
     assert clicks == {"next": 1, "pub": 0}, clicks
@@ -304,12 +322,14 @@ def main() -> int:
     print("FMS Test Single Post navigation tests (local Chromium)\n")
     check("happy: Next once, Publish once, Selling page reached",
           t_happy_next_once_publish_once_selling)
+    check("Next type=submit: still clicks Next before Publish",
+          t_next_submit_type_is_not_mistaken_for_publish)
     check("uncertain field: does NOT block Next or Publish",
           t_uncertain_field_does_not_block_publish)
     check("disabled Next: never clicked, reported clearly",
           t_next_disabled_never_clicked)
     check("unconfirmed: no Publish button -> FAILED, Publish never clicked",
-          t_unconfirmed_transition_is_uncertain)
+          t_dead_transition_next_clicked_publish_fails)
     check("explicit Facebook success is reported",
           t_explicit_facebook_success_is_reported)
     check("Publish click alone is not treated as success",

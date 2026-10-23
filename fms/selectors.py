@@ -105,7 +105,10 @@ F_ADD_PHOTOS = ("css", "input[type='file'][accept*='image']")
 F_ADD_VIDEO = ("css", "input[type='file'][accept*='video']")
 
 # Publish
-F_PUBLISH_BUTTON = ("css", "button[type='submit'], div[aria-label='Publish'][role='button']")
+F_PUBLISH_BUTTON = ("css", "button[type='submit'], div[aria-label='Publish'][role='button']")  # legacy selector; keep existing callers unchanged
+# v0.2.120: final Publish must be identified by its actual accessible label/text.
+# Do not use generic button[type=submit] here: Facebook can render Next as submit.
+F_FINAL_PUBLISH_BUTTON = ("css", "button[aria-label='Publish'], button:has-text('Publish'), [role='button'][aria-label='Publish'], div[aria-label='Publish'][role='button']")
 F_NEXT_BUTTON = ("text", "Next")
 F_DRAFT_SAVED_INDICATOR = ("text", "Your listing has been saved")
 
