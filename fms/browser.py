@@ -1642,41 +1642,125 @@ class PlaywrightDriver(BaseDriver):
 
     # -- Phase 2: drafts --------------------------------------------------------
     def create_draft(self, payload: dict) -> str | None:
-        """Fill the form and SAVE AS DRAFT (tab closes as each draft completes)."""
+        """Fill and save one draft; refresh the same Item for Sale page for the next draft."""
         self._ensure()
         page = self._page
         assert page is not None
         try:
             if not self._fill_form(page, payload):
-                # v0.2.56: surface the real reason (with screenshot path)
-                # like post_listing does, instead of a silent None.
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "form fill failed")
                 return None
             human.human_click(page, S.to_playwright(page, S.F_SAVE_DRAFT_BUTTON))
-            human.human_pause(2000, 4000)
-            url = page.url
+            human.human_pause(2500, 4000)
+            import re
             draft_id = None
-            if "listing_id=" in url:
-                import re
-                m = re.search(r"listing_id=(\d+)", url)
-                draft_id = m.group(1) if m else None
-            return draft_id or "draft"
-        except Exception:
+            # Facebook may expose the saved listing id in either the URL or DOM.
+            url = page.url
+            m = re.search(r"listing_id=(\d+)", url)
+            if m:
+                draft_id = m.group(1)
+            if not draft_id:
+                try:
+                    for a in page.locator("a[href*='listing_id=']").all():
+                        href = a.get_attribute("href") or ""
+                        m = re.search(r"listing_id=(\d+)", href)
+                        if m:
+                            draft_id = m.group(1)
+                            break
+                except Exception:
+                    pass
+            # Keep the existing browser/page and return to the same Item for Sale
+            # flow by refreshing the current page after Facebook confirms save.
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                human.human_pause(1200, 2200)
+            except Exception:
+                pass
+            return draft_id or None
+        except Exception as exc:
+            self._last_error = f"draft save failed: {type(exc).__name__}: {str(exc)[:160]}"
             return None
 
     def publish_draft(self, draft_id: str) -> bool:
-        """Open the drafts page and publish one draft. Best-effort."""
+        """Publish the specific saved draft by matching its listing_id in the drafts UI."""
         self._ensure()
         page = self._page
         assert page is not None
+        import re
+        draft_id = str(draft_id or "").strip()
+        if not draft_id or draft_id.lower() == "draft":
+            self._last_error = "Facebook did not return a real draft listing_id; refusing generic Publish click"
+            return False
         try:
             page.goto(S.MKT_DRAFTS_URL, wait_until="domcontentloaded")
-            human.human_pause(1500, 3000)
-            human.human_click(page, S.to_playwright(page, S.F_PUBLISH_DRAFT_BUTTON))
-            human.human_pause(2500, 5000)
-            return True
-        except Exception:
+            human.human_pause(1800, 2800)
+            # Facebook's drafts page can render progressively; allow a short settle.
+            try:
+                page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            # Find a link/card tied to this exact listing id. Never click a generic
+            # Publish button unless it belongs to the matching draft card.
+            candidates = page.locator(f"a[href*='listing_id={draft_id}'], a[href*='/{draft_id}']")
+            count = candidates.count()
+            target = None
+            for i in range(min(count, 30)):
+                link = candidates.nth(i)
+                try:
+                    href = link.get_attribute("href") or ""
+                    if draft_id not in href:
+                        continue
+                    card = link
+                    for _ in range(6):
+                        try:
+                            if card.locator("div[aria-label='Publish'][role='button'], button[aria-label*='Publish' i]").count():
+                                target = card
+                                break
+                            card = card.locator("xpath=..")
+                        except Exception:
+                            break
+                    if target is not None:
+                        break
+                except Exception:
+                    continue
+            if target is None:
+                # Alternate DOM path: locate the smallest ancestor containing the
+                # exact draft URL and a Publish action.
+                exact = page.locator(f"[href*='listing_id={draft_id}']")
+                for i in range(min(exact.count(), 30)):
+                    el = exact.nth(i)
+                    try:
+                        ancestor = el
+                        for _ in range(8):
+                            ancestor = ancestor.locator("xpath=..")
+                            buttons = ancestor.locator("div[aria-label='Publish'][role='button'], button[aria-label*='Publish' i]")
+                            if buttons.count() == 1:
+                                target = ancestor
+                                break
+                        if target is not None:
+                            break
+                    except Exception:
+                        continue
+            if target is None:
+                self._last_error = f"Could not find Publish action attached to draft {draft_id}"
+                return False
+            button = target.locator("div[aria-label='Publish'][role='button'], button[aria-label*='Publish' i]").first
+            human.human_click(page, button)
+            human.human_pause(2500, 4000)
+            # Success only if UI navigates away from drafts or the matching draft
+            # is no longer present; do not mark success just because click returned.
+            try:
+                if page.locator(f"[href*='listing_id={draft_id}']").count() == 0:
+                    return True
+            except Exception:
+                pass
+            if "/marketplace/item/" in page.url:
+                return True
+            self._last_error = f"Publish click was attempted for draft {draft_id}, but success was not confirmed"
+            return False
+        except Exception as exc:
+            self._last_error = f"publish draft {draft_id} failed: {type(exc).__name__}: {str(exc)[:160]}"
             return False
 
     # -- Phase 2: manual-publish helper ------------------------------------------
