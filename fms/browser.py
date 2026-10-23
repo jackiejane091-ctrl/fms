@@ -1500,6 +1500,435 @@ class PlaywrightDriver(BaseDriver):
                 f"{type(exc).__name__}: {str(exc)[:180]} @ {url}")
             return False
 
+    def _expand_more_details_draft_publish(self, page) -> bool:
+        """Draft & Publish only (v0.2.124): open the form's "More details"
+        section WITHOUT ever collapsing it, then verify it is open.
+
+        The shared _fill_form blind-clicks the "More details" toggle. When
+        Facebook has the section already expanded, that click collapses it
+        and Description / Availability / Location / Delivery — all inside
+        the section — become unfillable while the fields outside it still
+        succeed. This helper mirrors the Post action's proven state-aware
+        logic (single_post_test._more_details_state): read the toggle's
+        aria-expanded FIRST; click only when collapsed; never blind-click
+        an unreadable toggle; verify success by the Description control's
+        actual presence. Returns True when the section is open.
+        """
+        state, btn = "unknown", None
+        for _label in ("More details", "Show more details", "More Details"):
+            try:
+                _raw = page.get_by_text(_label, exact=False)
+                if _raw.count() == 0:
+                    continue
+                _text_loc = _raw.first
+                _btn_loc = _text_loc.locator(
+                    "xpath=ancestor::*[@role='button'][@aria-expanded][1]")
+                if _btn_loc.count() > 0:
+                    _val = _btn_loc.first.evaluate(
+                        "e => e.getAttribute('aria-expanded')")
+                    state = ("true" if _val == "true"
+                             else "false" if _val == "false" else "unknown")
+                    btn = _btn_loc.first
+                else:
+                    _val = _text_loc.evaluate(
+                        "e => e.getAttribute('aria-expanded')")
+                    state = ("true" if _val == "true"
+                             else "false" if _val == "false" else "unknown")
+                    btn = _text_loc
+                break
+            except Exception:
+                continue
+        if state == "false" and btn is not None:
+            # Collapsed -> exactly one click. (Already-open is left alone:
+            # clicking it would collapse the section.)
+            try:
+                human.human_click(page, btn)
+                human.human_pause(200, 400)
+            except Exception:
+                pass
+        try:
+            S.to_playwright(page, S.F_DESCRIPTION).wait_for(timeout=8000)
+            return True
+        except Exception:
+            self._note_field_error(
+                page, "more-details",
+                "More details section not open (toggle state: "
+                f"{state}) — Description/Availability/Location/Delivery "
+                "may be unfillable")
+            return False
+
+    def _fill_form_draft_publish(self, page, payload: dict) -> bool:
+        """Fill the whole create-item form. Shared by post/draft/manual/edit.
+
+        v0.2.50 order (user's explicit sequence): More details first, then
+        photos, then title, price, and the rest of the details. Faster —
+        short pauses instead of long ones.
+        """
+        # v0.2.64: Field completion checklist — track every field:
+        # attempted, succeeded, verified, error. Don't click Next until
+        # required fields pass (ChatGPT's debugging plan).
+        checklist = {}
+        checklist_lines = []
+        def _pause_checkpoint():
+            # Check only at safe boundaries between browser UI actions.
+            callback = payload.get("_pause_checkpoint")
+            if callable(callback):
+                callback()
+        def _check(field, status, detail=""):
+            checklist[field] = {"status": status, "detail": detail}
+            line = f"[CHECKLIST] {field}: {status}" + (f" — {detail}" if detail else "")
+            checklist_lines.append(line)
+            # Log to console for visibility
+            print(line, flush=True)
+            # v0.2.66: also store for the final summary so it's visible
+            # in FMS logs, not just console.
+
+
+        try:
+            ok, detail = self._open_create_item_form(page)
+            if not ok:
+                # v0.2.56: the form never opened — still snap so the user
+                # sees what the page showed instead.
+                self._note_field_error(page, "form-open", detail or
+                                       "create-item form did not open")
+                return False
+
+            # v0.2.58: user's EXACT form order (no more guessing):
+            # Main form: Photos -> Title -> Price -> Category -> Condition.
+            # THEN click "More details" -> Description -> Availability ->
+            # (skip Tags, skip SKU) -> Location -> Delivery -> Hide from friends.
+            # THEN Next becomes clickable -> Publish.
+
+            # 1. Photos FIRST (before any text).
+            _pause_checkpoint()
+            # v0.2.79: Use file_chooser (Playwright recommended).
+            images = payload.get("image_paths") or []
+            if not images:
+                self._note_field_error(page, "pictures",
+                                       "no image_paths in payload — 0 images to upload")
+            else:
+                _attempted = False
+                _last_err = ""
+                # Try 1: file chooser via "Add photos" click.
+                try:
+                    with page.expect_file_chooser(timeout=8000) as _fc:
+                        _add = page.get_by_text("Add photos", exact=False).first
+                        _add.wait_for(timeout=5000)
+                        human.human_click(page, _add)
+                    _chooser = _fc.value
+                    _chooser.set_files([str(p) for p in images[:10]])
+                    _attempted = True
+                except Exception as _e1:
+                    _last_err = f"chooser: {type(_e1).__name__}: {str(_e1)[:100]}"
+                # Try 2: direct set_input_files (fallback).
+                if not _attempted:
+                    for _sel in ("input[type='file']",
+                                 "input[type='file'][accept*='image']"):
+                        try:
+                            page.set_input_files(_sel, [str(p) for p in images[:10]])
+                            _attempted = True
+                            break
+                        except Exception as _e2:
+                            _last_err = f"direct: {type(_e2).__name__}: {str(_e2)[:100]}"
+                            continue
+                if not _attempted:
+                    self._note_field_error(
+                        page, "pictures",
+                        f"upload failed: {_last_err[:200]}")
+                else:
+                    # VERIFY: did photos actually appear?
+                    human.human_pause(3000, 4000)
+                    _photos_ok = False
+                    _verify_detail = ""
+                    try:
+                        _counter = page.get_by_text("Photos", exact=False).first
+                        _ctext = _counter.inner_text(timeout=3000) if _counter else ""
+                        _verify_detail = f"counter='{_ctext}'"
+                        import re as _re
+                        _m = _re.search(r"(\d+)\s*/\s*10", _ctext)
+                        if _m and int(_m.group(1)) > 0:
+                            _photos_ok = True
+                    except Exception as _e3:
+                        _verify_detail += f" counter-err={type(_e3).__name__}"
+                    if not _photos_ok:
+                        self._note_field_error(
+                            page, "pictures",
+                            f"upload attempted but NO photos visible! {_verify_detail[:150]}")
+            # Optional video
+            if payload.get("video_path"):
+                try:
+                    page.set_input_files(S.F_ADD_VIDEO[1], str(payload["video_path"]))
+                    human.human_pause(2000, 3500)
+                except Exception:
+                    pass
+
+            # 3. Title (v0.2.59: INDEPENDENT — a Title failure must NOT
+            # block pictures/price/category/etc. FBM Robo style: try it,
+            # log the result, move on to the next field).
+            _pause_checkpoint()
+            _check("title", "attempted")
+            try:
+                title = S.to_playwright(page, S.F_TITLE)
+                title.wait_for(timeout=8000)
+                self._type(title, payload.get("title", ""), hybrid_ok=True)
+                human.human_pause(100, 300)
+                _check("title", "succeeded")
+            except Exception as exc_t:
+                self._note_field_error(
+                    page, "title",
+                    f"Title not filled: {type(exc_t).__name__}")
+                _check("title", "failed", type(exc_t).__name__)
+            # 4. Price (v0.2.59: independent, with verification).
+
+            # v0.2.60: Price is FULLY INDEPENDENT — never references 'title'.
+            # (The old code crashed with NameError if Title had failed.)
+            _pause_checkpoint()
+            price_val = str(payload.get("price", ""))
+            _check("price", "attempted", f"value='{price_val}'")
+            if price_val:
+                try:
+                    price = S.to_playwright(page, S.F_PRICE)
+                    price.wait_for(timeout=8000)
+                    price.click()
+                    human.human_pause(100, 250)
+                    price.fill(price_val)
+                    human.human_pause(100, 250)
+                    # Verify the price field actually holds the price.
+                    try:
+                        got = price.input_value() or ""
+                        if price_val not in got:
+                            self._last_form_error = (
+                                f"Price verification failed: wanted '{price_val}', "
+                                f"field has '{got[:40]}'")
+                    except Exception:
+                        pass
+                except Exception as exc_p:
+                    self._last_form_error = (
+                        f"Price '{price_val}' not filled: {type(exc_p).__name__}: "
+                        f"{str(exc_p)[:100]}")
+
+            # Category: CLICK the field, then SELECT from the dropdown list.
+            # v0.2.54: user confirmed these are lists, not type-in fields.
+            # v0.2.65: checklist tracking (dynamic value from payload).
+            _check("category", "attempted")
+            # The old code kept trying to TYPE, which never selected anything.
+            category = payload.get("category")
+            if category:
+                try:
+                    cat = S.to_playwright(page, S.F_CATEGORY)
+                    cat.wait_for(timeout=8000)
+                    human.human_click(page, cat)
+                    human.human_pause(300, 600)
+                    # The dropdown list is open — click the matching option.
+                    # Scope to listbox/option roles so we don't hit stray text.
+                    opt = page.locator(
+                        "[role='listbox'] [role='option'], "
+                        "[role='menu'] [role='menuitem']").filter(
+                        has_text=category).first
+                    try:
+                        opt.wait_for(timeout=6000)
+                    except Exception:
+                        # Fallback: any visible element with the text.
+                        opt = page.get_by_text(category, exact=False).first
+                        opt.wait_for(timeout=6000)
+                    human.human_click(page, opt)
+                    human.human_pause(100, 250)
+                except Exception as exc_c:
+                    self._note_field_error(
+                        page, "category",
+                        f"Category '{category}' not selected: "
+                        f"{type(exc_c).__name__}")
+                    # Don't return False yet — try the rest, Next check
+                    # will catch an incomplete form.
+
+            # Condition: CLICK the field, then SELECT from the list.
+            # v0.2.54: same list-select approach as category.
+            # PERMANENT RULE (2026-10-19): Automation follows DB saved value.
+            # No thinking, no intelligence, no guessing. DB says X → use X.
+            condition = (payload.get("condition") or "").strip() or "New"
+            _check("condition", "attempted", f"value='{condition}'")
+            if condition:
+                try:
+                    # v0.2.91: EXACTLY like Category (user request).
+                    # Simple: find field, click, find option, click.
+                    cond_field = S.to_playwright(page, S.F_CONDITION_FIELD)
+                    cond_field.wait_for(timeout=8000)
+                    human.human_click(page, cond_field)
+                    human.human_pause(300, 600)
+                    # Click the matching option in the list.
+                    # v0.2.93: EXACT match only (per instructions).
+                    # "New" must not match "Used - like new".
+                    opt = page.get_by_role(
+                        "option", name=condition, exact=True).first
+                    try:
+                        opt.wait_for(timeout=6000)
+                    except Exception:
+                        # Fallback: exact text match within listbox
+                        opt = page.locator("[role='listbox']").get_by_text(
+                            condition, exact=True).first
+                        opt.wait_for(timeout=6000)
+                    human.human_click(page, opt)
+                    human.human_pause(100, 250)
+                    _check("condition", "succeeded")
+                except Exception as exc_co:
+                    self._note_field_error(
+                        page, "condition",
+                        f"Condition '{condition}' not selected: "
+                        f"{type(exc_co).__name__}")
+                    _check("condition", "failed", type(exc_co).__name__)
+
+            _pause_checkpoint()
+            # 5b. Draft & Publish ONLY (v0.2.124): expand "More details"
+            # STATE-AWARELY via the dedicated helper. The shared _fill_form
+            # blind-clicks the toggle, which COLLAPSES the section when
+            # Facebook already has it open — leaving Description,
+            # Availability, Location and Delivery unfillable. The helper
+            # reads aria-expanded first, clicks only when collapsed, and
+            # verifies via the Description control (the same proven logic
+            # the Post action uses in single_post_test).
+            self._expand_more_details_draft_publish(page)
+
+            # 6. Description: COPY-PASTE, not typing (v0.2.55 — user's
+            # explicit instruction: simple and easy, no character-by-character).
+            _pause_checkpoint()
+            desc = payload.get("description") or ""
+            if desc:
+                try:
+                    dloc = S.to_playwright(page, S.F_DESCRIPTION)
+                    dloc.wait_for(timeout=8000)
+                    # v0.2.95: ensure visible before fill (user: fix Description only)
+                    try:
+                        dloc.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
+                    dloc.click()
+                    human.human_pause(200, 400)
+                    # fill() sets the value instantly (paste-like).
+                    dloc.fill(desc)
+                    human.human_pause(100, 250)
+                except Exception as exc_d:
+                    self._note_field_error(
+                        page, "description",
+                        f"Description not pasted: {type(exc_d).__name__}")
+
+            # 7. Availability: dropdown -> select "List as in stock"
+            # (user: product saves availability as "list as stock").
+            # Tags and SKU are SKIPPED (user's explicit instruction).
+            _pause_checkpoint()
+            _avail = (payload.get("availability") or "").strip().lower()
+            # Map product values to the FB option text.
+            _avail_map = {
+                "in_stock": "List as in stock",
+                "list as in stock": "List as in stock",
+                "stock": "List as in stock",
+                "single": "List as single item",
+                "list as single item": "List as single item",
+            }
+            _avail_text = _avail_map.get(_avail, "List as in stock")
+            try:
+                av = S.to_playwright(page, S.F_AVAILABILITY_FIELD)
+                av.wait_for(timeout=8000)
+                human.human_click(page, av)
+                human.human_pause(300, 600)
+                opt = page.locator(
+                    "[role='listbox'] [role='option'], "
+                    "[role='menu'] [role='menuitem']").filter(
+                    has_text=_avail_text).first
+                try:
+                    opt.wait_for(timeout=6000)
+                except Exception:
+                    opt = page.get_by_text(_avail_text, exact=False).first
+                    opt.wait_for(timeout=6000)
+                human.human_click(page, opt)
+                human.human_pause(100, 250)
+            except Exception as exc_av:
+                self._note_field_error(
+                    page, "availability",
+                    f"Availability '{_avail_text}' not selected: "
+                    f"{type(exc_av).__name__}")
+
+            # 8. Location (Tags and SKU skipped per user's instruction).
+            # v0.2.78: scroll into view (form has its own scrollbar).
+            if payload.get("location"):
+                try:
+                    _loc_field = page.get_by_text("Location", exact=False).first
+                    _loc_field.scroll_into_view_if_needed(timeout=3000)
+                except Exception:
+                    pass
+                self._select_location(page, payload["location"])
+
+            # 9. Hide From Friends: it's a TOGGLE switch (user's screenshot).
+            # Only click if it's currently OFF (we want it ON).
+            if payload.get("hide_from_friends"):
+                try:
+                    hff = S.to_playwright(page, S.F_HIDE_FROM_FRIENDS)
+                    # v0.2.78: scroll into view first.
+                    try:
+                        hff.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
+                    hff.wait_for(timeout=6000)
+                    # Check the toggle state — don't flip it if already on.
+                    try:
+                        _checked = hff.evaluate(
+                            "e => e.getAttribute('aria-checked')")
+                    except Exception:
+                        _checked = None
+                    if _checked not in ("true", True):
+                        human.human_click(page, hff)
+                        human.human_pause(100, 250)
+                except Exception as exc_h:
+                    self._note_field_error(
+                        page, "hide-from-friends",
+                        f"Hide-from-friends not set: {type(exc_h).__name__}")
+            # 9. Delivery options: user ticks "Door drop-off".
+            # v0.2.58: state-aware — only click if not already selected
+            # (clicking a selected checkbox would UNSELECT it).
+            _delivery_sel = {
+                "public_meetup": S.F_DELIVERY_MEETUP,
+                "door_pickup": S.F_DELIVERY_PICKUP,
+                "door_dropoff": S.F_DELIVERY_DROPOFF,
+            }
+            for _opt in payload.get("delivery_options") or []:
+                _sel = _delivery_sel.get(_opt)
+                if not _sel:
+                    continue
+                try:
+                    dloc = S.to_playwright(page, _sel)
+                    # v0.2.78: scroll into view first.
+                    try:
+                        dloc.scroll_into_view_if_needed(timeout=3000)
+                    except Exception:
+                        pass
+                    dloc.wait_for(timeout=6000)
+                    # Check if already selected (checkbox/radio).
+                    try:
+                        _sel_state = dloc.evaluate(
+                            "e => e.checked !== undefined ? e.checked : "
+                            "e.getAttribute('aria-checked')")
+                    except Exception:
+                        _sel_state = None
+                    if _sel_state not in (True, "true"):
+                        human.human_click(page, dloc)
+                        human.human_pause(100, 250)
+                except Exception as exc_do:
+                    self._note_field_error(
+                        page, f"delivery-{_opt}",
+                        f"Delivery '{_opt}' not set: {type(exc_do).__name__}")
+            # (Photos/video already attached at the top — v0.2.50 order.)
+            return True
+        except Exception as exc:
+            # v0.2.29: keep the real failure reason + page so the run logs
+            # say WHY the form never completed (instead of a silent False).
+            try:
+                url = page.url
+            except Exception:
+                url = "?"
+            self._note_field_error(
+                page, "form-fatal",
+                f"{type(exc).__name__}: {str(exc)[:180]} @ {url}")
+            return False
+
     def human_warmup(self) -> None:
         """Brief human-like feed browsing before the first post (v0.2.33).
 
@@ -1647,7 +2076,14 @@ class PlaywrightDriver(BaseDriver):
         page = self._page
         assert page is not None
         try:
-            if not self._fill_form(page, payload):
+            # v0.2.124: ONLY the Draft & Publish flow sets
+            # _fms_draft_publish_fill (engine._draft_publish_flow). Every
+            # other create_draft caller — Create Drafts, script draft
+            # blocks — keeps the shared _fill_form exactly as before.
+            _fill = (self._fill_form_draft_publish
+                     if getattr(self, "_fms_draft_publish_fill", False)
+                     else self._fill_form)
+            if not _fill(page, payload):
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "form fill failed")
                 return None

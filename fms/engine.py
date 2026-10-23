@@ -1360,7 +1360,8 @@ class RunController:
         return row["c"] if row else 0
 
     def _create_drafts_batch(self, account: dict, driver, quota: int,
-                               account_idx: int, chunk: int | None = None) -> int:
+                               account_idx: int, chunk: int | None = None,
+                               bounded: bool = False) -> int:
         """Create drafts up to quota. Returns the number created.
 
         Drafts are created in tab-groups of `chunk` (Tabs Draft And Publish),
@@ -1375,6 +1376,7 @@ class RunController:
             chunk = max(1, int(self.cfg.tabs_draft_publish))
         created = 0
         while created < todo:
+            _created_before = created
             group = min(chunk, todo - created)
             self.log(f"[{label}] draft batch: {group} tab(s)",
                      account_id=account["id"])
@@ -1401,6 +1403,16 @@ class RunController:
                     self._record_failed(account, pid, payload,
                                         "draft creation failed")
                 self._inter_post_delay()
+            # v0.2.124: bounded mode (Draft & Publish only) — if a whole
+            # group produced no draft at all, stop instead of looping
+            # forever on the cycling products. With bounded=False (Create
+            # Drafts) this block never runs: original behavior preserved.
+            if bounded and created == _created_before:
+                self.log(f"[{label}] draft batch stopped: a full group of "
+                         f"{group} attempt(s) created no draft — not "
+                         f"retrying endlessly; see the field errors above",
+                         level="error", account_id=account["id"])
+                break
         return created
 
     def _publish_draft_rows(self, account: dict, driver,
@@ -1463,7 +1475,18 @@ class RunController:
                             account_idx: int) -> None:
         """Phase 1: create drafts (tab closes as each draft completes).
         Phase 2: publish them — all together, or one-by-one with a gap."""
-        self._create_drafts_batch(account, driver, quota, account_idx)
+        # v0.2.124 (Draft & Publish ONLY): route this flow's form fills
+        # through the isolated state-aware filler in the driver, and bound
+        # the draft batch so a persistently failing draft stops instead of
+        # retrying forever. Create Drafts uses neither — its flag stays
+        # unset and its batch call keeps the original unbounded behavior.
+        _prev_flag = getattr(driver, "_fms_draft_publish_fill", False)
+        try:
+            driver._fms_draft_publish_fill = True
+            self._create_drafts_batch(account, driver, quota, account_idx,
+                                      bounded=True)
+        finally:
+            driver._fms_draft_publish_fill = _prev_flag
         self._publish_draft_rows(account, driver,
                                  self._draft_rows(account["id"]))
 
