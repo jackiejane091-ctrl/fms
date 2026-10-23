@@ -34,6 +34,24 @@ def _ensure_visible(page, locator, timeout=3000):
     except Exception:
         return False
 
+def _listing_timing_target(payload: dict) -> tuple[float, float, float]:
+    """Return normalized per-listing min/max and a random soft target.
+
+    User-configured timing values are targets only: callers must never treat
+    max_seconds_to_post as a deadline or a reason to stop the listing.
+    """
+    try:
+        minimum = max(0.0, float(payload.get("min_seconds_to_post", 25)))
+    except (TypeError, ValueError):
+        minimum = 25.0
+    try:
+        maximum = max(0.0, float(payload.get("max_seconds_to_post", 40)))
+    except (TypeError, ValueError):
+        maximum = 40.0
+    if maximum < minimum:
+        minimum, maximum = maximum, minimum
+    return minimum, maximum, random.uniform(minimum, maximum)
+
 # A small pool of desktop user agents to rotate per account.
 # v0.2.32: NO user-agent override at all. The bundled browser is Chrome for
 # Testing 156 — any UA string we invent (even a Chrome one) risks mismatching
@@ -238,6 +256,8 @@ class PlaywrightDriver(BaseDriver):
         self._page = None
         self._listing_tabs = []
         self._listing_tab_index = 0
+        # Consumed by the first listing so its timer can include browser startup.
+        self._pending_browser_start_time = None
         # v0.2.49: set by the engine — called the instant the browser window
         # is closed so the account flips to Failed immediately.
         self._on_close_callback = None
@@ -337,7 +357,10 @@ class PlaywrightDriver(BaseDriver):
         return cfg
 
     def _launch(self) -> None:
-        # IXBrowser (anti-detect, optional): route through its Local API when
+        # Remember this browser's opening start so the first listing timer can
+        # include startup/login/loading time. Later listings get fresh timers.
+        self._pending_browser_start_time = time.monotonic()
+        # IXBrowser (optional): route through its Local API when
         # the run enabled it. Disabled -> bundled Chrome exactly as before.
         if self._ix_cfg():
             self._launch_ixbrowser()
@@ -1502,26 +1525,40 @@ class PlaywrightDriver(BaseDriver):
             # human_scroll already pauses 300-900ms after each scroll
 
     def post_listing(self, payload: dict) -> str | None:
+        # Per-listing timer starts at the beginning of this workflow, BEFORE
+        # _ensure() can open/attach the browser. It resets on every listing.
+        # Min/Max are configurable timing targets, not deadlines or stop gates.
+        _t0 = getattr(self, "_pending_browser_start_time", None) or time.monotonic()
+        # Browser-open time belongs to the first listing only. Every subsequent
+        # listing starts a fresh timer at its own workflow entry.
+        self._pending_browser_start_time = None
+        _min_s, _max_s, _target_s = _listing_timing_target(payload)
+        # Select a fresh target for each listing within the user's configured
+        # range. If form/browser/network work already exceeds this target, do
+        # not wait further and do not stop: continue to the normal Next flow.
+
         self._ensure()
+        # If this call itself had to open the browser, _launch() stamped the
+        # real opening time. Use it and consume it so the next listing gets a
+        # fresh timer rather than inheriting this browser-start timestamp.
+        _launched_at = getattr(self, "_pending_browser_start_time", None)
+        if _launched_at is not None:
+            _t0 = _launched_at
+            self._pending_browser_start_time = None
         page = self._page
         assert page is not None
         self._last_error = None  # v0.2.29: surfaced in the run logs on failure
-        # v0.2.59: per-listing timing — user sets min/max seconds per listing
-        # (e.g. 45-60s). Not too fast (suspicious), not slower than manual.
-        import time as _time
-        _t0 = _time.time()
-        _min_s = payload.get("min_seconds_to_post") or 45
         try:
             if not self._fill_form(page, payload):
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "form fill failed")
                 return None
-            # v0.2.59: if we finished faster than min_seconds_to_post, wait
-            # the difference before publishing (don't look like a bot).
-            _elapsed = _time.time() - _t0
-            if _elapsed < _min_s:
-                _wait = _min_s - _elapsed
-                human.human_pause(int(_wait * 1000), int(_wait * 1000) + 500)
+            # Soft timing target only: wait if the workflow was faster than the
+            # selected target. Max is NEVER a timeout; slow loading can exceed it.
+            _elapsed = time.monotonic() - _t0
+            if _elapsed < _target_s:
+                _wait = _target_s - _elapsed
+                human.human_pause(int(_wait * 1000), int(_wait * 1000) + 250)
             # Publish: form -> Next -> Publish (two-step, v0.2.51).
             # The Publish button only appears AFTER clicking Next; the old
             # code skipped Next entirely and timed out waiting for Publish.
@@ -1530,10 +1567,13 @@ class PlaywrightDriver(BaseDriver):
             # disabled — clicking a disabled button does nothing.
             try:
                 nxt = S.to_playwright(page, S.F_NEXT_BUTTON)
-                nxt.wait_for(timeout=15000)
-                # Wait until it's actually clickable (enabled).
+                # No Max-time stop: wait for Facebook's Next control to be
+                # visible and enabled, however long loading takes.
+                nxt.wait_for(timeout=0)
+                # Wait until it's actually clickable (enabled), with no timer
+                # deadline. Min/Max only shape the soft timing target above.
                 try:
-                    nxt.wait_for(state="enabled", timeout=10000)
+                    nxt.wait_for(state="enabled", timeout=0)
                 except Exception:
                     # Still disabled — find which required fields are missing.
                     missing = []

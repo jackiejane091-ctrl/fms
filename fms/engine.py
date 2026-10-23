@@ -118,6 +118,8 @@ class RunConfig:
     max_price: float | None = None
     min_delay_s: float = 2.0         # delay between posts on one account
     max_delay_s: float = 5.0
+    min_seconds_to_post: float = 25.0  # per-listing soft timing target
+    max_seconds_to_post: float = 40.0  # per-listing soft timing target; never a deadline
     shuffle: bool = False           # shuffle account order each run
     split_locations: bool = False   # each account gets a different location slice
     condition: str = "New"
@@ -581,12 +583,12 @@ class _Rotator:
             "video_path": product.get("video_path"),
             "as_draft": as_draft,
             "hide_from_friends": cfg.hide_from_friends,
-            # v0.2.59: per-listing timing (user: 45-60 sec from browser open
-            # to publish — not too fast, not slower than manual).
-            "min_seconds_to_post": int(getattr(
-                cfg, "min_seconds_to_post", 45) or 45),
-            "max_seconds_to_post": int(getattr(
-                cfg, "max_seconds_to_post", 60) or 60),
+            # Per-listing soft timing targets; settings are user-configurable.
+            # Max is not a deadline and never stops a slow listing workflow.
+            "min_seconds_to_post": max(0.0, float(getattr(
+                cfg, "min_seconds_to_post", 25))),
+            "max_seconds_to_post": max(0.0, float(getattr(
+                cfg, "max_seconds_to_post", 40))),
         }
 
 

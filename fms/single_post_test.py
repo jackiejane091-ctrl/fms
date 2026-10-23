@@ -12,6 +12,8 @@ upload mechanism is retained here without changing production photo code.
 """
 from __future__ import annotations
 
+import time
+import random
 import json
 import re
 from datetime import datetime, timezone
@@ -382,9 +384,19 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
     started = datetime.now(timezone.utc).isoformat()
     results: list[dict[str, str]] = []
     page = None
+    # Match production per-listing soft timing. The first listing can consume
+    # the browser-launch timestamp; subsequent listings get a fresh start.
+    _pending_start = getattr(driver, "_pending_browser_start_time", None)
+    _listing_t0 = _pending_start if _pending_start is not None else time.monotonic()
+    if _pending_start is not None:
+        driver._pending_browser_start_time = None
     try:
         _pause_checkpoint(payload)
         driver._ensure()
+        _launched_at = getattr(driver, "_pending_browser_start_time", None)
+        if _launched_at is not None:
+            _listing_t0 = _launched_at
+            driver._pending_browser_start_time = None
         page = driver._page
         if page is None:
             raise RuntimeError("FMS driver did not provide an active page")
@@ -615,6 +627,24 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
             _record(results, "hide_from_friends", payload.get("hide_from_friends"), "",
                     "SKIPPED", "Setting is not explicitly enabled")
 
+        # Soft timing target for this listing. This is not a deadline: if form
+        # fill/browser loading took longer than Max, proceed without extra wait.
+        try:
+            _min_s = max(0.0, float(payload.get("min_seconds_to_post", 25)))
+        except (TypeError, ValueError):
+            _min_s = 25.0
+        try:
+            _max_s = max(0.0, float(payload.get("max_seconds_to_post", 40)))
+        except (TypeError, ValueError):
+            _max_s = 40.0
+        if _max_s < _min_s:
+            _min_s, _max_s = _max_s, _min_s
+        _target_s = random.uniform(_min_s, _max_s)
+        _remaining = _target_s - (time.monotonic() - _listing_t0)
+        if _remaining > 0:
+            _pause_checkpoint(payload)
+            time.sleep(_remaining)
+
         # Navigation policy: prioritize Facebook's actual Next button. A generic
         # button[type=submit] is NOT evidence that Publish is ready: Facebook may
         # render Next as a submit button. If Next is visible and enabled, click it
@@ -622,7 +652,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
         _pause_checkpoint(payload)
         try:
             next_button = page.get_by_role("button", name="Next", exact=True).first
-            next_button.wait_for(state="visible", timeout=5000)
+            next_button.wait_for(state="visible", timeout=0)
             if next_button.is_enabled():
                 next_button.click(timeout=5000)
                 _record(results, "next_button", "click once when enabled", "clicked", "VERIFIED",

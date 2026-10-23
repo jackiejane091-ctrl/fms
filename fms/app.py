@@ -98,6 +98,8 @@ class RunIn(BaseModel):
     max_price: float | None = None
     min_delay_s: float = 2.0
     max_delay_s: float = 5.0
+    min_seconds_to_post: float = 25.0
+    max_seconds_to_post: float = 40.0
     shuffle: bool = False
     split_locations: bool = False
     condition: str = "New"
@@ -576,6 +578,17 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
                         409, f"group par pehle se run #{r['id']} chal rahi hai")
         cfg = RunConfig(**{k: v for k, v in data.model_dump().items()
                            if k != "fresh"})
+        # Keep the per-listing timing settings distinct from the delay BETWEEN
+        # listings. Dashboard requests pass these fields explicitly; this also
+        # honors saved Settings for API callers that omit them.
+        try:
+            saved_timing = settings_mod.get_all(db)
+            if "min_seconds_to_post" not in data.model_fields_set:
+                cfg.min_seconds_to_post = float(saved_timing.get("min_seconds_to_post", 25))
+            if "max_seconds_to_post" not in data.model_fields_set:
+                cfg.max_seconds_to_post = float(saved_timing.get("max_seconds_to_post", 40))
+        except (TypeError, ValueError):
+            pass
         # v0.2.25: fold the group's General Settings into the run config.
         try:
             g = accounts_mod.get_group(db, data.group_id)
