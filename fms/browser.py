@@ -268,39 +268,8 @@ class PlaywrightDriver(BaseDriver):
 
     # -- self-diagnosis ---------------------------------------------------------
     def _snap(self, page, reason: str) -> str | None:
-        """Save a page screenshot when a form field fails (v0.2.56).
-
-        The user asked FMS to be self-reporting: instead of them taking a
-        screenshot of the Logs every time, FMS saves a picture of the page
-        the moment a field fails, and the Logs point at the file. Never
-        raises — a failed screenshot must never break the run.
-        """
-        try:
-            # v0.2.63: screenshots go to D:\FMS\screenshots (easy to find),
-            # not buried in AppData (user's request).
-            shot_dir = config.debug_dir() / "screenshots"
-            shot_dir.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            label = str(self.account.get("label") or "account")
-            label = "".join(c if (c.isalnum() or c in "-_") else "_"
-                            for c in label)[:24] or "account"
-            safe = "".join(c if (c.isalnum() or c in "-_") else "_"
-                           for c in reason)[:32] or "field"
-            path = shot_dir / f"{stamp}_{label}_{safe}.png"
-            page.screenshot(path=str(path))
-            self._last_screenshot = str(path)
-            # Keep the folder bounded: newest 50 only (non-technical user,
-            # never needs to clean this by hand).
-            try:
-                shots = sorted(shot_dir.glob("*.png"),
-                               key=lambda p: p.stat().st_mtime)
-                for old in shots[:-50]:
-                    old.unlink()
-            except Exception:
-                pass
-            return str(path)
-        except Exception:
-            return None
+        """Screenshots are intentionally disabled; keep the call site compatible."""
+        return None
 
     def _note_field_error(self, page, reason: str, msg: str) -> None:
         """Record a form-field failure AND save a screenshot of the page.
@@ -311,10 +280,8 @@ class PlaywrightDriver(BaseDriver):
 
         v0.2.66: accumulate ALL errors in _all_field_errors (not just last).
         """
-        shot = self._snap(page, reason)
-        suffix = f" | Screenshot: {shot}" if shot else " | Screenshot: (failed)"
-        err = msg + suffix
-        self._last_form_error = err
+        # Keep diagnostic text without creating or referencing screenshot files.
+        self._last_form_error = msg
         # Accumulate for the final report
         if not hasattr(self, "_all_field_errors"):
             self._all_field_errors = []
@@ -356,6 +323,35 @@ class PlaywrightDriver(BaseDriver):
             cfg["password"] = proxy.get("password") or ""
         return cfg
 
+    def _maximize_window(self) -> None:
+        """Maximize the launched Chromium window before any workflow actions.
+
+        Uses the Chromium DevTools window-state API for both bundled Chrome and
+        CDP-connected IXBrowser. Failures are non-fatal; they must not block a run.
+        """
+        page = self._page
+        context = self._context
+        if page is None or context is None:
+            return
+        try:
+            session = context.new_cdp_session(page)
+            try:
+                info = session.send("Browser.getWindowForTarget")
+                window_id = info.get("windowId")
+                if window_id is not None:
+                    session.send("Browser.setWindowBounds", {
+                        "windowId": window_id,
+                        "bounds": {"windowState": "maximized"},
+                    })
+            finally:
+                try:
+                    session.detach()
+                except Exception:
+                    pass
+        except Exception:
+            # --start-maximized remains enabled for the bundled Chrome path.
+            pass
+
     def _launch(self) -> None:
         # Remember this browser's opening start so the first listing timer can
         # include startup/login/loading time. Later listings get fresh timers.
@@ -391,12 +387,6 @@ class PlaywrightDriver(BaseDriver):
         # fingerprint — v0.2.32 principle). Slight cascade so parallel
         # account browsers don't stack pixel-exact on top of each other.
         cascade = (self.account.get("id") or 0) % 5
-        # v0.2.62: video recording — the user asked for a recording of each
-        # listing attempt so the real issue is visible (not just logs).
-        # Videos land in <data>/videos/account_<id>/.
-        # v0.2.63: videos go to D:\FMS\videos (easy to find).
-        _video_dir = config.debug_dir() / "videos" / f"account_{self.account['id']}"
-        _video_dir.mkdir(parents=True, exist_ok=True)
         self._context = self._pw.chromium.launch_persistent_context(
             str(profile_dir),
             headless=self.headless,
@@ -406,14 +396,13 @@ class PlaywrightDriver(BaseDriver):
             # so Facebook sees a consistent clock for the proxy's location.
             # v0.2.32: no user_agent override -> honest self-consistent UA.
             no_viewport=True,
-            record_video_dir=str(_video_dir),
-            record_video_size={"width": 1280, "height": 720},
             args=["--disable-blink-features=AutomationControlled",
                   "--start-maximized",
                   f"--window-position={40 * cascade},{30 * cascade}"],
         )
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+        self._maximize_window()
         # v0.2.49: watch for the user closing the window — the engine marks
         # the account Failed the instant this fires (no 8-10s stall).
         try:
@@ -511,6 +500,7 @@ class PlaywrightDriver(BaseDriver):
         self._context = contexts[0] if contexts else self._browser.new_context()
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
+        self._maximize_window()
         # v0.2.49: same close watcher as the main launch path.
         try:
             self._context.on("close", self._handle_context_close)
