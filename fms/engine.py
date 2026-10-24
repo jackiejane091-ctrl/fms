@@ -1442,11 +1442,8 @@ class RunController:
                     "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
                     (self.run_id,),
                 )
-                try:
-                    _draft_images = json.loads(d["images_used"] or "[]")
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    _draft_images = []
-                _record_published_image_usage(self.db, account["id"], d["product_id"], _draft_images)
+                # Image cooldown was reserved when this Draft & Publish 1 draft
+                # was saved. Do not reset the 8-day clock at publish time.
                 self.log(f"[{label}] published '{d['title_used']}'",
                          account_id=account["id"])
             else:
@@ -1538,6 +1535,15 @@ class RunController:
                          payload["price"], payload["location"],
                          json.dumps(payload["image_paths"]), draft_id, utcnow()),
                     )
+                    # Draft & Publish 1: reserve every selected image as soon as
+                    # the draft is saved, not after its later publish succeeds.
+                    try:
+                        _record_published_image_usage(
+                            self.db, account["id"], pid, payload.get("image_paths"))
+                    except Exception as _cooldown_exc:
+                        self.log(f"[{label}] draft saved but image cooldown record failed: "
+                                 f"{type(_cooldown_exc).__name__}: {str(_cooldown_exc)[:120]}",
+                                 level="error", account_id=account["id"])
                     self.log(f"[{label}] drafted '{payload['title']}'",
                              account_id=account["id"])
                     created += 1

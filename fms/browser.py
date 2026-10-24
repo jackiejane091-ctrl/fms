@@ -1717,22 +1717,45 @@ class PlaywrightDriver(BaseDriver):
                 try:
                     cat = S.to_playwright(page, S.F_CATEGORY)
                     cat.wait_for(timeout=8000)
+                    # Wait for the dropdown to actually render before selecting.
                     human.human_click(page, cat)
-                    human.human_pause(300, 600)
-                    # The dropdown list is open — click the matching option.
-                    # Scope to listbox/option roles so we don't hit stray text.
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        pass
+                    human.human_pause(900, 1400)
                     opt = page.locator(
                         "[role='listbox'] [role='option'], "
                         "[role='menu'] [role='menuitem']").filter(
                         has_text=category).first
                     try:
-                        opt.wait_for(timeout=6000)
+                        opt.wait_for(state="visible", timeout=12000)
                     except Exception:
-                        # Fallback: any visible element with the text.
                         opt = page.get_by_text(category, exact=False).first
-                        opt.wait_for(timeout=6000)
-                    human.human_click(page, opt)
-                    human.human_pause(100, 250)
+                        opt.wait_for(state="visible", timeout=12000)
+                    opt.scroll_into_view_if_needed(timeout=5000)
+                    opt.click(timeout=10000)
+                    # Do not continue until the selected value is reflected in the field.
+                    human.human_pause(700, 1100)
+                    selected = False
+                    try:
+                        field_text = (cat.inner_text(timeout=2500) or "").strip()
+                        field_value = (cat.get_attribute("aria-label") or "").strip()
+                        selected = (category.casefold() in field_text.casefold()
+                                    or category.casefold() in field_value.casefold())
+                    except Exception:
+                        pass
+                    if not selected:
+                        # A visible selected option/value is also acceptable evidence.
+                        try:
+                            selected = page.locator(
+                                "[role='option'][aria-selected='true'], "
+                                "[role='menuitem'][aria-checked='true']").filter(
+                                has_text=category).count() > 0
+                        except Exception:
+                            selected = False
+                    if not selected:
+                        raise RuntimeError("category click was not verifiably selected")
                 except Exception as exc_c:
                     self._note_field_error(
                         page, "category",
@@ -2143,10 +2166,14 @@ class PlaywrightDriver(BaseDriver):
             try:
                 page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
                 try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
+                    page.wait_for_load_state("load", timeout=20000)
                 except Exception:
                     pass
-                human.human_pause(1800, 2600)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                human.human_pause(2500, 3500)
                 # Keep the list navigation as the source of truth; the card can
                 # render progressively, so wait briefly for the title to appear.
                 try:
@@ -2244,11 +2271,21 @@ class PlaywrightDriver(BaseDriver):
             tab = None
             try:
                 page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
+                # Slow connections: wait for document completion and meaningful list content.
                 try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
+                    page.wait_for_load_state("load", timeout=20000)
                 except Exception:
                     pass
-                human.human_pause(1800, 2600)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                human.human_pause(2500, 3500)
+                try:
+                    page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=15000)
+                except Exception:
+                    # Facebook renders cards progressively; retry after another settle period.
+                    human.human_pause(2000, 3000)
 
                 # Find the title on the drafts page and walk upward to its card.
                 # Prefer the newest/first exact-title card because Facebook lists
