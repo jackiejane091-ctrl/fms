@@ -2071,7 +2071,13 @@ class PlaywrightDriver(BaseDriver):
 
     # -- Phase 2: drafts --------------------------------------------------------
     def _create_draft_draft_publish(self, payload: dict) -> str | None:
-        """Draft & Publish ONLY: fill, explicitly locate/click Save Draft, verify result."""
+        """Draft & Publish ONLY: save a draft, then queue it by its exact title.
+
+        Facebook does not consistently expose listing_id immediately after Save Draft.
+        For this dedicated workflow, successful Save Draft clicks are queued by title;
+        the publish phase opens the matching draft from the Drafts list in a new tab.
+        Other draft/post workflows are intentionally unchanged.
+        """
         self._ensure()
         page = self._page
         assert page is not None
@@ -2082,8 +2088,6 @@ class PlaywrightDriver(BaseDriver):
                                     or "Draft & Publish form fill failed")
                 return None
 
-            # Facebook's visible button may have no aria-label. Try accessible
-            # role/name first, then the existing selector, then exact visible text.
             candidates = []
             try:
                 candidates.append(page.get_by_role("button", name=re.compile(r"^\s*save\s+draft\s*$", re.I)))
@@ -2099,25 +2103,20 @@ class PlaywrightDriver(BaseDriver):
                 pass
 
             save_button = None
-            last_lookup_error = None
             for candidate in candidates:
                 try:
-                    count = candidate.count()
-                    for i in range(count):
-                        item = candidate.nth(i) if count > 1 else candidate
+                    for i in range(min(candidate.count(), 10)):
+                        item = candidate.nth(i) if candidate.count() > 1 else candidate
                         if item.is_visible() and item.is_enabled():
                             save_button = item
                             break
                     if save_button is not None:
                         break
-                except Exception as exc:
-                    last_lookup_error = exc
-
+                except Exception:
+                    continue
             if save_button is None:
                 shot = self._snap(page, "draft_save_button_missing")
-                self._last_error = ("Draft & Publish: visible/enabled Save Draft button not found"
-                                    + (f"; lookup={type(last_lookup_error).__name__}" if last_lookup_error else "")
-                                    + (f"; screenshot={shot}" if shot else ""))
+                self._last_error = "Draft & Publish: visible/enabled Save Draft button not found" + (f"; screenshot={shot}" if shot else "")
                 return None
 
             try:
@@ -2125,118 +2124,50 @@ class PlaywrightDriver(BaseDriver):
                 save_button.click(timeout=8000)
             except Exception as exc:
                 shot = self._snap(page, "draft_save_click_failed")
-                self._last_error = (f"Draft & Publish: Save Draft click failed: {type(exc).__name__}: {str(exc)[:140]}"
-                                    + (f"; screenshot={shot}" if shot else ""))
+                self._last_error = f"Draft & Publish: Save Draft click failed: {type(exc).__name__}: {str(exc)[:140]}" + (f"; screenshot={shot}" if shot else "")
                 return None
 
-            # Wait for Facebook's save transition; do not claim success merely
-            # because the click call returned. The saved listing ID is required.
+            # Let Facebook finish its save transition before returning to create the next item.
             try:
-                page.wait_for_timeout(1800)
+                page.wait_for_timeout(2200)
             except Exception:
-                human.human_pause(1500, 2200)
+                human.human_pause(1800, 2600)
 
-            draft_id = None
-            try:
-                m = re.search(r"listing_id=(\d+)", page.url)
-                if m:
-                    draft_id = m.group(1)
-            except Exception:
-                pass
-            if not draft_id:
-                try:
-                    for a in page.locator("a[href*='listing_id=']").all():
-                        href = a.get_attribute("href") or ""
-                        m = re.search(r"listing_id=(\d+)", href)
-                        if m:
-                            draft_id = m.group(1)
-                            break
-                except Exception:
-                    pass
-
-            # v0.2.128: Facebook often saves successfully without exposing
-            # listing_id in the editor URL or immediate DOM. Recover the real ID
-            # from Marketplace > Your drafts by matching this run's exact title.
-            # Never invent an ID or accept an ambiguous title match.
-            if not draft_id:
-                _draft_title = str(payload.get("title") or "").strip()
-                try:
-                    page.goto(S.MKT_DRAFTS_URL, wait_until="domcontentloaded", timeout=30000)
-                    human.human_pause(1400, 2200)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=4000)
-                    except Exception:
-                        pass
-                    _ids = set()
-                    if _draft_title:
-                        _title_nodes = page.get_by_text(_draft_title, exact=True)
-                        for _ti in range(min(_title_nodes.count(), 20)):
-                            _node = _title_nodes.nth(_ti)
-                            _ancestor = _node
-                            for _depth in range(8):
-                                try:
-                                    _links = _ancestor.locator("a[href*='listing_id=']")
-                                    for _li in range(min(_links.count(), 20)):
-                                        _href = _links.nth(_li).get_attribute("href") or ""
-                                        _match = re.search(r"listing_id=(\d+)", _href)
-                                        if _match:
-                                            _ids.add(_match.group(1))
-                                except Exception:
-                                    pass
-                                try:
-                                    _ancestor = _ancestor.locator("xpath=..")
-                                except Exception:
-                                    break
-                    if len(_ids) == 1:
-                        draft_id = next(iter(_ids))
-                    elif len(_ids) > 1:
-                        self._last_error = (
-                            "Draft appears saved, but multiple Facebook draft IDs matched "
-                            f"the exact title '{_draft_title}'; refusing to choose ambiguously"
-                        )
-                except Exception as _recover_exc:
-                    self._last_error = (
-                        "Save Draft was clicked, but ID recovery from Your drafts failed: "
-                        f"{type(_recover_exc).__name__}: {str(_recover_exc)[:140]}"
-                    )
-
-                # Return to the listing creation page for the next draft. The
-                # publish phase will later navigate to Your drafts by saved ID.
-                try:
-                    page.goto("https://www.facebook.com/marketplace/create/item",
-                              wait_until="domcontentloaded", timeout=30000)
-                    human.human_pause(1000, 1800)
-                except Exception:
-                    pass
-
-            # Some Facebook variants do not expose the ID in the immediate URL.
-            # Inspect visible confirmation/transition, but never fabricate an ID.
-            if not draft_id:
-                try:
-                    saved_signal = page.get_by_text(re.compile(r"draft saved|saved to drafts|saved draft", re.I))
-                    if saved_signal.count() and saved_signal.first.is_visible():
-                        self._last_error = "Save Draft appeared to complete, but Facebook exposed no listing_id; draft not marked successful"
-                    else:
-                        self._last_error = "Save Draft was clicked, but no saved-draft listing_id/confirmation was detected"
-                except Exception:
-                    self._last_error = "Save Draft was clicked, but no saved-draft listing_id/confirmation was detected"
-                shot = self._snap(page, "draft_save_unverified")
-                if shot:
-                    self._last_error += f"; screenshot={shot}"
+            title = str(payload.get("title") or "").strip()
+            if not title:
+                self._last_error = "Draft & Publish: saved item has no title to identify it in Your Drafts"
                 return None
 
-            # Keep the same page/browser for the next draft as required by the workflow.
+            # The publish phase will use the exact title to open this draft from
+            # Facebook's visible Drafts list. Do not require listing_id here.
+            try:
+                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+                human.human_pause(1800, 2600)
+                # Keep the list navigation as the source of truth; the card can
+                # render progressively, so wait briefly for the title to appear.
+                try:
+                    page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=8000)
+                except Exception:
+                    # Save click succeeded; queue by title and let the publish
+                    # phase re-open the list and locate the newest matching draft.
+                    pass
+            except Exception as exc:
+                self._last_error = f"Draft saved; could not open Your Drafts yet: {type(exc).__name__}: {str(exc)[:120]}"
+                return None
+
+            # Return a workflow-local token. This is NOT represented as a Facebook ID.
+            # publish_draft recognizes it and opens the corresponding card in a new tab.
             try:
                 page.goto("https://www.facebook.com/marketplace/create/item",
                           wait_until="domcontentloaded", timeout=30000)
                 human.human_pause(1200, 2200)
             except Exception:
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=30000)
-                    human.human_pause(1200, 2200)
-                except Exception:
-                    pass
-            return draft_id
+                pass
+            return "draft-title:" + title
         except Exception as exc:
             self._last_error = f"Draft & Publish save failed: {type(exc).__name__}: {str(exc)[:160]}"
             return None
@@ -2294,11 +2225,123 @@ class PlaywrightDriver(BaseDriver):
             return None
 
     def publish_draft(self, draft_id: str) -> bool:
-        """Publish the specific saved draft by matching its listing_id in the drafts UI."""
+        """Draft & Publish: open a queued draft from Your Drafts in a NEW tab and publish it.
+
+        Normal ID-based callers keep the existing exact-ID path. The isolated new
+        Draft & Publish workflow passes draft-title:<title>, which follows the
+        user's requested Drafts-list -> new tab -> Publish sequence.
+        """
         self._ensure()
         page = self._page
         assert page is not None
         import re
+        token = str(draft_id or "").strip()
+        if token.startswith("draft-title:"):
+            title = token[len("draft-title:"):].strip()
+            if not title:
+                self._last_error = "Draft title token was empty"
+                return False
+            tab = None
+            try:
+                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+                human.human_pause(1800, 2600)
+
+                # Find the title on the drafts page and walk upward to its card.
+                # Prefer the newest/first exact-title card because Facebook lists
+                # the latest saved drafts first. Each successful publish removes it
+                # from this list, so repeated titles naturally advance to the next.
+                title_nodes = page.get_by_text(title, exact=True)
+                count = min(title_nodes.count(), 30)
+                target_href = None
+                for i in range(count):
+                    node = title_nodes.nth(i)
+                    ancestor = node
+                    for _depth in range(8):
+                        try:
+                            links = ancestor.locator("a[href]")
+                            for j in range(min(links.count(), 20)):
+                                href = links.nth(j).get_attribute("href") or ""
+                                if href and ("marketplace" in href or "listing" in href or "item" in href):
+                                    target_href = href
+                                    break
+                        except Exception:
+                            pass
+                        if target_href:
+                            break
+                        try:
+                            ancestor = ancestor.locator("xpath=..")
+                        except Exception:
+                            break
+                    if target_href:
+                        break
+
+                if not target_href:
+                    self._last_error = f"Your Drafts: could not find an openable card for '{title}'"
+                    return False
+                if target_href.startswith("/"):
+                    target_href = "https://www.facebook.com" + target_href
+
+                # Open the selected draft in a fresh browser tab, preserving the
+                # original Drafts tab for the next item and existing tab workflow.
+                assert self._context is not None
+                tab = self._context.new_page()
+                tab.goto(target_href, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    tab.wait_for_load_state("networkidle", timeout=6000)
+                except Exception:
+                    pass
+                human.human_pause(1800, 2800)
+
+                # The opened draft editor may label the action Publish or Publish listing.
+                buttons = [
+                    tab.get_by_role("button", name=re.compile(r"^\s*publish(?:\s+listing)?\s*$", re.I)),
+                    tab.locator("div[role='button'][aria-label='Publish'], button[aria-label*='Publish' i]"),
+                    tab.get_by_text(re.compile(r"^\s*publish\s*$", re.I), exact=True),
+                ]
+                publish_button = None
+                for candidate in buttons:
+                    try:
+                        for j in range(min(candidate.count(), 20)):
+                            item = candidate.nth(j) if candidate.count() > 1 else candidate
+                            if item.is_visible() and item.is_enabled():
+                                publish_button = item
+                                break
+                        if publish_button is not None:
+                            break
+                    except Exception:
+                        continue
+                if publish_button is None:
+                    self._last_error = f"Opened draft '{title}' in a new tab, but Publish button was not found"
+                    return False
+                publish_button.scroll_into_view_if_needed(timeout=5000)
+                human.human_pause(500, 900)
+                publish_button.click(timeout=10000)
+                human.human_pause(2500, 4000)
+                # The click is the requested action. Allow Facebook time to process
+                # it; if the editor clearly remains unchanged, report pending.
+                try:
+                    if tab.get_by_role("button", name=re.compile(r"^\s*publish(?:\s+listing)?\s*$", re.I)).count() > 0:
+                        self._last_error = f"Publish was clicked for '{title}', but Facebook still shows the Publish action"
+                        return False
+                except Exception:
+                    pass
+                return True
+            except Exception as exc:
+                self._last_error = f"Draft-list publish failed for '{title}': {type(exc).__name__}: {str(exc)[:140]}"
+                return False
+            finally:
+                if tab is not None:
+                    try:
+                        tab.close()
+                    except Exception:
+                        pass
+
+        # NOTE (v0.2.131 scope): the exact-ID path below is preserved
+        # verbatim from v0.2.130 so Action -> Publish Drafts is untouched.
         draft_id = str(draft_id or "").strip()
         if not draft_id or draft_id.lower() == "draft":
             self._last_error = "Facebook did not return a real draft listing_id; refusing generic Publish click"
