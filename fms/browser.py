@@ -2154,6 +2154,61 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
 
+            # v0.2.128: Facebook often saves successfully without exposing
+            # listing_id in the editor URL or immediate DOM. Recover the real ID
+            # from Marketplace > Your drafts by matching this run's exact title.
+            # Never invent an ID or accept an ambiguous title match.
+            if not draft_id:
+                _draft_title = str(payload.get("title") or "").strip()
+                try:
+                    page.goto(S.MKT_DRAFTS_URL, wait_until="domcontentloaded", timeout=30000)
+                    human.human_pause(1400, 2200)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=4000)
+                    except Exception:
+                        pass
+                    _ids = set()
+                    if _draft_title:
+                        _title_nodes = page.get_by_text(_draft_title, exact=True)
+                        for _ti in range(min(_title_nodes.count(), 20)):
+                            _node = _title_nodes.nth(_ti)
+                            _ancestor = _node
+                            for _depth in range(8):
+                                try:
+                                    _links = _ancestor.locator("a[href*='listing_id=']")
+                                    for _li in range(min(_links.count(), 20)):
+                                        _href = _links.nth(_li).get_attribute("href") or ""
+                                        _match = re.search(r"listing_id=(\d+)", _href)
+                                        if _match:
+                                            _ids.add(_match.group(1))
+                                except Exception:
+                                    pass
+                                try:
+                                    _ancestor = _ancestor.locator("xpath=..")
+                                except Exception:
+                                    break
+                    if len(_ids) == 1:
+                        draft_id = next(iter(_ids))
+                    elif len(_ids) > 1:
+                        self._last_error = (
+                            "Draft appears saved, but multiple Facebook draft IDs matched "
+                            f"the exact title '{_draft_title}'; refusing to choose ambiguously"
+                        )
+                except Exception as _recover_exc:
+                    self._last_error = (
+                        "Save Draft was clicked, but ID recovery from Your drafts failed: "
+                        f"{type(_recover_exc).__name__}: {str(_recover_exc)[:140]}"
+                    )
+
+                # Return to the listing creation page for the next draft. The
+                # publish phase will later navigate to Your drafts by saved ID.
+                try:
+                    page.goto("https://www.facebook.com/marketplace/create/item",
+                              wait_until="domcontentloaded", timeout=30000)
+                    human.human_pause(1000, 1800)
+                except Exception:
+                    pass
+
             # Some Facebook variants do not expose the ID in the immediate URL.
             # Inspect visible confirmation/transition, but never fabricate an ID.
             if not draft_id:
