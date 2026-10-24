@@ -40,6 +40,8 @@ class FakeBtn:
         self.clicked += 1
         if self._on_click:
             self._on_click()
+    def wait_for(self, state=None, timeout=None):
+        pass
 
 
 class FakeCollection:
@@ -83,6 +85,8 @@ class FakeNode:
         if selector.startswith("xpath="):
             return self._parent if self._parent is not None else FakeNode()
         return FakeCollection(list(self._links))
+    def wait_for(self, state=None, timeout=None):
+        pass
 
 
 class FakePage:

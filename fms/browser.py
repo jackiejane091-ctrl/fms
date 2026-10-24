@@ -2164,24 +2164,13 @@ class PlaywrightDriver(BaseDriver):
             # The publish phase will use the exact title to open this draft from
             # Facebook's visible Drafts list. Do not require listing_id here.
             try:
-                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
-                try:
-                    page.wait_for_load_state("load", timeout=20000)
-                except Exception:
-                    pass
-                try:
-                    page.wait_for_load_state("networkidle", timeout=8000)
-                except Exception:
-                    pass
-                human.human_pause(2500, 3500)
-                # Keep the list navigation as the source of truth; the card can
-                # render progressively, so wait briefly for the title to appear.
-                try:
-                    page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=8000)
-                except Exception:
-                    # Save click succeeded; queue by title and let the publish
-                    # phase re-open the list and locate the newest matching draft.
-                    pass
+                # Draft & Publish 1 ONLY: wait without a fixed deadline. Facebook can
+                # take seconds or minutes; document load alone is not list readiness.
+                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=0)
+                page.wait_for_load_state("load", timeout=0)
+                # Wait for this run's exact draft card/title to be visible. timeout=0
+                # means Playwright waits until the condition is met, not for a time limit.
+                page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=0)
             except Exception as exc:
                 self._last_error = f"Draft saved; could not open Your Drafts yet: {type(exc).__name__}: {str(exc)[:120]}"
                 return None
@@ -2270,22 +2259,11 @@ class PlaywrightDriver(BaseDriver):
                 return False
             tab = None
             try:
-                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=30000)
-                # Slow connections: wait for document completion and meaningful list content.
-                try:
-                    page.wait_for_load_state("load", timeout=20000)
-                except Exception:
-                    pass
-                try:
-                    page.wait_for_load_state("networkidle", timeout=8000)
-                except Exception:
-                    pass
-                human.human_pause(2500, 3500)
-                try:
-                    page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=15000)
-                except Exception:
-                    # Facebook renders cards progressively; retry after another settle period.
-                    human.human_pause(2000, 3000)
+                # Draft & Publish 1 ONLY: no fixed timeout for loading the list.
+                # Wait for both document load and the exact requested draft to render.
+                page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT", wait_until="domcontentloaded", timeout=0)
+                page.wait_for_load_state("load", timeout=0)
+                page.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=0)
 
                 # Find the title on the drafts page and walk upward to its card.
                 # Prefer the newest/first exact-title card because Facebook lists
@@ -2326,12 +2304,12 @@ class PlaywrightDriver(BaseDriver):
                 # original Drafts tab for the next item and existing tab workflow.
                 assert self._context is not None
                 tab = self._context.new_page()
-                tab.goto(target_href, wait_until="domcontentloaded", timeout=30000)
-                try:
-                    tab.wait_for_load_state("networkidle", timeout=6000)
-                except Exception:
-                    pass
-                human.human_pause(1800, 2800)
+                # Draft & Publish 1 ONLY: wait indefinitely for the draft page to load.
+                # Then wait for its exact title and an enabled Publish action, proving
+                # the listing editor is ready instead of closing the tab prematurely.
+                tab.goto(target_href, wait_until="domcontentloaded", timeout=0)
+                tab.wait_for_load_state("load", timeout=0)
+                tab.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=0)
 
                 # The opened draft editor may label the action Publish or Publish listing.
                 buttons = [
@@ -2340,20 +2318,23 @@ class PlaywrightDriver(BaseDriver):
                     tab.get_by_text(re.compile(r"^\s*publish\s*$", re.I), exact=True),
                 ]
                 publish_button = None
-                for candidate in buttons:
-                    try:
-                        for j in range(min(candidate.count(), 20)):
-                            item = candidate.nth(j) if candidate.count() > 1 else candidate
-                            if item.is_visible() and item.is_enabled():
-                                publish_button = item
+                # Facebook progressively hydrates the editor. Keep checking until a
+                # visible, enabled Publish control exists; no elapsed-time cutoff.
+                while publish_button is None:
+                    for candidate in buttons:
+                        try:
+                            total = min(candidate.count(), 20)
+                            for j in range(total):
+                                item = candidate.nth(j) if total > 1 else candidate
+                                if item.is_visible() and item.is_enabled():
+                                    publish_button = item
+                                    break
+                            if publish_button is not None:
                                 break
-                        if publish_button is not None:
-                            break
-                    except Exception:
-                        continue
-                if publish_button is None:
-                    self._last_error = f"Opened draft '{title}' in a new tab, but Publish button was not found"
-                    return False
+                        except Exception:
+                            continue
+                    if publish_button is None:
+                        tab.wait_for_timeout(1000)
                 publish_button.scroll_into_view_if_needed(timeout=5000)
                 human.human_pause(500, 900)
                 publish_button.click(timeout=10000)
