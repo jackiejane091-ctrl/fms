@@ -1448,12 +1448,20 @@ class RunController:
                 self.log(f"[{label}] published '{d['title_used']}'",
                          account_id=account["id"])
             else:
+                # Draft & Publish recovery: preserve the saved draft row and its
+                # real Facebook listing ID. A transient UI/selector failure must
+                # not convert a real saved draft into a terminal failed listing.
+                # It remains status='draft' so a resumed run can retry publishing
+                # the SAME draft rather than recreating it.
+                reason = (getattr(driver, "_last_error", None)
+                          or "Facebook publish was not confirmed")
                 self.db.execute(
-                    "UPDATE listings SET status = 'failed', "
-                    "error = 'publish failed' WHERE id = ?",
-                    (d["id"],),
+                    "UPDATE listings SET status = 'draft', error = ? WHERE id = ?",
+                    (f"publish pending: {str(reason)[:400]}", d["id"]),
                 )
-                self.log(f"[{label}] FAILED to publish '{d['title_used']}'",
+                self.log(f"[{label}] PUBLISH PENDING for saved draft "
+                         f"'{d['title_used']}' (ID {d['fb_listing_id']}): {reason}. "
+                         "Draft preserved for retry; it will not be recreated.",
                          level="error", account_id=account["id"])
 
     def _draft_rows(self, account_id: int, any_run: bool = False) -> list[dict]:
