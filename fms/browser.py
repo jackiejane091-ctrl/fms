@@ -2070,8 +2070,128 @@ class PlaywrightDriver(BaseDriver):
             return None
 
     # -- Phase 2: drafts --------------------------------------------------------
+    def _create_draft_draft_publish(self, payload: dict) -> str | None:
+        """Draft & Publish ONLY: fill, explicitly locate/click Save Draft, verify result."""
+        self._ensure()
+        page = self._page
+        assert page is not None
+        import re
+        try:
+            if not self._fill_form_draft_publish(page, payload):
+                self._last_error = (getattr(self, "_last_form_error", None)
+                                    or "Draft & Publish form fill failed")
+                return None
+
+            # Facebook's visible button may have no aria-label. Try accessible
+            # role/name first, then the existing selector, then exact visible text.
+            candidates = []
+            try:
+                candidates.append(page.get_by_role("button", name=re.compile(r"^\s*save\s+draft\s*$", re.I)))
+            except Exception:
+                pass
+            try:
+                candidates.append(S.to_playwright(page, S.F_SAVE_DRAFT_BUTTON))
+            except Exception:
+                pass
+            try:
+                candidates.append(page.get_by_text(re.compile(r"^\s*save\s+draft\s*$", re.I), exact=True))
+            except Exception:
+                pass
+
+            save_button = None
+            last_lookup_error = None
+            for candidate in candidates:
+                try:
+                    count = candidate.count()
+                    for i in range(count):
+                        item = candidate.nth(i) if count > 1 else candidate
+                        if item.is_visible() and item.is_enabled():
+                            save_button = item
+                            break
+                    if save_button is not None:
+                        break
+                except Exception as exc:
+                    last_lookup_error = exc
+
+            if save_button is None:
+                shot = self._snap(page, "draft_save_button_missing")
+                self._last_error = ("Draft & Publish: visible/enabled Save Draft button not found"
+                                    + (f"; lookup={type(last_lookup_error).__name__}" if last_lookup_error else "")
+                                    + (f"; screenshot={shot}" if shot else ""))
+                return None
+
+            try:
+                save_button.scroll_into_view_if_needed(timeout=5000)
+                save_button.click(timeout=8000)
+            except Exception as exc:
+                shot = self._snap(page, "draft_save_click_failed")
+                self._last_error = (f"Draft & Publish: Save Draft click failed: {type(exc).__name__}: {str(exc)[:140]}"
+                                    + (f"; screenshot={shot}" if shot else ""))
+                return None
+
+            # Wait for Facebook's save transition; do not claim success merely
+            # because the click call returned. The saved listing ID is required.
+            try:
+                page.wait_for_timeout(1800)
+            except Exception:
+                human.human_pause(1500, 2200)
+
+            draft_id = None
+            try:
+                m = re.search(r"listing_id=(\d+)", page.url)
+                if m:
+                    draft_id = m.group(1)
+            except Exception:
+                pass
+            if not draft_id:
+                try:
+                    for a in page.locator("a[href*='listing_id=']").all():
+                        href = a.get_attribute("href") or ""
+                        m = re.search(r"listing_id=(\d+)", href)
+                        if m:
+                            draft_id = m.group(1)
+                            break
+                except Exception:
+                    pass
+
+            # Some Facebook variants do not expose the ID in the immediate URL.
+            # Inspect visible confirmation/transition, but never fabricate an ID.
+            if not draft_id:
+                try:
+                    saved_signal = page.get_by_text(re.compile(r"draft saved|saved to drafts|saved draft", re.I))
+                    if saved_signal.count() and saved_signal.first.is_visible():
+                        self._last_error = "Save Draft appeared to complete, but Facebook exposed no listing_id; draft not marked successful"
+                    else:
+                        self._last_error = "Save Draft was clicked, but no saved-draft listing_id/confirmation was detected"
+                except Exception:
+                    self._last_error = "Save Draft was clicked, but no saved-draft listing_id/confirmation was detected"
+                shot = self._snap(page, "draft_save_unverified")
+                if shot:
+                    self._last_error += f"; screenshot={shot}"
+                return None
+
+            # Keep the same page/browser for the next draft as required by the workflow.
+            try:
+                page.goto("https://www.facebook.com/marketplace/create/item",
+                          wait_until="domcontentloaded", timeout=30000)
+                human.human_pause(1200, 2200)
+            except Exception:
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30000)
+                    human.human_pause(1200, 2200)
+                except Exception:
+                    pass
+            return draft_id
+        except Exception as exc:
+            self._last_error = f"Draft & Publish save failed: {type(exc).__name__}: {str(exc)[:160]}"
+            return None
+
     def create_draft(self, payload: dict) -> str | None:
         """Fill and save one draft; refresh the same Item for Sale page for the next draft."""
+        # Strict isolation: only Action -> Draft & Publish raises this flag.
+        # Create Drafts and all other callers retain the original implementation below.
+        if getattr(self, "_fms_draft_publish_fill", False):
+            return self._create_draft_draft_publish(payload)
         self._ensure()
         page = self._page
         assert page is not None
