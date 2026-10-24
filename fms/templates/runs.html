@@ -195,7 +195,7 @@ function modeChanged(){
   // run submits as a script run.
   document.getElementById('actionSel').disabled = useScript;
   const m = useScript ? 'script' : document.getElementById('actionSel').value;
-  const dp = m === 'draft_publish';
+  const dp = m === 'draft_publish' || m === 'draft_publish_1';
   document.getElementById('pubModeRow').style.display = dp ? '' : 'none';
   document.getElementById('pubGapRow').style.display = dp ? '' : 'none';
   document.getElementById('locRow').style.display = m === 'change_location' ? '' : 'none';

@@ -38,7 +38,7 @@ ACTIONS = [
     # The sole visible Post action now uses the existing Test Single Post flow.
     ("test_single_post", "Post"),
     ("relist_edit", "Relist & Edit"),
-    ("draft_publish", "Draft & Publish"),
+    ("draft_publish_1", "Draft & Publish 1"),
     ("create_drafts", "Create Drafts"),
     ("publish_drafts", "Publish Drafts"),
     ("browser_launch_fast", "Browser Launch Fast"),
@@ -58,9 +58,9 @@ ACTIONS = [
 # Keep the former complete mode valid for saved/older runs and API clients,
 # but do not expose it as a separate visible Post action.
 MODES = (tuple(key for key, _ in ACTIONS)
-         + ("complete", "manual_publish", "script", "wait_next_turn"))
+         + ("draft_publish", "complete", "manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
-POSTING_MODES = {"complete", "test_single_post", "draft_publish", "manual_publish",
+POSTING_MODES = {"complete", "test_single_post", "draft_publish", "draft_publish_1", "manual_publish",
                  "relist_edit", "create_drafts", "publish_drafts", "delete_relist"}
 PUBLISH_MODES = ("all_together", "one_by_one")
 
@@ -814,7 +814,7 @@ class RunController:
     def _rotation(self, product: dict, account_idx: int, account_id: int | None = None) -> dict:
         """Build one listing payload with rotated title/price/location/images."""
         _payload = self._rotator.payload(
-            product, self.cfg, as_draft=self.cfg.mode == "draft_publish", account_id=account_id)
+            product, self.cfg, as_draft=self.cfg.mode in {"draft_publish", "draft_publish_1"}, account_id=account_id)
         # v0.2.70: LOG runtime config via self.log() so it appears in FMS Logs.
         # Sanitized: folder path truncated, no secrets.
         # Browser invokes this only between atomic UI actions; an in-flight
@@ -988,7 +988,9 @@ class RunController:
                      level="info" if ok else "error",
                      account_id=account["id"])
         mode = self.cfg.mode
-        if mode == "draft_publish":
+        if mode == "draft_publish_1":
+            self._draft_publish_1_flow(account, driver, quota, account_idx)
+        elif mode == "draft_publish":
             self._draft_publish_flow(account, driver, quota, account_idx)
         elif mode == "manual_publish":
             self._manual_publish_flow(account, driver, quota, account_idx)
@@ -1497,6 +1499,147 @@ class RunController:
             driver._fms_draft_publish_fill = _prev_flag
         self._publish_draft_rows(account, driver,
                                  self._draft_rows(account["id"]))
+
+    # -- mode: draft_publish_1 (isolated new action) -------------------------------
+    def _create_drafts_batch_1(self, account: dict, driver, quota: int,
+                               account_idx: int, chunk: int | None = None,
+                               bounded: bool = False) -> int:
+        """Create drafts up to quota. Returns the number created.
+
+        Drafts are created in tab-groups of `chunk` (Tabs Draft And Publish),
+        mirroring the real tool opening N tabs at a time.
+        """
+        label = account["label"]
+        # Drafts already made + already published both count toward the quota,
+        # so resume-after-interruption never re-creates them.
+        todo = max(0, quota - self._draft_count(account["id"])
+                   - self._posted_count(account["id"]))
+        if chunk is None:
+            chunk = max(1, int(self.cfg.tabs_draft_publish))
+        created = 0
+        while created < todo:
+            _created_before = created
+            group = min(chunk, todo - created)
+            self.log(f"[{label}] draft batch: {group} tab(s)",
+                     account_id=account["id"])
+            for _ in range(group):
+                pid, product = self._next_product(account_idx)
+                if product is None:
+                    continue
+                payload = self._rotation(product, account_idx, account_id=account["id"])
+                draft_id = driver.create_draft(payload)
+                if draft_id:
+                    self.db.execute(
+                        """INSERT INTO listings
+                           (run_id, account_id, product_id, title_used, price_used,
+                            location_used, images_used, status, fb_listing_id, posted_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)""",
+                        (self.run_id, account["id"], pid, payload["title"],
+                         payload["price"], payload["location"],
+                         json.dumps(payload["image_paths"]), draft_id, utcnow()),
+                    )
+                    self.log(f"[{label}] drafted '{payload['title']}'",
+                             account_id=account["id"])
+                    created += 1
+                else:
+                    self._record_failed(account, pid, payload,
+                                        "draft creation failed")
+                self._inter_post_delay()
+            # v0.2.124: bounded mode (Draft & Publish only) — if a whole
+            # group produced no draft at all, stop instead of looping
+            # forever on the cycling products. With bounded=False (Create
+            # Drafts) this block never runs: original behavior preserved.
+            if bounded and created == _created_before:
+                self.log(f"[{label}] draft batch stopped: a full group of "
+                         f"{group} attempt(s) created no draft — not "
+                         f"retrying endlessly; see the field errors above",
+                         level="error", account_id=account["id"])
+                break
+        return created
+
+    def _publish_draft_rows_1(self, account: dict, driver,
+                            drafts: list[dict]) -> None:
+        """Publish given draft rows (all-together or one-by-one with gap)."""
+        label = account["label"]
+        mode = self.cfg.publish_mode
+        gap_s = self.cfg.publish_gap_min * 60.0 / max(0.1, self.cfg.speed)
+        self.log(f"[{label}] publish phase: {len(drafts)} draft(s), mode={mode}",
+                 account_id=account["id"])
+        for i, d in enumerate(drafts):
+            self._wait_if_paused()
+            if mode == "one_by_one" and i > 0:
+                self.log(f"[{label}] waiting {self.cfg.publish_gap_min} min "
+                         f"before next publish", account_id=account["id"])
+                self._sleep_interruptible(gap_s)
+            ok = driver.publish_draft(d["fb_listing_id"])
+            if ok:
+                self.db.execute(
+                    "UPDATE listings SET status = 'posted', posted_at = ? "
+                    "WHERE id = ?",
+                    (utcnow(), d["id"]),
+                )
+                self.db.execute(
+                    "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
+                    (self.run_id,),
+                )
+                try:
+                    _draft_images = json.loads(d["images_used"] or "[]")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    _draft_images = []
+                _record_published_image_usage(self.db, account["id"], d["product_id"], _draft_images)
+                self.log(f"[{label}] published '{d['title_used']}'",
+                         account_id=account["id"])
+            else:
+                # Draft & Publish recovery: preserve the saved draft row and its
+                # real Facebook listing ID. A transient UI/selector failure must
+                # not convert a real saved draft into a terminal failed listing.
+                # It remains status='draft' so a resumed run can retry publishing
+                # the SAME draft rather than recreating it.
+                reason = (getattr(driver, "_last_error", None)
+                          or "Facebook publish was not confirmed")
+                self.db.execute(
+                    "UPDATE listings SET status = 'draft', error = ? WHERE id = ?",
+                    (f"publish pending: {str(reason)[:400]}", d["id"]),
+                )
+                self.log(f"[{label}] PUBLISH PENDING for saved draft "
+                         f"'{d['title_used']}' (ID {d['fb_listing_id']}): {reason}. "
+                         "Draft preserved for retry; it will not be recreated.",
+                         level="error", account_id=account["id"])
+
+    def _draft_rows_1(self, account_id: int, any_run: bool = False) -> list[dict]:
+        """Draft rows for an account: this run only, or any run (standalone)."""
+        if any_run:
+            return self.db.fetchall(
+                """SELECT id, fb_listing_id, title_used, product_id, images_used FROM listings
+                   WHERE account_id = ? AND status = 'draft' ORDER BY id""",
+                (account_id,))
+        return self.db.fetchall(
+            """SELECT id, fb_listing_id, title_used, product_id, images_used FROM listings
+               WHERE run_id = ? AND account_id = ? AND status = 'draft'
+               ORDER BY id""",
+            (self.run_id, account_id),
+        )
+
+    # -- mode: draft_publish (full two-phase flow) ----------------------------------
+    def _draft_publish_1_flow(self, account: dict, driver, quota: int,
+                            account_idx: int) -> None:
+        """Phase 1: create drafts (tab closes as each draft completes).
+        Phase 2: publish them — all together, or one-by-one with a gap."""
+        # v0.2.124 (Draft & Publish ONLY): route this flow's form fills
+        # through the isolated state-aware filler in the driver, and bound
+        # the draft batch so a persistently failing draft stops instead of
+        # retrying forever. Create Drafts uses neither — its flag stays
+        # unset and its batch call keeps the original unbounded behavior.
+        _prev_flag = getattr(driver, "_fms_draft_publish_fill", False)
+        try:
+            driver._fms_draft_publish_fill = True
+            self._create_drafts_batch_1(account, driver, quota, account_idx,
+                                      bounded=True)
+        finally:
+            driver._fms_draft_publish_fill = _prev_flag
+        self._publish_draft_rows_1(account, driver,
+                                 self._draft_rows_1(account["id"]))
+
 
     # -- mode: create_drafts (drafts only, no publish) ------------------------------
     def _create_drafts_only_flow(self, account: dict, driver, quota: int,
