@@ -140,18 +140,31 @@ class PollCollection:
 
 
 class FakeTab(FakePage):
-    """Draft editor tab: title renders, Publish appears on poll 3."""
+    """Draft editor tab: title renders, Publish appears on poll 3.
+
+    v0.2.134: the tab is two-screen — a distinct Next control on
+    screen 1 must be clicked before the Publish control on screen 2
+    is looked for. The old single-button fake returned the SAME
+    object for the Next and Publish lookups, so after the Next click
+    hid it, the Publish loop could never find a control — that is a
+    fake artefact, not shipped behaviour (on real Facebook the two
+    controls are distinct elements). get_by_role therefore answers
+    the Next and Publish lookups with separate controls.
+    """
     def __init__(self):
         super().__init__()
         self.publish_clicked = False
         self._poll = PollCollection(3, lambda: setattr(self, "publish_clicked", True))
     def get_by_role(self, role, name=None):
         if role == "button":
+            pat = getattr(name, "pattern", str(name)).lower()
+            if "next" in pat:
+                return FakeCollection([FakeBtn()])
             return self._poll
         return FakeCollection([])
     def get_by_text(self, pattern, exact=False):
         pat = getattr(pattern, "pattern", str(pattern))
-        if "publish" in pat.lower():
+        if "publish" in pat.lower() or "next" in pat.lower():
             return FakeCollection([])
         return TitleWait()
     def locator(self, sel):

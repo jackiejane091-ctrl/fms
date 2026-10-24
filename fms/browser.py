@@ -2311,15 +2311,44 @@ class PlaywrightDriver(BaseDriver):
                 tab.wait_for_load_state("load", timeout=0)
                 tab.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=0)
 
-                # The opened draft editor may label the action Publish or Publish listing.
+                # Draft & Publish 1 ONLY: the edit-listing form requires Next before
+                # Facebook reveals the final Publish action. Wait for a visible,
+                # enabled Next control indefinitely; do not treat a partially loaded
+                # editor as ready and do not introduce a fixed time limit.
+                next_candidates = [
+                    tab.get_by_role("button", name=re.compile(r"^\s*next\s*$", re.I)),
+                    tab.locator("div[role='button'][aria-label='Next'], button[aria-label='Next' i]"),
+                    tab.get_by_text(re.compile(r"^\s*next\s*$", re.I), exact=True),
+                ]
+                next_button = None
+                while next_button is None:
+                    for candidate in next_candidates:
+                        try:
+                            total = min(candidate.count(), 20)
+                            for j in range(total):
+                                item = candidate.nth(j) if total > 1 else candidate
+                                if item.is_visible() and item.is_enabled():
+                                    next_button = item
+                                    break
+                            if next_button is not None:
+                                break
+                        except Exception:
+                            continue
+                    if next_button is None:
+                        tab.wait_for_timeout(1000)
+                next_button.scroll_into_view_if_needed(timeout=5000)
+                human.human_pause(500, 900)
+                next_button.click(timeout=10000)
+
+                # The final Publish action only appears after Next. Facebook may
+                # progressively hydrate this screen, so keep checking until a
+                # visible, enabled Publish control exists; no elapsed-time cutoff.
                 buttons = [
                     tab.get_by_role("button", name=re.compile(r"^\s*publish(?:\s+listing)?\s*$", re.I)),
                     tab.locator("div[role='button'][aria-label='Publish'], button[aria-label*='Publish' i]"),
                     tab.get_by_text(re.compile(r"^\s*publish\s*$", re.I), exact=True),
                 ]
                 publish_button = None
-                # Facebook progressively hydrates the editor. Keep checking until a
-                # visible, enabled Publish control exists; no elapsed-time cutoff.
                 while publish_button is None:
                     for candidate in buttons:
                         try:
