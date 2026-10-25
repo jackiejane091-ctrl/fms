@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -183,6 +184,10 @@ class BaseDriver(ABC):
 
     def renew_listing(self, listing_id: str) -> bool:
         """Renew one active listing. Return True on success."""
+        raise NotImplementedError
+
+    def renew_listings_from_page(self, max_count: int) -> dict:
+        """Renew up to max_count listings from Facebook's Renew Listings page."""
         raise NotImplementedError
 
     def set_marketplace_location(self, location: str) -> bool:
@@ -2766,6 +2771,151 @@ class PlaywrightDriver(BaseDriver):
         except Exception:
             return False
 
+    def renew_listings_from_page(self, max_count: int) -> dict:
+        """Renew eligible listings from Facebook's dedicated renew page.
+
+        Waits for actionable page content rather than using a fixed page-load
+        timeout. Each visible Renew button is clicked once per pass; after the
+        pass, the page is refreshed and checked again until the requested count
+        is reached or Facebook reports that no eligible listings remain.
+        """
+        self._ensure()
+        page = self._page
+        assert page is not None
+        renewed: list[dict] = []
+        failed = 0
+        max_count = max(0, int(max_count))
+        renew_url = "https://www.facebook.com/marketplace/selling/renew_listings/?is_routable_dialog=true"
+        empty_phrases = (
+            "no eligible listing", "no eligible listings",
+            "no listings to renew", "no listings available to renew",
+            "nothing to renew", "you have no eligible listing",
+            "you have no eligible listings",
+        )
+
+        def renew_buttons():
+            # Prefer the actual clickable button and avoid counting both a button
+            # and its nested "Renew listing" text as two separate controls.
+            buttons = page.locator("div[aria-label*='Renew' i][role='button'], button[aria-label*='Renew' i]")
+            if buttons.count():
+                return buttons
+            buttons = page.locator("button:has-text('Renew listing'), [role='button']:has-text('Renew listing')")
+            if buttons.count():
+                return buttons
+            return page.locator("span:has-text('Renew listing')")
+
+        def wait_for_ready_content() -> str:
+            # Deliberately no fixed timeout: the account's Facebook page may be slow.
+            while True:
+                self._pause_checkpoint()
+                try:
+                    buttons = renew_buttons()
+                    for i in range(min(buttons.count(), 200)):
+                        btn = buttons.nth(i)
+                        try:
+                            if btn.is_visible() and btn.is_enabled():
+                                return "listings"
+                        except Exception:
+                            continue
+                    body_text = (page.locator("body").inner_text(timeout=0) or "").lower()
+                    if any(phrase in body_text for phrase in empty_phrases):
+                        return "empty"
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        try:
+            self._pause_checkpoint()
+            page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=0)
+            # Wait for actual feed/main content, not merely an opened tab.
+            while True:
+                self._pause_checkpoint()
+                try:
+                    body_text = page.locator("body").inner_text(timeout=0).strip()
+                    feed = page.locator("[role='feed'], [role='main']")
+                    if body_text and len(body_text) >= 80 and feed.count() > 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            self._pause_checkpoint()
+            page.goto(S.MARKETPLACE_URL, wait_until="domcontentloaded", timeout=0)
+            while True:
+                self._pause_checkpoint()
+                try:
+                    body_text = page.locator("body").inner_text(timeout=0).strip()
+                    main = page.locator("[role='main']")
+                    if ("marketplace" in body_text.lower() and len(body_text) >= 80
+                            and main.count() > 0):
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            self._pause_checkpoint()
+            page.goto(renew_url, wait_until="domcontentloaded", timeout=0)
+            state = wait_for_ready_content()
+            if state == "empty":
+                return {"renewed": renewed, "no_eligible": True, "failed": 0}
+
+            while len(renewed) < max_count:
+                self._pause_checkpoint()
+                buttons = renew_buttons()
+                count = min(buttons.count(), 200)
+                if count == 0:
+                    state = wait_for_ready_content()
+                    if state == "empty":
+                        return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
+                    continue
+
+                # Reverse order avoids index shifts if Facebook removes a card
+                # immediately after a successful click.
+                pass_successes = 0
+                for i in range(count - 1, -1, -1):
+                    if len(renewed) >= max_count:
+                        break
+                    self._pause_checkpoint()
+                    try:
+                        btn = buttons.nth(i)
+                        if not btn.is_visible() or not btn.is_enabled():
+                            continue
+                        card = btn.locator("xpath=ancestor::*[self::div or self::li][.//a[contains(@href,'/marketplace/item/')]][1]")
+                        listing_id = ""
+                        title = ""
+                        try:
+                            link = card.locator("a[href*='/marketplace/item/']").first
+                            href = link.get_attribute("href") or ""
+                            match = re.search(r"/marketplace/item/(\\d+)", href)
+                            listing_id = match.group(1) if match else ""
+                            title = (link.inner_text() or "").strip()[:120]
+                        except Exception:
+                            pass
+                        btn.click(timeout=0)
+                        pass_successes += 1
+                        renewed.append({"id": listing_id, "title": title})
+                    except Exception:
+                        failed += 1
+
+                if len(renewed) >= max_count:
+                    break
+                if pass_successes == 0:
+                    return {"renewed": renewed, "no_eligible": False,
+                            "failed": failed, "error": "Renew buttons were present but none could be clicked"}
+
+                # Refresh only after every currently visible button in this pass
+                # has been attempted, then wait for listings or Facebook's empty state.
+                self._pause_checkpoint()
+                page.reload(wait_until="domcontentloaded", timeout=0)
+                state = wait_for_ready_content()
+                if state == "empty":
+                    return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
+
+            return {"renewed": renewed, "no_eligible": False, "failed": failed}
+        except Exception as exc:
+            return {"renewed": renewed, "no_eligible": False, "failed": failed,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
     def set_marketplace_location(self, location: str) -> bool:
         """Best-effort: change the Marketplace location picker value."""
         self._ensure()
@@ -3077,6 +3227,13 @@ class MockDriver(BaseDriver):
         self._record("renew_listing", listing_id=listing_id)
         time.sleep(type(self).post_delay)
         return True
+
+    def renew_listings_from_page(self, max_count: int) -> dict:
+        self._record("renew_listings_from_page", max_count=max_count)
+        chosen = [dict(x) for x in type(self).fake_listings if x.get("id")][:max(0, int(max_count))]
+        for item in chosen:
+            self._record("renew_listing", listing_id=item["id"])
+        return {"renewed": chosen, "no_eligible": not chosen, "failed": 0}
 
     def set_marketplace_location(self, location: str) -> bool:
         self._record("set_location", location=location)

@@ -1755,12 +1755,48 @@ class RunController:
 
     # -- mode: renew_listing ------------------------------------------------------------
     def _renew_flow(self, account: dict, driver, quota: int) -> None:
+        """Renew listings from Facebook's dedicated Renew Listings page."""
         label = account["label"]
-        existing = driver.get_my_listings()
-        eligible = [l for l in existing if l.get("id")]
         lo = max(0, int(self.cfg.renew_min_count or 0))
         hi = max(lo, int(self.cfg.renew_max_count or 0))
-        want = random.randint(lo, hi) if eligible else 0
+        want = random.randint(lo, hi)
+
+        # Production browser drivers perform the page-based batch workflow.
+        # Keep the legacy path for older/custom drivers used by integrations.
+        if hasattr(driver, "renew_listings_from_page"):
+            result = driver.renew_listings_from_page(want)
+            renewed = result.get("renewed", []) if isinstance(result, dict) else []
+            no_eligible = bool(result.get("no_eligible")) if isinstance(result, dict) else False
+            error = result.get("error") if isinstance(result, dict) else None
+            for item in renewed:
+                if not item.get("id"):
+                    continue
+                self.db.execute(
+                    """INSERT INTO listings
+                       (run_id, account_id, product_id, title_used, status,
+                        fb_listing_id, posted_at)
+                       VALUES (?, ?, NULL, ?, 'renewed', ?, ?)""",
+                    (self.run_id, account["id"], item.get("title", ""),
+                     item["id"], utcnow()),
+                )
+            if renewed:
+                self.log(f"[{label}] renewed {len(renewed)} listing(s)"
+                         + (f" (requested up to {want})" if len(renewed) < want else ""),
+                         account_id=account["id"])
+            if no_eligible and not renewed:
+                self.log(f"[{label}] No renew listings available",
+                         account_id=account["id"])
+            if result.get("failed", 0):
+                self.log(f"[{label}] {result['failed']} renew click(s) failed",
+                         level="warning", account_id=account["id"])
+            if error:
+                self.log(f"[{label}] renew workflow error: {error}",
+                         level="warning", account_id=account["id"])
+            return
+
+        # Compatibility fallback for drivers that do not implement page batches.
+        existing = driver.get_my_listings()
+        eligible = [l for l in existing if l.get("id")]
         targets = eligible[:want]
         n = 0
         for lst in targets:
@@ -1779,8 +1815,11 @@ class RunController:
                 self.log(f"[{label}] could not renew {lst['id']}",
                          level="warning", account_id=account["id"])
             self._inter_post_delay()
-        self.log(f"[{label}] renewed {n}/{len(targets)} listing(s)",
-                 account_id=account["id"])
+        if not targets:
+            self.log(f"[{label}] No renew listings available", account_id=account["id"])
+        else:
+            self.log(f"[{label}] renewed {n}/{len(targets)} listing(s)",
+                     account_id=account["id"])
 
     # -- mode: download_images_titles ---------------------------------------------------
     def _download_assets_flow(self, account: dict, driver) -> None:
