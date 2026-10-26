@@ -2961,7 +2961,7 @@ class PlaywrightDriver(BaseDriver):
                         clicked_in_view = True
                         renewed.append({"id": listing_id, "title": title})
                         self._pause_checkpoint()
-                        human.human_pause(350, 650)
+                        human.human_pause(300, 600)
                     except Exception:
                         failed += 1
 
@@ -2997,9 +2997,9 @@ class PlaywrightDriver(BaseDriver):
                     state = wait_for_ready_content()
                     if state == "empty":
                         return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
-                    # Reset the per-page scan keys after refresh; retain a
-                    # separate run-level count to prevent exceeding max_count.
-                    processed.clear()
+                    # Keep processed identities across refresh: a listing
+                    # renewed earlier in this run must never be clicked
+                    # again, even if Facebook still shows it.
 
             return {"renewed": renewed, "no_eligible": False, "failed": failed}
         except Exception as exc:
