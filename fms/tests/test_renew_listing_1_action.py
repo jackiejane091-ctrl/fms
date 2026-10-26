@@ -36,10 +36,29 @@ def test_new_browser_method_has_no_item_link_or_listing_id_extraction():
     row_branch = impl_source.split("if row_scoped:", 1)[1].split("# Legacy action path", 1)[0]
     assert "a[href*='/marketplace/item/']" not in row_branch
     assert "re.search" not in row_branch
-    assert "row.locator(" in row_branch
+    assert "parent.locator(" in row_branch
+    assert "seen_row_positions" not in row_branch
+    assert "for index in range(count)" in row_branch
+    assert "parent_buttons.count() == 1" in row_branch
 
 
 def test_new_action_script_builder_metadata_exists():
     source = (ROOT / "scripts.py").read_text(encoding="utf-8")
     assert '"renew_listing_1": {' in source
     assert '"renew_listing_1": "Renew listing 1"' in source
+
+
+def test_row_scan_does_not_collapse_multiple_buttons_in_a_shared_wrapper():
+    source = (ROOT / "browser.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "PlaywrightDriver")
+    impl = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                and n.name == "_renew_listings_from_page_impl")
+    impl_source = ast.get_source_segment(source, impl)
+    row_branch = impl_source.split("if row_scoped:", 1)[1].split(
+        "# Legacy action path", 1)[0]
+    # Each clickable button is yielded as a candidate. Ancestor wrapper text or
+    # coordinates must not deduplicate separate rows/buttons into one attempt.
+    assert "for index in range(count)" in row_branch
+    assert "yield key, None, row, row_buttons" in row_branch
+    assert "seen_row_positions" not in row_branch

@@ -2850,8 +2850,10 @@ class PlaywrightDriver(BaseDriver):
         def listing_row_candidates():
             """Yield row-scoped Renew controls. Renew Listing 1 never parses item IDs."""
             if row_scoped:
-                # Union all supported clickable-button variants so one aria-labelled
-                # button cannot hide other plain-text Renew buttons in nearby rows.
+                # Renew listing 1: treat each actual clickable Renew control as
+                # its own candidate. Do not deduplicate by an ancestor's text or
+                # bounding box: Facebook can wrap several listing rows in one
+                # shared div, which previously collapsed the whole list to one.
                 buttons = page.locator(
                     "button[aria-label*='Renew' i], "
                     "[role='button'][aria-label*='Renew' i], "
@@ -2865,19 +2867,37 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     count = 0
                 seen_signatures: dict[str, int] = {}
-                seen_row_positions: set[tuple[str, int, int]] = set()
                 for index in range(count):
                     try:
                         button = buttons.nth(index)
                         if not button.is_visible() or not button.is_enabled():
                             continue
-                        # Find the nearest row/card ancestor containing this actual
-                        # button. The selector is structural and label-based only;
-                        # it does not inspect hrefs or listing IDs.
-                        row = button.locator(
-                            "xpath=ancestor::*[self::div or self::li]"
-                            "[.//button or .//*[@role='button']][1]"
-                        )
+                        # Walk upward from the actual button and pick the
+                        # smallest ancestor that contains exactly one Renew
+                        # control. This avoids accidentally treating a wrapper
+                        # around multiple listing rows as one row.
+                        row = button
+                        candidate = button
+                        for _ in range(10):
+                            try:
+                                parent = candidate.locator("xpath=..")
+                                if parent.count() < 1:
+                                    break
+                                parent_buttons = parent.locator(
+                                    "button[aria-label*='Renew' i], "
+                                    "[role='button'][aria-label*='Renew' i], "
+                                    "button:has-text('Renew listing'), "
+                                    "[role='button']:has-text('Renew listing'), "
+                                    "button:has-text('Renew'), "
+                                    "[role='button']:has-text('Renew')"
+                                )
+                                if parent_buttons.count() == 1:
+                                    row = parent
+                                    break
+                                candidate = parent
+                                row = parent
+                            except Exception:
+                                break
                         row_buttons = row.locator(
                             "button[aria-label*='Renew' i], "
                             "[role='button'][aria-label*='Renew' i], "
@@ -2886,28 +2906,21 @@ class PlaywrightDriver(BaseDriver):
                             "button:has-text('Renew'), "
                             "[role='button']:has-text('Renew')"
                         )
-                        if row_buttons.count() < 1:
-                            continue
+                        # If a usable one-button row could not be identified,
+                        # still attempt the actual button rather than silently
+                        # skipping a visible Renew control.
+                        if row_buttons.count() != 1:
+                            row = button
+                            row_buttons = (button,)
                         row_text = " ".join((row.inner_text() or "").split())[:500]
                         signature = row_text or f"renew-row-{index}"
-                        try:
-                            box = row.bounding_box()
-                            pos = (round(box["x"]), round(box["y"])) if box else (index, 0)
-                        except Exception:
-                            pos = (index, 0)
-                        row_position = (signature, pos[0], pos[1])
-                        # Multiple Renew controls inside one row are still one row;
-                        # do not emit that same row twice in a scan.
-                        if row_position in seen_row_positions:
-                            continue
-                        seen_row_positions.add(row_position)
                         occurrence = seen_signatures.get(signature, 0)
                         seen_signatures[signature] = occurrence + 1
-                        # Text + duplicate-row occurrence distinguishes repeated
-                        # titles without deriving or storing a listing ID.
                         key = f"row:{signature}#{occurrence}"
                         yield key, None, row, row_buttons
                     except Exception:
+                        # A single malformed DOM candidate must not hide later
+                        # visible Renew buttons in the same list.
                         continue
                 return
 
