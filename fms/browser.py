@@ -2795,19 +2795,22 @@ class PlaywrightDriver(BaseDriver):
         processed: set[str] = set()
 
         def renew_buttons():
-            buttons = page.locator(
-                "div[aria-label*='Renew' i][role='button'], "
-                "button[aria-label*='Renew' i]"
-            )
-            if buttons.count():
-                return buttons
-            buttons = page.locator(
+            # Facebook commonly renders the action as a button whose visible
+            # label is only "Renew" (not "Renew listing"). Always return a
+            # clickable button/role=button; never return the inner text span.
+            selectors = (
+                "button[aria-label*='Renew' i], "
+                "[role='button'][aria-label*='Renew' i]",
                 "button:has-text('Renew listing'), "
-                "[role='button']:has-text('Renew listing')"
+                "[role='button']:has-text('Renew listing')",
+                "button:has-text('Renew'), "
+                "[role='button']:has-text('Renew')",
             )
-            if buttons.count():
-                return buttons
-            return page.locator("span:has-text('Renew listing')")
+            for selector in selectors:
+                buttons = page.locator(selector)
+                if buttons.count():
+                    return buttons
+            return page.locator("button:has-text('Renew'), [role='button']:has-text('Renew')")
 
         def wait_for_ready_content() -> str:
             # Intentionally unbounded: wait for real list/empty-state content.
@@ -2954,10 +2957,10 @@ class PlaywrightDriver(BaseDriver):
                         key, title, listing_id = listing_identity(btn)
                         if key in processed:
                             continue
-                        # Reserve identity before click so rerenders cannot
-                        # cause a second click on the same listing.
-                        processed.add(key)
+                        # Only mark an identity processed AFTER the click
+                        # succeeds. A failed click must remain retryable.
                         btn.click(timeout=0)
+                        processed.add(key)
                         clicked_in_view = True
                         renewed.append({"id": listing_id, "title": title})
                         self._pause_checkpoint()
@@ -2990,7 +2993,15 @@ class PlaywrightDriver(BaseDriver):
                 if state == "empty":
                     return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
                 if not clicked_in_view and not moved:
-                    # No unprocessed button remains in this viewport/list. A
+                    # A button was detected but every click failed. Do not
+                    # refresh forever without a successful Renew action.
+                    if failed:
+                        return {
+                            "renewed": renewed, "no_eligible": False,
+                            "failed": failed,
+                            "error": "Renew buttons were detected, but clicks failed; stopped to avoid a refresh loop.",
+                        }
+                    # No unprocessed button remains in the full list. A
                     # refresh lets Facebook update eligibility after renewals.
                     self._pause_checkpoint()
                     page.reload(wait_until="domcontentloaded", timeout=0)
