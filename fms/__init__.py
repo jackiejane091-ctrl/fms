@@ -1,6 +1,6 @@
 """FMS - personal Facebook Marketplace auto-listing tool."""
 
-__version__ = "0.2.140"
+__version__ = "0.2.141"
 __phase__ = 2
 
 # Frozen (PyInstaller onefile) bootstrap: point Playwright at the local

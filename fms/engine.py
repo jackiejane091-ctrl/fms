@@ -49,6 +49,7 @@ ACTIONS = [
     ("delete_take_action", "Delete Take Action Listings"),
     ("delete_all_invalid", "Delete All Invalid Listings"),
     ("renew_listing", "Renew Listing"),
+    ("renew_listing_1", "Renew listing 1"),
     ("delete_relist", "Delete & Relist"),
     ("login", "Login"),
     ("download_images_titles", "Download Images & Titles"),
@@ -1014,6 +1015,8 @@ class RunController:
             self._delete_all_invalid_flow(account, driver)
         elif mode == "renew_listing":
             self._renew_flow(account, driver, quota)
+        elif mode == "renew_listing_1":
+            self._renew_listing_1_flow(account, driver, quota)
         elif mode == "login":
             self.log(f"[{label}] login verified — no posting in Login mode",
                      account_id=account["id"])
@@ -1821,6 +1824,36 @@ class RunController:
             self.log(f"[{label}] renewed {n}/{len(targets)} listing(s)",
                      account_id=account["id"])
 
+    # -- mode: renew_listing_1 ------------------------------------------------------------
+    def _renew_listing_1_flow(self, account: dict, driver, quota: int) -> None:
+        """Dedicated row-scoped Renew Listing 1 action (no listing-ID parsing)."""
+        label = account["label"]
+        lo = max(0, int(self.cfg.renew_min_count or 0))
+        hi = max(lo, int(self.cfg.renew_max_count or 0))
+        want = random.randint(lo, hi)
+        method = getattr(driver, "renew_listings_from_rows", None)
+        if not callable(method):
+            self.log(f"[{label}] Renew listing 1 requires a row-capable browser driver",
+                     level="error", account_id=account["id"])
+            return
+        result = method(want)
+        renewed = result.get("renewed", []) if isinstance(result, dict) else []
+        no_eligible = bool(result.get("no_eligible")) if isinstance(result, dict) else False
+        error = result.get("error") if isinstance(result, dict) else None
+        if renewed:
+            self.log(f"[{label}] Renew listing 1: attempted {len(renewed)} listing(s)"
+                     + (f" (requested up to {want})" if len(renewed) < want else ""),
+                     account_id=account["id"])
+        if no_eligible and not renewed:
+            self.log(f"[{label}] No renew listings available; account marked Done",
+                     account_id=account["id"])
+        if result.get("failed", 0):
+            self.log(f"[{label}] {result['failed']} Renew click attempt(s) failed",
+                     level="warning", account_id=account["id"])
+        if error:
+            self.log(f"[{label}] Renew listing 1 workflow error: {error}",
+                     level="warning", account_id=account["id"])
+
     # -- mode: download_images_titles ---------------------------------------------------
     def _download_assets_flow(self, account: dict, driver) -> None:
         """Manual-assist flow (confirmed 2026-10-15): the browser opens with
@@ -2538,6 +2571,31 @@ class ScriptRunController:
                     n += 1
             self.log(f"[{label}] block {block['id']}: renewed {n}",
                      account_id=account["id"])
+            return None
+
+        elif btype == "renew_listing_1":
+            min_r = int(p.get("min_renew", 1) or 0)
+            max_r = max(min_r, int(p.get("max_renew", 5) or 0))
+            want = random.randint(min_r, max_r)
+            method = getattr(driver, "renew_listings_from_rows", None)
+            if not callable(method):
+                self.log(f"[{label}] block {block['id']}: Renew listing 1 requires a row-capable browser driver",
+                         level="error", account_id=account["id"])
+                return None
+            result = method(want)
+            renewed = result.get("renewed", []) if isinstance(result, dict) else []
+            if renewed:
+                self.log(f"[{label}] block {block['id']}: Renew listing 1 attempted {len(renewed)} listing(s)",
+                         account_id=account["id"])
+            if isinstance(result, dict) and result.get("no_eligible") and not renewed:
+                self.log(f"[{label}] block {block['id']}: No renew listings available",
+                         account_id=account["id"])
+            if isinstance(result, dict) and result.get("failed", 0):
+                self.log(f"[{label}] block {block['id']}: {result['failed']} Renew click attempt(s) failed",
+                         level="warning", account_id=account["id"])
+            if isinstance(result, dict) and result.get("error"):
+                self.log(f"[{label}] block {block['id']}: Renew listing 1 error: {result['error']}",
+                         level="warning", account_id=account["id"])
             return None
 
         elif btype == "delete_duplicate":

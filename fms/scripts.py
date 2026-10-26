@@ -123,6 +123,10 @@ BLOCK_TYPES: dict[str, dict[str, tuple[Any, str]]] = {
         "min_renew": (1, "Min listings to renew"),
         "max_renew": (5, "Max listings to renew"),
     },
+    "renew_listing_1": {
+        "min_renew": (1, "Min listings to renew"),
+        "max_renew": (5, "Max listings to renew"),
+    },
     "delete_duplicate": {},
     "delete_previous": {},
     "delete_draft": {},
@@ -350,8 +354,9 @@ def describe_block(b: dict) -> str:
         return "Browser launch (keep open)"
     if t == "browser_launch_fast":
         return "Browser launch (keep open)"
-    if t == "renew_listing":
-        return (f"Renew listings "
+    if t in {"renew_listing", "renew_listing_1"}:
+        label = "Renew listing 1" if t == "renew_listing_1" else "Renew listings"
+        return (f"{label} "
                 f"({p.get('min_renew', 1)}–{p.get('max_renew', 5)})")
     if t == "delete_duplicate":
         return "Delete duplicate listings"
@@ -388,6 +393,7 @@ BLOCK_LABELS: dict[str, str] = {
     "relist_edit": "Relist & Edit",
     "delete_relist": "Delete & Relist",
     "renew_listing": "Renew Listing",
+    "renew_listing_1": "Renew listing 1",
     "download_images_titles": "Download Images & Titles",
     "delete_duplicate": "Delete Duplicate",
     "delete_draft": "Delete Draft",
@@ -412,7 +418,7 @@ BLOCK_LABELS: dict[str, str] = {
 # AVAILABLE ACTIONS panel grouping (v6.2.0.0 script builder).
 BUILDER_CATEGORIES: list[tuple[str, list[str]]] = [
     ("LISTINGS", ["post", "drafts", "publish_drafts", "relist_edit",
-                  "delete_relist", "renew_listing"]),
+                  "delete_relist", "renew_listing", "renew_listing_1"]),
     ("DELETE", ["delete_duplicate", "delete_draft", "delete_previous",
                 "delete_take_action", "delete_all_invalid"]),
     ("ACTIVITY", ["scroll_feed", "watch_videos", "watch_reels",

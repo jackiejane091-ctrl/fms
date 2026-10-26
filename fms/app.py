@@ -556,7 +556,7 @@ def create_app(driver_name: str = "playwright") -> FastAPI:
     # -- actions ---------------------------------------------------------------
     @app.get("/api/actions")
     def api_list_actions():
-        """All 18 run actions of the real tool, in its exact order."""
+        """All run actions of the real tool, in its exact order."""
         return [{"mode": mode, "label": label}
                 for mode, label in engine_mod.ACTIONS]
 

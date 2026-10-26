@@ -190,6 +190,10 @@ class BaseDriver(ABC):
         """Renew up to max_count listings from Facebook's Renew Listings page."""
         raise NotImplementedError
 
+    def renew_listings_from_rows(self, max_count: int) -> dict:
+        """Renew listings by finding each row's own clickable Renew button; no ID parsing."""
+        raise NotImplementedError
+
     def set_marketplace_location(self, location: str) -> bool:
         """Change the account's Marketplace location. Return True on success."""
         raise NotImplementedError
@@ -2772,6 +2776,14 @@ class PlaywrightDriver(BaseDriver):
             return False
 
     def renew_listings_from_page(self, max_count: int) -> dict:
+        """Existing Renew Listing action; preserve its current behaviour."""
+        return self._renew_listings_from_page_impl(max_count, row_scoped=False)
+
+    def renew_listings_from_rows(self, max_count: int) -> dict:
+        """Renew Listing 1: find each visible row's actual Renew button without parsing item IDs."""
+        return self._renew_listings_from_page_impl(max_count, row_scoped=True)
+
+    def _renew_listings_from_page_impl(self, max_count: int, row_scoped: bool = False) -> dict:
         """Renew eligible listings one at a time, scrolling the full renew list.
         The renew-list dialog is scanned from top to bottom, clicking each
         visible Renew button in order. After the full current list is scanned,
@@ -2836,13 +2848,70 @@ class PlaywrightDriver(BaseDriver):
                 time.sleep(0.5)
 
         def listing_row_candidates():
-            """Yield each listing's own row and its item link, not page-wide buttons.
+            """Yield row-scoped Renew controls. Renew Listing 1 never parses item IDs."""
+            if row_scoped:
+                # Union all supported clickable-button variants so one aria-labelled
+                # button cannot hide other plain-text Renew buttons in nearby rows.
+                buttons = page.locator(
+                    "button[aria-label*='Renew' i], "
+                    "[role='button'][aria-label*='Renew' i], "
+                    "button:has-text('Renew listing'), "
+                    "[role='button']:has-text('Renew listing'), "
+                    "button:has-text('Renew'), "
+                    "[role='button']:has-text('Renew')"
+                )
+                try:
+                    count = min(buttons.count(), 500)
+                except Exception:
+                    count = 0
+                seen_signatures: dict[str, int] = {}
+                seen_row_positions: set[tuple[str, int, int]] = set()
+                for index in range(count):
+                    try:
+                        button = buttons.nth(index)
+                        if not button.is_visible() or not button.is_enabled():
+                            continue
+                        # Find the nearest row/card ancestor containing this actual
+                        # button. The selector is structural and label-based only;
+                        # it does not inspect hrefs or listing IDs.
+                        row = button.locator(
+                            "xpath=ancestor::*[self::div or self::li]"
+                            "[.//button or .//*[@role='button']][1]"
+                        )
+                        row_buttons = row.locator(
+                            "button[aria-label*='Renew' i], "
+                            "[role='button'][aria-label*='Renew' i], "
+                            "button:has-text('Renew listing'), "
+                            "[role='button']:has-text('Renew listing'), "
+                            "button:has-text('Renew'), "
+                            "[role='button']:has-text('Renew')"
+                        )
+                        if row_buttons.count() < 1:
+                            continue
+                        row_text = " ".join((row.inner_text() or "").split())[:500]
+                        signature = row_text or f"renew-row-{index}"
+                        try:
+                            box = row.bounding_box()
+                            pos = (round(box["x"]), round(box["y"])) if box else (index, 0)
+                        except Exception:
+                            pos = (index, 0)
+                        row_position = (signature, pos[0], pos[1])
+                        # Multiple Renew controls inside one row are still one row;
+                        # do not emit that same row twice in a scan.
+                        if row_position in seen_row_positions:
+                            continue
+                        seen_row_positions.add(row_position)
+                        occurrence = seen_signatures.get(signature, 0)
+                        seen_signatures[signature] = occurrence + 1
+                        # Text + duplicate-row occurrence distinguishes repeated
+                        # titles without deriving or storing a listing ID.
+                        key = f"row:{signature}#{occurrence}"
+                        yield key, None, row, row_buttons
+                    except Exception:
+                        continue
+                return
 
-            Facebook may render several Renew buttons with identical labels. The
-            item URL is the row identity; the action is then queried *inside that
-            row*, so a page-wide first-match selector cannot repeatedly target one
-            button for every listing.
-            """
+            # Legacy action path retained separately for backward compatibility.
             links = page.locator("a[href*='/marketplace/item/']")
             try:
                 count = min(links.count(), 500)
@@ -2857,8 +2926,6 @@ class PlaywrightDriver(BaseDriver):
                     listing_id = match.group(1) if match else ""
                     if not listing_id or listing_id in seen_rows:
                         continue
-                    # Nearest ancestor row/card that contains this item link and
-                    # an actual Renew control. Keep the locator scoped to that row.
                     row = link.locator(
                         "xpath=ancestor::*[self::div or self::li]"
                         "[.//a[contains(@href,'/marketplace/item/')]]"
@@ -2995,22 +3062,34 @@ class PlaywrightDriver(BaseDriver):
                 # then find/click Renew only within that row. Rebuild the entire
                 # candidate set after every click because Facebook can re-render it.
                 row_candidates = list(listing_row_candidates())
-                if row_candidates:
-                    candidates = []
+                candidates = []
+                if row_scoped:
+                    # Renew listing 1 intentionally has no page-wide/ID-based
+                    # fallback: only a button found inside a listing row qualifies.
+                    for row_key, link, row, row_buttons in row_candidates:
+                        title = ""
+                        try:
+                            if link is not None:
+                                title = (link.inner_text() or "").strip()[:160]
+                            if not title:
+                                title = (row.inner_text() or "").strip()[:160]
+                        except Exception:
+                            pass
+                        candidates.append((row_key, title, row_buttons))
+                elif row_candidates:
                     for listing_id, link, row, row_buttons in row_candidates:
                         title = ""
                         try:
-                            title = (link.inner_text() or "").strip()[:160]
+                            if link is not None:
+                                title = (link.inner_text() or "").strip()[:160]
                             if not title:
                                 title = (row.inner_text() or "").strip()[:160]
                         except Exception:
                             pass
                         candidates.append((listing_id, title, row_buttons))
                 else:
-                    # Compatibility fallback for page variants/tests where item
-                    # links are not exposed; still re-query after every attempt.
+                    # Legacy compatibility fallback for the existing action only.
                     buttons = renew_buttons()
-                    candidates = []
                     for i in range(min(buttons.count(), 300)):
                         btn = buttons.nth(i)
                         key, title, listing_id = listing_identity(btn)
@@ -3397,6 +3476,15 @@ class MockDriver(BaseDriver):
         for item in chosen:
             self._record("renew_listing", listing_id=item["id"])
         return {"renewed": chosen, "no_eligible": not chosen, "failed": 0}
+
+    def renew_listings_from_rows(self, max_count: int) -> dict:
+        self._record("renew_listings_from_rows", max_count=max_count)
+        chosen = [dict(x) for x in type(self).fake_listings if x.get("id")][:max(0, int(max_count))]
+        for item in chosen:
+            self._record("renew_listing_row_button", title=item.get("title", ""))
+        # Deliberately omit listing IDs from this action's result.
+        renewed = [{"title": item.get("title", "")} for item in chosen]
+        return {"renewed": renewed, "no_eligible": not renewed, "failed": 0}
 
     def set_marketplace_location(self, location: str) -> bool:
         self._record("set_location", location=location)
