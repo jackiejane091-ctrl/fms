@@ -2835,6 +2835,49 @@ class PlaywrightDriver(BaseDriver):
                     pass
                 time.sleep(0.5)
 
+        def listing_row_candidates():
+            """Yield each listing's own row and its item link, not page-wide buttons.
+
+            Facebook may render several Renew buttons with identical labels. The
+            item URL is the row identity; the action is then queried *inside that
+            row*, so a page-wide first-match selector cannot repeatedly target one
+            button for every listing.
+            """
+            links = page.locator("a[href*='/marketplace/item/']")
+            try:
+                count = min(links.count(), 500)
+            except Exception:
+                count = 0
+            seen_rows = set()
+            for index in range(count):
+                try:
+                    link = links.nth(index)
+                    href = link.get_attribute("href") or ""
+                    match = re.search(r"/marketplace/item/(\d+)", href)
+                    listing_id = match.group(1) if match else ""
+                    if not listing_id or listing_id in seen_rows:
+                        continue
+                    # Nearest ancestor row/card that contains this item link and
+                    # an actual Renew control. Keep the locator scoped to that row.
+                    row = link.locator(
+                        "xpath=ancestor::*[self::div or self::li]"
+                        "[.//a[contains(@href,'/marketplace/item/')]]"
+                        "[.//button or .//*[@role='button']][1]"
+                    )
+                    row_buttons = row.locator(
+                        "button[aria-label*='Renew' i], "
+                        "[role='button'][aria-label*='Renew' i], "
+                        "button:has-text('Renew listing'), "
+                        "[role='button']:has-text('Renew listing'), "
+                        "button:has-text('Renew'), "
+                        "[role='button']:has-text('Renew')"
+                    )
+                    if row_buttons.count() > 0:
+                        seen_rows.add(listing_id)
+                        yield listing_id, link, row, row_buttons
+                except Exception:
+                    continue
+
         def listing_identity(btn) -> tuple[str, str, str]:
             """Return a stable-ish key, display title, and listing id."""
             title = ""
@@ -2947,31 +2990,52 @@ class PlaywrightDriver(BaseDriver):
                 # Always restart the locator scan after each click: Facebook may
                 # remove/re-index rows immediately, so incrementing a stale
                 # button index can skip the next listing.
-                buttons = renew_buttons()
                 attempted_button = False
-                for i in range(min(buttons.count(), 300)):
+                # Primary path: enumerate listing links, resolve each listing row,
+                # then find/click Renew only within that row. Rebuild the entire
+                # candidate set after every click because Facebook can re-render it.
+                row_candidates = list(listing_row_candidates())
+                if row_candidates:
+                    candidates = []
+                    for listing_id, link, row, row_buttons in row_candidates:
+                        title = ""
+                        try:
+                            title = (link.inner_text() or "").strip()[:160]
+                            if not title:
+                                title = (row.inner_text() or "").strip()[:160]
+                        except Exception:
+                            pass
+                        candidates.append((listing_id, title, row_buttons))
+                else:
+                    # Compatibility fallback for page variants/tests where item
+                    # links are not exposed; still re-query after every attempt.
+                    buttons = renew_buttons()
+                    candidates = []
+                    for i in range(min(buttons.count(), 300)):
+                        btn = buttons.nth(i)
+                        key, title, listing_id = listing_identity(btn)
+                        candidates.append((key, title, (btn,)))
+
+                for key, title, row_buttons in candidates:
                     self._pause_checkpoint()
                     try:
-                        btn = buttons.nth(i)
-                        if not btn.is_visible() or not btn.is_enabled():
-                            continue
-                        key, title, listing_id = listing_identity(btn)
                         if key in processed or key in attempted_this_pass:
+                            continue
+                        btn = row_buttons.nth(0) if hasattr(row_buttons, "nth") else row_buttons[0]
+                        if not btn.is_visible() or not btn.is_enabled():
                             continue
                         attempted_button = True
                         try:
-                            # Click the actual button; do not wait for any
-                            # confirmation, toast, or post-click dialog.
+                            # Click this row's real clickable control; never wait
+                            # for a confirmation message after the click.
                             btn.click(timeout=0)
                             processed.add(key)
-                            renewed.append({"id": listing_id, "title": title})
+                            renewed.append({"id": key if key.isdigit() else "", "title": title})
                             human.human_pause(1000, 2000)
                         except Exception:
-                            # Do not mark failed clicks as processed. Retry them
-                            # after the current list has been scanned/refreshed.
                             failed += 1
                             attempted_this_pass.add(key)
-                        break  # re-query buttons after every click attempt
+                        break  # locate all rows/buttons again after every attempt
                     except Exception:
                         continue
 
