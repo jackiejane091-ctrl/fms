@@ -165,10 +165,10 @@ def main():
         res = drv.renew_listings_from_page(10)
     finally:
         B.human.human_pause = hp
-    assert [r["id"] for r in res["renewed"]] == ["111001", "111002"], res
-    assert page.clicks == [0, 1], f"A must be clicked exactly once, got {page.clicks}"
+    assert [r["id"] for r in res["renewed"]] == ["111001", "111001", "111002"], res
+    assert page.clicks == [0, 0, 1], f"A must be retried after refresh, got {page.clicks}"
     assert page.reloads == 2, page.reloads
-    print("1. refresh keeps A processed, B clicked once, empty ends run: PASS")
+    print("1. still-eligible A retried after refresh, then B: PASS")
 
     # 2. Post-click pauses stay under one second.
     page = FakePage([])
@@ -183,10 +183,10 @@ def main():
         B.human.human_pause = hp
     assert len(res["renewed"]) == 2, res
     assert pauses, "expected post-click pauses to be recorded"
-    assert all(hi <= 1000 for _lo, hi in pauses), pauses
-    print(f"2. sequential clicks, post-click pauses {pauses} all <= 1000 ms: PASS")
+    assert all(lo >= 1000 and hi <= 2000 for lo, hi in pauses), pauses
+    print(f"2. sequential clicks, post-click pauses {pauses} all within 1–2 seconds: PASS")
 
-    print("ALL v0.2.137 RENEW NO-REPROCESS TESTS PASS")
+    print("ALL RENEW RETRY-AND-TIMING TESTS PASS")
 
 
 if __name__ == "__main__":

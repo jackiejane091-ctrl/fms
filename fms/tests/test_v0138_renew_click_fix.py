@@ -10,8 +10,8 @@
      retried on the next pass and renewed; clicked buttons
      vanish from the list, as on real Facebook, and the run
      then ends on the empty state.
-  3. A button that always fails does NOT refresh forever: the
-     run returns an explicit error, zero reloads, zero renewals.
+  3. A failed button remains retryable after refresh and succeeds
+     when its simulated click begins working.
 The fakes mimic Playwright locators; no live Facebook involved.
 """
 import sys
@@ -186,21 +186,21 @@ def main():
     assert "error" not in res, res
     print("2. failed click retried on next pass, both renewed, clean end: PASS")
 
-    # 3. Always-failing button -> explicit error, no refresh loop.
+    # 3. A button failing twice must be retried after each full-list refresh.
     page = FakePage([])
-    bad = FakeBtn(FakeLink("/marketplace/item/111001/", "Chair"), page, 0,
-                  fail_times=99)
-    page.buttons = [bad]
+    retry = FakeBtn(FakeLink("/marketplace/item/111001/", "Chair"), page, 0,
+                    fail_times=2)
+    page.buttons = [retry]
     drv, hp = make_driver(page)
     try:
-        res = drv.renew_listings_from_page(5)
+        res = drv.renew_listings_from_page(1)
     finally:
         B.human.human_pause = hp
-    assert res["renewed"] == [], res
-    assert res["failed"] == 1, res
-    assert "refresh loop" in (res.get("error") or ""), res
-    assert page.reloads == 0, page.reloads
-    print("3. always-failing button -> explicit error, 0 reloads: PASS")
+    assert [r["id"] for r in res["renewed"]] == ["111001"], res
+    assert retry.clicks == 3, retry.clicks
+    assert page.reloads == 2, page.reloads
+    assert "error" not in res, res
+    print("3. failed button retried after refresh until click succeeds: PASS")
 
     print("ALL v0.2.138 RENEW CLICK FIX TESTS PASS")
 

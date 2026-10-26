@@ -2773,11 +2773,11 @@ class PlaywrightDriver(BaseDriver):
 
     def renew_listings_from_page(self, max_count: int) -> dict:
         """Renew eligible listings one at a time, scrolling the full renew list.
-        Each listing is clicked at most once per run. The renew-list dialog is
-        scanned from top to bottom; after its scroll area reaches the bottom,
-        the page is refreshed and scanned again until max_count is reached or
-        Facebook displays an empty state. Page/list waits remain interruptible
-        through the existing pause checkpoint.
+        The renew-list dialog is scanned from top to bottom, clicking each
+        visible Renew button in order. After the full current list is scanned,
+        the page is refreshed and any listing still eligible is attempted again
+        until max_count is reached or Facebook displays an empty state. No
+        confirmation is awaited after clicks; existing pause checkpoints remain.
         """
         self._ensure()
         page = self._page
@@ -2792,7 +2792,10 @@ class PlaywrightDriver(BaseDriver):
             "nothing to renew", "you have no eligible listing",
             "you have no eligible listings",
         )
+        # Track successful/failed attempts only for the current full-list pass.
+        # If a listing is still eligible after refresh, it must be clicked again.
         processed: set[str] = set()
+        attempted_this_pass: set[str] = set()
 
         def renew_buttons():
             # Facebook commonly renders the action as a button whose visible
@@ -2941,41 +2944,47 @@ class PlaywrightDriver(BaseDriver):
 
             while len(renewed) < max_count:
                 self._pause_checkpoint()
-                # Process the current viewport top-to-bottom, exactly one click
-                # per unique listing. Never iterate a stale/re-indexed button
-                # collection after a successful click.
+                # Always restart the locator scan after each click: Facebook may
+                # remove/re-index rows immediately, so incrementing a stale
+                # button index can skip the next listing.
                 buttons = renew_buttons()
-                clicked_in_view = False
+                attempted_button = False
                 for i in range(min(buttons.count(), 300)):
-                    if len(renewed) >= max_count:
-                        break
                     self._pause_checkpoint()
                     try:
                         btn = buttons.nth(i)
                         if not btn.is_visible() or not btn.is_enabled():
                             continue
                         key, title, listing_id = listing_identity(btn)
-                        if key in processed:
+                        if key in processed or key in attempted_this_pass:
                             continue
-                        # Only mark an identity processed AFTER the click
-                        # succeeds. A failed click must remain retryable.
-                        btn.click(timeout=0)
-                        processed.add(key)
-                        clicked_in_view = True
-                        renewed.append({"id": listing_id, "title": title})
-                        self._pause_checkpoint()
-                        human.human_pause(300, 600)
+                        attempted_button = True
+                        try:
+                            # Click the actual button; do not wait for any
+                            # confirmation, toast, or post-click dialog.
+                            btn.click(timeout=0)
+                            processed.add(key)
+                            renewed.append({"id": listing_id, "title": title})
+                            human.human_pause(1000, 2000)
+                        except Exception:
+                            # Do not mark failed clicks as processed. Retry them
+                            # after the current list has been scanned/refreshed.
+                            failed += 1
+                            attempted_this_pass.add(key)
+                        break  # re-query buttons after every click attempt
                     except Exception:
-                        failed += 1
+                        continue
 
                 if len(renewed) >= max_count:
                     break
+                if attempted_button:
+                    continue
 
-                # Scroll the list's own scrollbar, not the whole browser page.
+                # No unattempted button remains in this viewport/list. Scroll
+                # only the Renew dialog's own list area to expose more rows.
                 moved, scroll_top, scroll_max = scroll_list_down()
                 if moved:
                     self._pause_checkpoint()
-                    # Let newly exposed rows render before scanning them.
                     while True:
                         self._pause_checkpoint()
                         try:
@@ -2986,31 +2995,20 @@ class PlaywrightDriver(BaseDriver):
                         time.sleep(0.5)
                     continue
 
-                # At the bottom: refresh only after the full list was scanned.
-                # If no click occurred in this pass and the empty state is not
-                # present, re-check content rather than falsely reporting success.
+                # The full current list has been scanned. Check for a genuine
+                # empty state; otherwise refresh and allow every still-visible
+                # listing to be attempted again in the next pass.
                 state = wait_for_ready_content()
                 if state == "empty":
                     return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
-                if not clicked_in_view and not moved:
-                    # A button was detected but every click failed. Do not
-                    # refresh forever without a successful Renew action.
-                    if failed:
-                        return {
-                            "renewed": renewed, "no_eligible": False,
-                            "failed": failed,
-                            "error": "Renew buttons were detected, but clicks failed; stopped to avoid a refresh loop.",
-                        }
-                    # No unprocessed button remains in the full list. A
-                    # refresh lets Facebook update eligibility after renewals.
-                    self._pause_checkpoint()
-                    page.reload(wait_until="domcontentloaded", timeout=0)
-                    state = wait_for_ready_content()
-                    if state == "empty":
-                        return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
-                    # Keep processed identities across refresh: a listing
-                    # renewed earlier in this run must never be clicked
-                    # again, even if Facebook still shows it.
+
+                self._pause_checkpoint()
+                page.reload(wait_until="domcontentloaded", timeout=0)
+                state = wait_for_ready_content()
+                if state == "empty":
+                    return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
+                processed.clear()
+                attempted_this_pass.clear()
 
             return {"renewed": renewed, "no_eligible": False, "failed": failed}
         except Exception as exc:
