@@ -2772,12 +2772,12 @@ class PlaywrightDriver(BaseDriver):
             return False
 
     def renew_listings_from_page(self, max_count: int) -> dict:
-        """Renew eligible listings from Facebook's dedicated renew page.
-
-        Waits for actionable page content rather than using a fixed page-load
-        timeout. Each visible Renew button is clicked once per pass; after the
-        pass, the page is refreshed and checked again until the requested count
-        is reached or Facebook reports that no eligible listings remain.
+        """Renew eligible listings one at a time, scrolling the full renew list.
+        Each listing is clicked at most once per run. The renew-list dialog is
+        scanned from top to bottom; after its scroll area reaches the bottom,
+        the page is refreshed and scanned again until max_count is reached or
+        Facebook displays an empty state. Page/list waits remain interruptible
+        through the existing pause checkpoint.
         """
         self._ensure()
         page = self._page
@@ -2792,25 +2792,30 @@ class PlaywrightDriver(BaseDriver):
             "nothing to renew", "you have no eligible listing",
             "you have no eligible listings",
         )
+        processed: set[str] = set()
 
         def renew_buttons():
-            # Prefer the actual clickable button and avoid counting both a button
-            # and its nested "Renew listing" text as two separate controls.
-            buttons = page.locator("div[aria-label*='Renew' i][role='button'], button[aria-label*='Renew' i]")
+            buttons = page.locator(
+                "div[aria-label*='Renew' i][role='button'], "
+                "button[aria-label*='Renew' i]"
+            )
             if buttons.count():
                 return buttons
-            buttons = page.locator("button:has-text('Renew listing'), [role='button']:has-text('Renew listing')")
+            buttons = page.locator(
+                "button:has-text('Renew listing'), "
+                "[role='button']:has-text('Renew listing')"
+            )
             if buttons.count():
                 return buttons
             return page.locator("span:has-text('Renew listing')")
 
         def wait_for_ready_content() -> str:
-            # Deliberately no fixed timeout: the account's Facebook page may be slow.
+            # Intentionally unbounded: wait for real list/empty-state content.
             while True:
                 self._pause_checkpoint()
                 try:
                     buttons = renew_buttons()
-                    for i in range(min(buttons.count(), 200)):
+                    for i in range(min(buttons.count(), 300)):
                         btn = buttons.nth(i)
                         try:
                             if btn.is_visible() and btn.is_enabled():
@@ -2824,16 +2829,89 @@ class PlaywrightDriver(BaseDriver):
                     pass
                 time.sleep(0.5)
 
+        def listing_identity(btn) -> tuple[str, str, str]:
+            """Return a stable-ish key, display title, and listing id."""
+            title = ""
+            listing_id = ""
+            href = ""
+            try:
+                card = btn.locator(
+                    "xpath=ancestor::*[self::div or self::li]"
+                    "[.//a[contains(@href,'/marketplace/item/')]][1]"
+                )
+                link = card.locator("a[href*='/marketplace/item/']").first
+                href = link.get_attribute("href") or ""
+                match = re.search(r"/marketplace/item/(\d+)", href)
+                listing_id = match.group(1) if match else ""
+                title = (link.inner_text() or "").strip()[:160]
+                if not title:
+                    title = (card.inner_text() or "").strip()[:160]
+            except Exception:
+                try:
+                    title = (btn.locator("xpath=..").inner_text() or "").strip()[:160]
+                except Exception:
+                    pass
+            key = listing_id or href or title
+            if not key:
+                try:
+                    key = (btn.get_attribute("aria-label") or "") + "|" + str(btn.bounding_box())
+                except Exception:
+                    key = str(id(btn))
+            return key, title, listing_id
+
+        def scroll_list_down() -> tuple[bool, int, int]:
+            """Scroll the Renew dialog's own right-side list scrollbar."""
+            try:
+                result = page.locator("div[role='dialog']").evaluate("""dialog => {
+                    const nodes = [dialog, ...dialog.querySelectorAll('*')];
+                    const candidates = nodes.filter(n => {
+                        const s = getComputedStyle(n);
+                        return n.scrollHeight > n.clientHeight + 8 &&
+                               /(auto|scroll|overlay)/.test(s.overflowY);
+                    });
+                    const target = candidates.sort((a,b) =>
+                        (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                    )[0];
+                    if (!target) return {moved:false, top:0, max:0};
+                    const before = target.scrollTop;
+                    const step = Math.max(180, Math.floor(target.clientHeight * 0.72));
+                    target.scrollTop = Math.min(target.scrollHeight, before + step);
+                    return {moved:target.scrollTop > before, top:target.scrollTop,
+                            max:target.scrollHeight-target.clientHeight};
+                }""")
+                return bool(result.get("moved")), int(result.get("top", 0)), int(result.get("max", 0))
+            except Exception:
+                try:
+                    result = page.evaluate("""() => {
+                        const nodes = [...document.querySelectorAll('*')];
+                        const candidates = nodes.filter(n => {
+                            const s = getComputedStyle(n);
+                            return n.scrollHeight > n.clientHeight + 8 &&
+                                   /(auto|scroll|overlay)/.test(s.overflowY) &&
+                                   n.querySelector('[aria-label*="Renew" i], button');
+                        });
+                        const target = candidates.sort((a,b) =>
+                            (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                        )[0];
+                        if (!target) return {moved:false, top:0, max:0};
+                        const before = target.scrollTop;
+                        target.scrollTop = Math.min(target.scrollHeight,
+                            before + Math.max(180, Math.floor(target.clientHeight*0.72)));
+                        return {moved:target.scrollTop > before, top:target.scrollTop,
+                                max:target.scrollHeight-target.clientHeight};
+                    }""")
+                    return bool(result.get("moved")), int(result.get("top", 0)), int(result.get("max", 0))
+                except Exception:
+                    return False, 0, 0
+
         try:
             self._pause_checkpoint()
             page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=0)
-            # Wait for actual feed/main content, not merely an opened tab.
             while True:
                 self._pause_checkpoint()
                 try:
                     body_text = page.locator("body").inner_text(timeout=0).strip()
-                    feed = page.locator("[role='feed'], [role='main']")
-                    if body_text and len(body_text) >= 80 and feed.count() > 0:
+                    if body_text and len(body_text) >= 80 and page.locator("[role='feed'], [role='main']").count() > 0:
                         break
                 except Exception:
                     pass
@@ -2845,9 +2923,8 @@ class PlaywrightDriver(BaseDriver):
                 self._pause_checkpoint()
                 try:
                     body_text = page.locator("body").inner_text(timeout=0).strip()
-                    main = page.locator("[role='main']")
                     if ("marketplace" in body_text.lower() and len(body_text) >= 80
-                            and main.count() > 0):
+                            and page.locator("[role='main']").count() > 0):
                         break
                 except Exception:
                     pass
@@ -2861,18 +2938,12 @@ class PlaywrightDriver(BaseDriver):
 
             while len(renewed) < max_count:
                 self._pause_checkpoint()
+                # Process the current viewport top-to-bottom, exactly one click
+                # per unique listing. Never iterate a stale/re-indexed button
+                # collection after a successful click.
                 buttons = renew_buttons()
-                count = min(buttons.count(), 200)
-                if count == 0:
-                    state = wait_for_ready_content()
-                    if state == "empty":
-                        return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
-                    continue
-
-                # Reverse order avoids index shifts if Facebook removes a card
-                # immediately after a successful click.
-                pass_successes = 0
-                for i in range(count - 1, -1, -1):
+                clicked_in_view = False
+                for i in range(min(buttons.count(), 300)):
                     if len(renewed) >= max_count:
                         break
                     self._pause_checkpoint()
@@ -2880,36 +2951,55 @@ class PlaywrightDriver(BaseDriver):
                         btn = buttons.nth(i)
                         if not btn.is_visible() or not btn.is_enabled():
                             continue
-                        card = btn.locator("xpath=ancestor::*[self::div or self::li][.//a[contains(@href,'/marketplace/item/')]][1]")
-                        listing_id = ""
-                        title = ""
-                        try:
-                            link = card.locator("a[href*='/marketplace/item/']").first
-                            href = link.get_attribute("href") or ""
-                            match = re.search(r"/marketplace/item/(\\d+)", href)
-                            listing_id = match.group(1) if match else ""
-                            title = (link.inner_text() or "").strip()[:120]
-                        except Exception:
-                            pass
+                        key, title, listing_id = listing_identity(btn)
+                        if key in processed:
+                            continue
+                        # Reserve identity before click so rerenders cannot
+                        # cause a second click on the same listing.
+                        processed.add(key)
                         btn.click(timeout=0)
-                        pass_successes += 1
+                        clicked_in_view = True
                         renewed.append({"id": listing_id, "title": title})
+                        self._pause_checkpoint()
+                        human.human_pause(350, 650)
                     except Exception:
                         failed += 1
 
                 if len(renewed) >= max_count:
                     break
-                if pass_successes == 0:
-                    return {"renewed": renewed, "no_eligible": False,
-                            "failed": failed, "error": "Renew buttons were present but none could be clicked"}
 
-                # Refresh only after every currently visible button in this pass
-                # has been attempted, then wait for listings or Facebook's empty state.
-                self._pause_checkpoint()
-                page.reload(wait_until="domcontentloaded", timeout=0)
+                # Scroll the list's own scrollbar, not the whole browser page.
+                moved, scroll_top, scroll_max = scroll_list_down()
+                if moved:
+                    self._pause_checkpoint()
+                    # Let newly exposed rows render before scanning them.
+                    while True:
+                        self._pause_checkpoint()
+                        try:
+                            if renew_buttons().count() > 0:
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                    continue
+
+                # At the bottom: refresh only after the full list was scanned.
+                # If no click occurred in this pass and the empty state is not
+                # present, re-check content rather than falsely reporting success.
                 state = wait_for_ready_content()
                 if state == "empty":
                     return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
+                if not clicked_in_view and not moved:
+                    # No unprocessed button remains in this viewport/list. A
+                    # refresh lets Facebook update eligibility after renewals.
+                    self._pause_checkpoint()
+                    page.reload(wait_until="domcontentloaded", timeout=0)
+                    state = wait_for_ready_content()
+                    if state == "empty":
+                        return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
+                    # Reset the per-page scan keys after refresh; retain a
+                    # separate run-level count to prevent exceeding max_count.
+                    processed.clear()
 
             return {"renewed": renewed, "no_eligible": False, "failed": failed}
         except Exception as exc:

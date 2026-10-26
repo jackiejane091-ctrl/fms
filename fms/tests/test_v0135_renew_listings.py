@@ -140,6 +140,9 @@ class FakePage:
 
 
 def make_driver(page):
+    # v0.2.136: the new method pauses briefly after each click;
+    # no-op it here (test process only) so the suite stays fast.
+    B.human.human_pause = lambda *a, **k: None
     drv = B.PlaywrightDriver.__new__(B.PlaywrightDriver)
     drv._ensure = lambda: None
     drv._page = page
@@ -189,18 +192,20 @@ def make_controller(db, lo, hi):
 
 
 def main():
-    # 1. max_count caps the pass; reverse order; no reload.
+    # 1. SUPERSEDED by v0.2.136: the old method clicked in reverse
+    # order; the new scroll method scans top-to-bottom. max_count
+    # still caps the run; no reload before the cap is reached.
     page = FakePage([])
     page.buttons = btns_for(page, [("111001", "Chair", {}), ("111002", "Table", {}),
                                    ("111003", "Lamp", {})])
     res = make_driver(page).renew_listings_from_page(2)
     assert len(res["renewed"]) == 2, res
     assert res["no_eligible"] is False and res["failed"] == 0, res
-    assert page.clicks == [2, 1], page.clicks
+    assert page.clicks == [0, 1], page.clicks
     assert page.reloads == 0, page.reloads
     assert page.gotos[0] == "https://www.facebook.com/"
     assert page.gotos[-1] == RENEW_URL, page.gotos
-    print("1. 3 buttons, max 2 -> 2 clicked in reverse order, feed->marketplace->renew: PASS")
+    print("1. 3 buttons, max 2 -> 2 clicked top-to-bottom, feed->marketplace->renew: PASS")
 
     # 2. Empty state on arrival.
     page = FakePage([], renew_body=EMPTY_BODY)
@@ -218,14 +223,27 @@ def main():
     assert page.reloads == 1, page.reloads
     print("3. 1 button, max 5 -> clicked, refreshed, empty -> renewed 1: PASS")
 
-    # 4. Button unclickable between wait and pass -> error, no success.
+    # 4. SUPERSEDED by v0.2.136: the old refresh-after-pass method
+    # returned an error when a button went unclickable. The new
+    # scroll method waits without a cutoff for real content, so a
+    # button that is only TEMPORARILY disabled must resolve to a
+    # click, not an error. (A button that never becomes enabled
+    # and no empty state appears now waits by design, like the
+    # .133/.134 waits; only a closed tab escapes with an error.)
+    class SlowBtn(FakeBtn):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._calls = 0
+        def is_enabled(self):
+            self._calls += 1
+            return self._calls >= 3
     page = FakePage([])
-    page.buttons = btns_for(page, [("111001", "Chair", {"flaky": True})])
+    slow = SlowBtn(FakeLink("/marketplace/item/111001/", "Chair"), page, 0)
+    page.buttons = [slow]
     res = make_driver(page).renew_listings_from_page(5)
-    assert res["renewed"] == [], res
-    assert "none could be clicked" in (res.get("error") or ""), res
-    assert page.clicks == [], page.clicks
-    print("4. present-but-unclickable -> error, no false success: PASS")
+    assert len(res["renewed"]) == 1 and res["renewed"][0]["id"] == "111001", res
+    assert page.clicks == [0], page.clicks
+    print("4. temporarily-disabled button -> wait resolves, clicked: PASS")
 
     # 5. Engine page path: 2 of 3 fake listings -> DB rows + log.
     B.MockDriver.reset()
