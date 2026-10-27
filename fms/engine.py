@@ -62,7 +62,7 @@ MODES = (tuple(key for key, _ in ACTIONS)
          + ("draft_publish", "complete", "manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
 POSTING_MODES = {"complete", "test_single_post", "draft_publish", "draft_publish_1", "manual_publish",
-                 "relist_edit", "create_drafts", "publish_drafts", "delete_relist"}
+                 "relist_edit", "create_drafts", "publish_drafts"}
 PUBLISH_MODES = ("all_together", "one_by_one")
 
 
@@ -998,7 +998,7 @@ class RunController:
         elif mode == "relist_edit":
             self._relist_flow(account, driver, quota, account_idx)
         elif mode == "delete_relist":
-            self._delete_relist_flow(account, driver, quota, account_idx)
+            self._delete_relist_ui_flow(account, driver)
         elif mode == "create_drafts":
             self._create_drafts_only_flow(account, driver, quota, account_idx)
         elif mode == "publish_drafts":
@@ -1823,6 +1823,36 @@ class RunController:
         else:
             self.log(f"[{label}] renewed {n}/{len(targets)} listing(s)",
                      account_id=account["id"])
+
+    # -- mode: delete_relist (dedicated Facebook UI action) ------------------------------
+    def _delete_relist_ui_flow(self, account: dict, driver) -> None:
+        """Click Facebook's row-scoped Delete & Relist controls; do not delete/repost products."""
+        label = account["label"]
+        lo = max(0, int(self.cfg.renew_min_count or 0))
+        hi = max(lo, int(self.cfg.renew_max_count or 0))
+        want = random.randint(lo, hi)
+        method = getattr(driver, "delete_relist_from_rows", None)
+        if not callable(method):
+            self.log(f"[{label}] Delete & Relist requires a row-capable browser driver",
+                     level="error", account_id=account["id"])
+            return
+        result = method(want)
+        completed = result.get("renewed", []) if isinstance(result, dict) else []
+        no_eligible = bool(result.get("no_eligible")) if isinstance(result, dict) else False
+        error = result.get("error") if isinstance(result, dict) else None
+        if completed:
+            self.log(f"[{label}] Delete & Relist: clicked {len(completed)} listing(s)"
+                     + (f" (requested up to {want})" if len(completed) < want else ""),
+                     account_id=account["id"])
+        if no_eligible:
+            self.log(f"[{label}] You have no more listings eligible to be deleted and relisted; account marked Done",
+                     account_id=account["id"])
+        if result.get("failed", 0):
+            self.log(f"[{label}] {result['failed']} Delete & Relist click attempt(s) failed",
+                     level="warning", account_id=account["id"])
+        if error:
+            self.log(f"[{label}] Delete & Relist workflow error: {error}",
+                     level="warning", account_id=account["id"])
 
     # -- mode: renew_listing_1 ------------------------------------------------------------
     def _renew_listing_1_flow(self, account: dict, driver, quota: int) -> None:

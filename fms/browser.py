@@ -190,6 +190,10 @@ class BaseDriver(ABC):
         """Renew up to max_count listings from Facebook's Renew Listings page."""
         raise NotImplementedError
 
+    def delete_relist_from_rows(self, max_count: int) -> dict:
+        """Delete & Relist UI action contract."""
+        raise NotImplementedError
+
     def renew_listings_from_rows(self, max_count: int) -> dict:
         """Renew listings by finding each row's own clickable Renew button; no ID parsing."""
         raise NotImplementedError
@@ -3223,6 +3227,453 @@ class PlaywrightDriver(BaseDriver):
             return {"renewed": renewed, "no_eligible": False, "failed": failed,
                     "error": f"{type(exc).__name__}: {exc}"}
 
+
+    def delete_relist_from_rows(self, max_count: int) -> dict:
+        """Process Delete & Relist buttons row-by-row and reload the dedicated URL."""
+        return self._delete_relist_from_page_impl(max_count)
+
+    def _delete_relist_from_page_impl(self, max_count: int) -> dict:
+        """Delete & Relist eligible listings one at a time, scrolling the full relist list.
+        The relist-list dialog is scanned from top to bottom, clicking each
+        visible Delete & Relist button in order. After the full current list is scanned,
+        the page is refreshed and any listing still eligible is attempted again
+        until max_count is reached or Facebook displays an empty state. No
+        confirmation is awaited after clicks; existing pause checkpoints remain.
+        """
+        row_scoped = True
+        self._ensure()
+        page = self._page
+        assert page is not None
+        relisted: list[dict] = []
+        failed = 0
+        max_count = max(0, int(max_count))
+        relist_url = "https://www.facebook.com/marketplace/selling/relist_items/?is_routable_dialog=true&show_only_delete_and_relist=true"
+        empty_phrases = (
+            "no eligible listing", "no eligible listings",
+            "no listings to relist", "no listings available to relist",
+            "nothing to relist", "you have no eligible listing",
+            "you have no eligible listings",
+            "you have no more listings eligible to be deleted and relisted",
+        )
+        # Track successful/failed attempts only for the current full-list pass.
+        # If a listing is still eligible after refresh, it must be clicked again.
+        processed: set[str] = set()
+        attempted_this_pass: set[str] = set()
+
+        def relist_buttons():
+            # Facebook commonly renders the action as a button whose visible
+            # label is only "Delete & Relist" (not "Delete & Relist"). Always return a
+            # clickable button/role=button; never return the inner text span.
+            selectors = (
+                "button[aria-label*='Delete & Relist' i], "
+                "[role='button'][aria-label*='Delete & Relist' i]",
+                "button:has-text('Delete & Relist'), "
+                "[role='button']:has-text('Delete & Relist')",
+                "button:has-text('Delete & Relist'), "
+                "[role='button']:has-text('Delete & Relist')",
+            )
+            for selector in selectors:
+                buttons = page.locator(selector)
+                if buttons.count():
+                    return buttons
+            return page.locator("button:has-text('Delete & Relist'), [role='button']:has-text('Delete & Relist')")
+
+        def wait_for_ready_content() -> str:
+            # Wait for Facebook to render the list, but do not hang forever if
+            # a refresh leaves the dialog with no eligible listings and no
+            # localized/recognized empty-state phrase. A full 30-second grace
+            # period protects slower page loads before treating the list as empty.
+            no_content_since = time.monotonic()
+            while True:
+                self._pause_checkpoint()
+                try:
+                    buttons = relist_buttons()
+                    for i in range(min(buttons.count(), 300)):
+                        btn = buttons.nth(i)
+                        try:
+                            if btn.is_visible() and btn.is_enabled():
+                                return "listings"
+                        except Exception:
+                            continue
+                    # Only treat an empty state as terminal when the Delete & Relist
+                    # Listings dialog itself says so. Page-wide text can contain
+                    # unrelated Marketplace/sidebar text and must not end the
+                    # configured Min/Max relistal run early.
+                    dialog = page.locator("[role='dialog']")
+                    if dialog.count() > 0:
+                        dialog_text = (dialog.last.inner_text(timeout=0) or "").lower()
+                        if any(phrase in dialog_text for phrase in empty_phrases):
+                            # Recheck live controls in the dialog before calling
+                            # it empty; a stale/hidden message must not override
+                            # currently available clickable Delete & Relist buttons.
+                            dialog_buttons = dialog.last.locator(
+                                "button[aria-label*='Delete & Relist' i], "
+                                "[role='button'][aria-label*='Delete & Relist' i], "
+                                "button:has-text('Delete & Relist'), "
+                                "[role='button']:has-text('Delete & Relist'), "
+                                "button:has-text('Delete & Relist'), "
+                                "[role='button']:has-text('Delete & Relist')"
+                            )
+                            live_button = False
+                            for j in range(min(dialog_buttons.count(), 300)):
+                                try:
+                                    candidate = dialog_buttons.nth(j)
+                                    if candidate.is_visible() and candidate.is_enabled():
+                                        live_button = True
+                                        break
+                                except Exception:
+                                    continue
+                            if not live_button:
+                                return "empty"
+                        # The dialog exists but has no live Delete & Relist control. If
+                        # Facebook has finished rendering and still has no
+                        # eligible row after refresh, end this account cleanly.
+                        if time.monotonic() - no_content_since >= 30:
+                            return "empty"
+                    else:
+                        # Do not apply the empty timeout until the target dialog
+                        # has appeared; it may still be loading after navigation.
+                        no_content_since = time.monotonic()
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        def listing_row_candidates():
+            """Yield row-scoped Delete & Relist controls. Delete & Relist never parses item IDs."""
+            if row_scoped:
+                # Delete & Relist: treat each actual clickable Delete & Relist control as
+                # its own candidate. Do not deduplicate by an ancestor's text or
+                # bounding box: Facebook can wrap several listing rows in one
+                # shared div, which previously collapsed the whole list to one.
+                buttons = page.locator(
+                    "button[aria-label*='Delete & Relist' i], "
+                    "[role='button'][aria-label*='Delete & Relist' i], "
+                    "button:has-text('Delete & Relist'), "
+                    "[role='button']:has-text('Delete & Relist'), "
+                    "button:has-text('Delete & Relist'), "
+                    "[role='button']:has-text('Delete & Relist')"
+                )
+                try:
+                    count = min(buttons.count(), 500)
+                except Exception:
+                    count = 0
+                for index in range(count):
+                    try:
+                        button = buttons.nth(index)
+                        if not button.is_visible() or not button.is_enabled():
+                            continue
+                        # Walk upward from the actual button and pick the
+                        # smallest ancestor that contains exactly one Delete & Relist
+                        # control. This avoids accidentally treating a wrapper
+                        # around multiple listing rows as one row.
+                        row = button
+                        candidate = button
+                        for _ in range(10):
+                            try:
+                                parent = candidate.locator("xpath=..")
+                                if parent.count() < 1:
+                                    break
+                                parent_buttons = parent.locator(
+                                    "button[aria-label*='Delete & Relist' i], "
+                                    "[role='button'][aria-label*='Delete & Relist' i], "
+                                    "button:has-text('Delete & Relist'), "
+                                    "[role='button']:has-text('Delete & Relist'), "
+                                    "button:has-text('Delete & Relist'), "
+                                    "[role='button']:has-text('Delete & Relist')"
+                                )
+                                if parent_buttons.count() == 1:
+                                    row = parent
+                                    break
+                                candidate = parent
+                                row = parent
+                            except Exception:
+                                break
+                        row_buttons = row.locator(
+                            "button[aria-label*='Delete & Relist' i], "
+                            "[role='button'][aria-label*='Delete & Relist' i], "
+                            "button:has-text('Delete & Relist'), "
+                            "[role='button']:has-text('Delete & Relist'), "
+                            "button:has-text('Delete & Relist'), "
+                            "[role='button']:has-text('Delete & Relist')"
+                        )
+                        # If a usable one-button row could not be identified,
+                        # still attempt the actual button rather than silently
+                        # skipping a visible Delete & Relist control.
+                        if row_buttons.count() != 1:
+                            row = button
+                            row_buttons = (button,)
+                        # Track the actual button DOM node for this full-list pass.
+                        # Row text/occurrence keys are unstable when a click changes
+                        # button text or the DOM re-renders; that can make the next
+                        # row inherit a previously processed key and be skipped.
+                        # This token is attached to the clickable element itself,
+                        # not derived from a listing ID, link, or screen position.
+                        try:
+                            key = button.evaluate("""el => {
+                                if (!el.__fmsDeleteRelistAttemptToken) {
+                                    el.__fmsDeleteRelistAttemptToken =
+                                        'relist-button-' + Math.random().toString(36).slice(2)
+                                        + '-' + Date.now().toString(36);
+                                }
+                                return el.__fmsDeleteRelistAttemptToken;
+                            }""")
+                        except Exception:
+                            # A locator-level fallback remains unique within this
+                            # scan; it is not reused as a persistent listing ID.
+                            key = f"relist-button-scan-{index}"
+                        yield key, None, row, row_buttons
+                    except Exception:
+                        # A single malformed DOM candidate must not hide later
+                        # visible Delete & Relist buttons in the same list.
+                        continue
+                return
+
+            # Legacy action path retained separately for backward compatibility.
+            links = page.locator("a[href*='/marketplace/item/']")
+            try:
+                count = min(links.count(), 500)
+            except Exception:
+                count = 0
+            seen_rows = set()
+            for index in range(count):
+                try:
+                    link = links.nth(index)
+                    href = link.get_attribute("href") or ""
+                    match = re.search(r"/marketplace/item/(\d+)", href)
+                    listing_id = match.group(1) if match else ""
+                    if not listing_id or listing_id in seen_rows:
+                        continue
+                    row = link.locator(
+                        "xpath=ancestor::*[self::div or self::li]"
+                        "[.//a[contains(@href,'/marketplace/item/')]]"
+                        "[.//button or .//*[@role='button']][1]"
+                    )
+                    row_buttons = row.locator(
+                        "button[aria-label*='Delete & Relist' i], "
+                        "[role='button'][aria-label*='Delete & Relist' i], "
+                        "button:has-text('Delete & Relist'), "
+                        "[role='button']:has-text('Delete & Relist'), "
+                        "button:has-text('Delete & Relist'), "
+                        "[role='button']:has-text('Delete & Relist')"
+                    )
+                    if row_buttons.count() > 0:
+                        seen_rows.add(listing_id)
+                        yield listing_id, link, row, row_buttons
+                except Exception:
+                    continue
+
+        def listing_identity(btn) -> tuple[str, str, str]:
+            """Return a stable-ish key, display title, and listing id."""
+            title = ""
+            listing_id = ""
+            href = ""
+            try:
+                card = btn.locator(
+                    "xpath=ancestor::*[self::div or self::li]"
+                    "[.//a[contains(@href,'/marketplace/item/')]][1]"
+                )
+                link = card.locator("a[href*='/marketplace/item/']").first
+                href = link.get_attribute("href") or ""
+                match = re.search(r"/marketplace/item/(\d+)", href)
+                listing_id = match.group(1) if match else ""
+                title = (link.inner_text() or "").strip()[:160]
+                if not title:
+                    title = (card.inner_text() or "").strip()[:160]
+            except Exception:
+                try:
+                    title = (btn.locator("xpath=..").inner_text() or "").strip()[:160]
+                except Exception:
+                    pass
+            key = listing_id or href or title
+            if not key:
+                try:
+                    key = (btn.get_attribute("aria-label") or "") + "|" + str(btn.bounding_box())
+                except Exception:
+                    key = str(id(btn))
+            return key, title, listing_id
+
+        def scroll_list_down() -> tuple[bool, int, int]:
+            """Scroll the Delete & Relist dialog's own right-side list scrollbar."""
+            try:
+                result = page.locator("div[role='dialog']").evaluate("""dialog => {
+                    const nodes = [dialog, ...dialog.querySelectorAll('*')];
+                    const candidates = nodes.filter(n => {
+                        const s = getComputedStyle(n);
+                        return n.scrollHeight > n.clientHeight + 8 &&
+                               /(auto|scroll|overlay)/.test(s.overflowY);
+                    });
+                    const target = candidates.sort((a,b) =>
+                        (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                    )[0];
+                    if (!target) return {moved:false, top:0, max:0};
+                    const before = target.scrollTop;
+                    const step = Math.max(180, Math.floor(target.clientHeight * 0.72));
+                    target.scrollTop = Math.min(target.scrollHeight, before + step);
+                    return {moved:target.scrollTop > before, top:target.scrollTop,
+                            max:target.scrollHeight-target.clientHeight};
+                }""")
+                return bool(result.get("moved")), int(result.get("top", 0)), int(result.get("max", 0))
+            except Exception:
+                try:
+                    result = page.evaluate("""() => {
+                        const nodes = [...document.querySelectorAll('*')];
+                        const candidates = nodes.filter(n => {
+                            const s = getComputedStyle(n);
+                            return n.scrollHeight > n.clientHeight + 8 &&
+                                   /(auto|scroll|overlay)/.test(s.overflowY) &&
+                                   n.querySelector('[aria-label*="Delete & Relist" i], button');
+                        });
+                        const target = candidates.sort((a,b) =>
+                            (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                        )[0];
+                        if (!target) return {moved:false, top:0, max:0};
+                        const before = target.scrollTop;
+                        target.scrollTop = Math.min(target.scrollHeight,
+                            before + Math.max(180, Math.floor(target.clientHeight*0.72)));
+                        return {moved:target.scrollTop > before, top:target.scrollTop,
+                                max:target.scrollHeight-target.clientHeight};
+                    }""")
+                    return bool(result.get("moved")), int(result.get("top", 0)), int(result.get("max", 0))
+                except Exception:
+                    return False, 0, 0
+
+        try:
+            self._pause_checkpoint()
+            page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=0)
+            while True:
+                self._pause_checkpoint()
+                try:
+                    body_text = page.locator("body").inner_text(timeout=0).strip()
+                    if body_text and len(body_text) >= 80 and page.locator("[role='feed'], [role='main']").count() > 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            self._pause_checkpoint()
+            page.goto(S.MARKETPLACE_URL, wait_until="domcontentloaded", timeout=0)
+            while True:
+                self._pause_checkpoint()
+                try:
+                    body_text = page.locator("body").inner_text(timeout=0).strip()
+                    if ("marketplace" in body_text.lower() and len(body_text) >= 80
+                            and page.locator("[role='main']").count() > 0):
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            self._pause_checkpoint()
+            page.goto(relist_url, wait_until="domcontentloaded", timeout=0)
+            state = wait_for_ready_content()
+            if state == "empty":
+                return {"relisted": relisted, "no_eligible": True, "failed": 0}
+
+            while len(relisted) < max_count:
+                self._pause_checkpoint()
+                # Always restart the locator scan after each click: Facebook may
+                # remove/re-index rows immediately, so incrementing a stale
+                # button index can skip the next listing.
+                attempted_button = False
+                # Primary path: enumerate listing links, resolve each listing row,
+                # then find/click Delete & Relist only within that row. Rebuild the entire
+                # candidate set after every click because Facebook can re-render it.
+                row_candidates = list(listing_row_candidates())
+                candidates = []
+                if row_scoped:
+                    # Delete & Relist intentionally has no page-wide/ID-based
+                    # fallback: only a button found inside a listing row qualifies.
+                    for row_key, link, row, row_buttons in row_candidates:
+                        title = ""
+                        try:
+                            if link is not None:
+                                title = (link.inner_text() or "").strip()[:160]
+                            if not title:
+                                title = (row.inner_text() or "").strip()[:160]
+                        except Exception:
+                            pass
+                        candidates.append((row_key, title, row_buttons))
+                elif row_candidates:
+                    for listing_id, link, row, row_buttons in row_candidates:
+                        title = ""
+                        try:
+                            if link is not None:
+                                title = (link.inner_text() or "").strip()[:160]
+                            if not title:
+                                title = (row.inner_text() or "").strip()[:160]
+                        except Exception:
+                            pass
+                        candidates.append((listing_id, title, row_buttons))
+                else:
+                    # Legacy compatibility fallback for the existing action only.
+                    buttons = relist_buttons()
+                    for i in range(min(buttons.count(), 300)):
+                        btn = buttons.nth(i)
+                        key, title, listing_id = listing_identity(btn)
+                        candidates.append((key, title, (btn,)))
+
+                for key, title, row_buttons in candidates:
+                    self._pause_checkpoint()
+                    try:
+                        if key in processed or key in attempted_this_pass:
+                            continue
+                        btn = row_buttons.nth(0) if hasattr(row_buttons, "nth") else row_buttons[0]
+                        if not btn.is_visible() or not btn.is_enabled():
+                            continue
+                        attempted_button = True
+                        try:
+                            # Click this row's real clickable control; never wait
+                            # for a confirmation message after the click.
+                            btn.click(timeout=0)
+                            processed.add(key)
+                            relisted.append({"id": key if key.isdigit() else "", "title": title})
+                            human.human_pause(1000, 2000)
+                        except Exception:
+                            failed += 1
+                            attempted_this_pass.add(key)
+                        break  # locate all rows/buttons again after every attempt
+                    except Exception:
+                        continue
+
+                if len(relisted) >= max_count:
+                    break
+                if attempted_button:
+                    continue
+
+                # No unattempted button remains in this viewport/list. Scroll
+                # only the Delete & Relist dialog's own list area to expose more rows.
+                moved, scroll_top, scroll_max = scroll_list_down()
+                if moved:
+                    self._pause_checkpoint()
+                    while True:
+                        self._pause_checkpoint()
+                        try:
+                            if relist_buttons().count() > 0:
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                    continue
+
+                # The full current list has been scanned. Re-open the exact
+                # Delete & Relist URL instead of relying on a browser reload;
+                # Facebook may keep the selling dialog in SPA state and a plain
+                # reload can leave the workflow on the same exhausted view.
+                # The next ready-content check also detects the genuine empty
+                # state after navigation, before another pass begins.
+                self._pause_checkpoint()
+                page.goto(relist_url, wait_until="domcontentloaded", timeout=0)
+                state = wait_for_ready_content()
+                if state == "empty":
+                    return {"relisted": relisted, "no_eligible": not relisted, "failed": failed}
+                processed.clear()
+                attempted_this_pass.clear()
+
+            return {"relisted": relisted, "no_eligible": False, "failed": failed}
+        except Exception as exc:
+            return {"relisted": relisted, "no_eligible": False, "failed": failed,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
     def set_marketplace_location(self, location: str) -> bool:
         """Best-effort: change the Marketplace location picker value."""
         self._ensure()
@@ -3541,6 +3992,10 @@ class MockDriver(BaseDriver):
         for item in chosen:
             self._record("renew_listing", listing_id=item["id"])
         return {"renewed": chosen, "no_eligible": not chosen, "failed": 0}
+
+    def delete_relist_from_rows(self, max_count: int) -> dict:
+        n = min(max(0, int(max_count)), getattr(type(self), "fake_renew_count", 3))
+        return {"renewed": [{"id": str(i + 1), "title": f"Mock listing {i + 1}"} for i in range(n)], "no_eligible": n == 0, "failed": 0}
 
     def renew_listings_from_rows(self, max_count: int) -> dict:
         self._record("renew_listings_from_rows", max_count=max_count)

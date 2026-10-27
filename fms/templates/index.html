@@ -133,14 +133,18 @@ function modeChanged(){
   // Scripts now live inside the Action dropdown (value="script:ID").
 }
 function configureMinMaxDialog(){
-  const isRenew1 = document.getElementById('actionSel').value === 'renew_listing_1';
-  document.getElementById('mmMinLabel').textContent = isRenew1 ? 'Min Renew Listings' : 'Min listings';
-  document.getElementById('mmMaxLabel').textContent = isRenew1 ? 'Max Renew Listings' : 'Max listings';
-  document.getElementById('mmMinPriceField').style.display = isRenew1 ? 'none' : '';
-  document.getElementById('mmMaxPriceField').style.display = isRenew1 ? 'none' : '';
-  document.getElementById('mmHint').textContent = isRenew1
-    ? 'Har account ke liye Min–Max ke darmiyan eligible listings renew karne ki koshish hogi.'
-    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.';
+  const selectedAction = document.getElementById('actionSel').value;
+  const isRenew1 = selectedAction === 'renew_listing_1';
+  const isDeleteRelist = selectedAction === 'delete_relist';
+  const isCountOnly = isRenew1 || isDeleteRelist;
+  document.getElementById('mmMinLabel').textContent = isDeleteRelist ? 'Min Delete & Relist' : (isRenew1 ? 'Min Renew Listings' : 'Min listings');
+  document.getElementById('mmMaxLabel').textContent = isDeleteRelist ? 'Max Delete & Relist' : (isRenew1 ? 'Max Renew Listings' : 'Max listings');
+  document.getElementById('mmMinPriceField').style.display = isRenew1 ? 'none' : (isDeleteRelist ? 'none' : '');
+  document.getElementById('mmMaxPriceField').style.display = isRenew1 ? 'none' : (isDeleteRelist ? 'none' : '');
+  document.getElementById('mmHint').textContent = isDeleteRelist
+    ? 'Har account par Min–Max ke darmiyan eligible Delete & Relist listings process hongi.'
+    : (isRenew1 ? 'Har account ke liye Min–Max ke darmiyan eligible listings renew karne ki koshish hogi.'
+    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.');
 }
 async function startRun(){
   // v0.2.50: show the Min/Max dialog first — Save starts the run.
@@ -204,7 +208,11 @@ async function _doStartRun(){
   if(_maxA < _minA){ const _t = _minA; _minA = _maxA; _maxA = _t; }
   body.min_ads = _minA; body.max_ads = _maxA;
   if(actVal === 'renew_listing_1'){
-    // Renew Listing 1 has its own count fields; do not send price filters.
+    // Renew Listing 1 keeps its existing count-only settings; do not send price filters.
+    body.renew_min_count = _minA;
+    body.renew_max_count = _maxA;
+  } else if(actVal === 'delete_relist'){
+    // Delete & Relist uses the same count controls, without changing Renew Listing 1.
     body.renew_min_count = _minA;
     body.renew_max_count = _maxA;
   } else {
