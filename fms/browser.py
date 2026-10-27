@@ -2840,9 +2840,36 @@ class PlaywrightDriver(BaseDriver):
                                 return "listings"
                         except Exception:
                             continue
-                    body_text = (page.locator("body").inner_text(timeout=0) or "").lower()
-                    if any(phrase in body_text for phrase in empty_phrases):
-                        return "empty"
+                    # Only treat an empty state as terminal when the Renew
+                    # Listings dialog itself says so. Page-wide text can contain
+                    # unrelated Marketplace/sidebar text and must not end the
+                    # configured Min/Max renewal run early.
+                    dialog = page.locator("[role='dialog']")
+                    if dialog.count() > 0:
+                        dialog_text = (dialog.last.inner_text(timeout=0) or "").lower()
+                        if any(phrase in dialog_text for phrase in empty_phrases):
+                            # Recheck live controls in the dialog before calling
+                            # it empty; a stale/hidden message must not override
+                            # currently available clickable Renew buttons.
+                            dialog_buttons = dialog.last.locator(
+                                "button[aria-label*='Renew' i], "
+                                "[role='button'][aria-label*='Renew' i], "
+                                "button:has-text('Renew listing'), "
+                                "[role='button']:has-text('Renew listing'), "
+                                "button:has-text('Renew'), "
+                                "[role='button']:has-text('Renew')"
+                            )
+                            live_button = False
+                            for j in range(min(dialog_buttons.count(), 300)):
+                                try:
+                                    candidate = dialog_buttons.nth(j)
+                                    if candidate.is_visible() and candidate.is_enabled():
+                                        live_button = True
+                                        break
+                                except Exception:
+                                    continue
+                            if not live_button:
+                                return "empty"
                 except Exception:
                     pass
                 time.sleep(0.5)

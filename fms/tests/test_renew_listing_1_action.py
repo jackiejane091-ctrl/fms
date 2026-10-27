@@ -64,3 +64,18 @@ def test_row_scan_does_not_collapse_multiple_buttons_in_a_shared_wrapper():
     assert "seen_row_positions" not in row_branch
     assert "__fmsRenewAttemptToken" in row_branch
     assert "key = f" + '"row:{signature}#{occurrence}"' not in row_branch
+
+
+def test_renew_listing_1_empty_state_is_scoped_to_dialog_not_whole_page():
+    source = (ROOT / "browser.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "PlaywrightDriver")
+    impl = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                and n.name == "_renew_listings_from_page_impl")
+    impl_source = ast.get_source_segment(source, impl)
+    ready = impl_source.split("def wait_for_ready_content()", 1)[1].split(
+        "def listing_row_candidates()", 1)[0]
+    assert "page.locator(\"[role='dialog']\")" in ready
+    assert 'page.locator("body").inner_text' not in ready
+    assert 'dialog.last.inner_text' in ready
+    assert 'candidate.is_visible() and candidate.is_enabled()' in ready
