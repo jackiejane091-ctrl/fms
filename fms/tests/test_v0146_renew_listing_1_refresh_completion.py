@@ -16,8 +16,10 @@ def test_refresh_wait_has_bounded_no_listing_completion_without_changing_click_p
         "def listing_row_candidates()", 1)[0]
     assert "time.monotonic() - no_content_since >= 30" in ready
     assert 'return "empty"' in ready
-    # Refresh/retry flow remains in place and still clears pass-local tokens.
-    assert 'page.reload(wait_until="domcontentloaded", timeout=0)' in text
+    # Re-open the exact Renew Listings URL after each full-list scan; do not
+    # rely on page.reload() for Facebook's SPA selling dialog.
+    assert 'page.goto(renew_url, wait_until="domcontentloaded", timeout=0)' in text
+    assert 'page.reload(wait_until="domcontentloaded", timeout=0)' not in text
     assert "processed.clear()" in text
     assert "attempted_this_pass.clear()" in text
     # Existing row-scoped button selection remains intact; no ID/link fallback added.

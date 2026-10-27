@@ -3204,15 +3204,14 @@ class PlaywrightDriver(BaseDriver):
                         time.sleep(0.5)
                     continue
 
-                # The full current list has been scanned. Check for a genuine
-                # empty state; otherwise refresh and allow every still-visible
-                # listing to be attempted again in the next pass.
-                state = wait_for_ready_content()
-                if state == "empty":
-                    return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
-
+                # The full current list has been scanned. Re-open the exact
+                # Renew Listings URL instead of relying on a browser reload;
+                # Facebook may keep the selling dialog in SPA state and a plain
+                # reload can leave the workflow on the same exhausted view.
+                # The next ready-content check also detects the genuine empty
+                # state after navigation, before another pass begins.
                 self._pause_checkpoint()
-                page.reload(wait_until="domcontentloaded", timeout=0)
+                page.goto(renew_url, wait_until="domcontentloaded", timeout=0)
                 state = wait_for_ready_content()
                 if state == "empty":
                     return {"renewed": renewed, "no_eligible": not renewed, "failed": failed}
