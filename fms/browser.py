@@ -2866,7 +2866,6 @@ class PlaywrightDriver(BaseDriver):
                     count = min(buttons.count(), 500)
                 except Exception:
                     count = 0
-                seen_signatures: dict[str, int] = {}
                 for index in range(count):
                     try:
                         button = buttons.nth(index)
@@ -2912,11 +2911,25 @@ class PlaywrightDriver(BaseDriver):
                         if row_buttons.count() != 1:
                             row = button
                             row_buttons = (button,)
-                        row_text = " ".join((row.inner_text() or "").split())[:500]
-                        signature = row_text or f"renew-row-{index}"
-                        occurrence = seen_signatures.get(signature, 0)
-                        seen_signatures[signature] = occurrence + 1
-                        key = f"row:{signature}#{occurrence}"
+                        # Track the actual button DOM node for this full-list pass.
+                        # Row text/occurrence keys are unstable when a click changes
+                        # button text or the DOM re-renders; that can make the next
+                        # row inherit a previously processed key and be skipped.
+                        # This token is attached to the clickable element itself,
+                        # not derived from a listing ID, link, or screen position.
+                        try:
+                            key = button.evaluate("""el => {
+                                if (!el.__fmsRenewAttemptToken) {
+                                    el.__fmsRenewAttemptToken =
+                                        'renew-button-' + Math.random().toString(36).slice(2)
+                                        + '-' + Date.now().toString(36);
+                                }
+                                return el.__fmsRenewAttemptToken;
+                            }""")
+                        except Exception:
+                            # A locator-level fallback remains unique within this
+                            # scan; it is not reused as a persistent listing ID.
+                            key = f"renew-button-scan-{index}"
                         yield key, None, row, row_buttons
                     except Exception:
                         # A single malformed DOM candidate must not hide later

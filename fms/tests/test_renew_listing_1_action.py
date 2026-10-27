@@ -62,3 +62,5 @@ def test_row_scan_does_not_collapse_multiple_buttons_in_a_shared_wrapper():
     assert "for index in range(count)" in row_branch
     assert "yield key, None, row, row_buttons" in row_branch
     assert "seen_row_positions" not in row_branch
+    assert "__fmsRenewAttemptToken" in row_branch
+    assert "key = f" + '"row:{signature}#{occurrence}"' not in row_branch
