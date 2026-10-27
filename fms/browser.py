@@ -2828,7 +2828,11 @@ class PlaywrightDriver(BaseDriver):
             return page.locator("button:has-text('Renew'), [role='button']:has-text('Renew')")
 
         def wait_for_ready_content() -> str:
-            # Intentionally unbounded: wait for real list/empty-state content.
+            # Wait for Facebook to render the list, but do not hang forever if
+            # a refresh leaves the dialog with no eligible listings and no
+            # localized/recognized empty-state phrase. A full 30-second grace
+            # period protects slower page loads before treating the list as empty.
+            no_content_since = time.monotonic()
             while True:
                 self._pause_checkpoint()
                 try:
@@ -2870,6 +2874,15 @@ class PlaywrightDriver(BaseDriver):
                                     continue
                             if not live_button:
                                 return "empty"
+                        # The dialog exists but has no live Renew control. If
+                        # Facebook has finished rendering and still has no
+                        # eligible row after refresh, end this account cleanly.
+                        if time.monotonic() - no_content_since >= 30:
+                            return "empty"
+                    else:
+                        # Do not apply the empty timeout until the target dialog
+                        # has appeared; it may still be loading after navigation.
+                        no_content_since = time.monotonic()
                 except Exception:
                     pass
                 time.sleep(0.5)
