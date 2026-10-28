@@ -1748,7 +1748,7 @@ class RunController:
             # Always opt into the proven Draft & Publish 1 draft-link route.
             # The browser opens the matching draft in a fresh tab and closes
             # that tab in its finally block before this loop advances.
-            title = str(draft.get("title_used") or "").strip()
+            title = str(draft["title_used"] or "").strip()
             ok = bool(title) and driver.publish_draft("draft-title:" + title)
             if ok:
                 self.db.execute(
