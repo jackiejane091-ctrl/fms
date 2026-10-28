@@ -369,7 +369,7 @@ def _persist_ix_profile(db: Database, account: dict, driver) -> None:
 
 def _record_published_image_usage(db: Database, account_id: int, product_id: int | None,
                                   image_paths: list[str] | None) -> None:
-    """Persist image cooldown only after Facebook confirms a listing publish.
+    """Persist image cooldown after Facebook confirms a saved draft or listing.
 
     Main and extra photos are treated identically. Paths are canonicalized so
     the same file cannot bypass the cooldown through relative-path aliases.
@@ -815,7 +815,7 @@ class RunController:
     def _rotation(self, product: dict, account_idx: int, account_id: int | None = None) -> dict:
         """Build one listing payload with rotated title/price/location/images."""
         _payload = self._rotator.payload(
-            product, self.cfg, as_draft=self.cfg.mode in {"draft_publish", "draft_publish_1"}, account_id=account_id)
+            product, self.cfg, as_draft=self.cfg.mode in {"draft_publish", "draft_publish_1", "create_drafts"}, account_id=account_id)
         # v0.2.70: LOG runtime config via self.log() so it appears in FMS Logs.
         # Sanitized: folder path truncated, no secrets.
         # Browser invokes this only between atomic UI actions; an in-flight
@@ -1390,8 +1390,44 @@ class RunController:
                 if product is None:
                     continue
                 payload = self._rotation(product, account_idx, account_id=account["id"])
-                draft_id = driver.create_draft(payload)
+                # Image reservation at Save Draft is scoped to Create Drafts;
+                # older/hidden draft_publish callers retain their prior timing.
+                _record_images_on_save = self.cfg.mode == "create_drafts"
+                _image_recorded = {"value": False}
+                _previous_saved_callback = getattr(
+                    driver, "_fms_draft_saved_callback", None)
+
+                def _record_saved_images(_saved_payload=None):
+                    if not _record_images_on_save or _image_recorded["value"]:
+                        return
+                    _record_published_image_usage(
+                        self.db, account["id"], pid,
+                        (_saved_payload or payload).get("image_paths"))
+                    _image_recorded["value"] = True
+
+                if _record_images_on_save:
+                    try:
+                        driver._fms_draft_saved_callback = _record_saved_images
+                    except Exception:
+                        pass
+                try:
+                    draft_id = driver.create_draft(payload)
+                finally:
+                    if _record_images_on_save:
+                        try:
+                            driver._fms_draft_saved_callback = _previous_saved_callback
+                        except Exception:
+                            pass
                 if draft_id:
+                    # Fallback for driver implementations that don't expose the
+                    # post-save callback (e.g. test doubles / legacy drivers).
+                    if _record_images_on_save and not _image_recorded["value"]:
+                        try:
+                            _record_saved_images(payload)
+                        except Exception as _cooldown_exc:
+                            self.log(f"[{label}] draft saved but image cooldown record failed: "
+                                     f"{type(_cooldown_exc).__name__}: {str(_cooldown_exc)[:120]}",
+                                     level="error", account_id=account["id"])
                     self.db.execute(
                         """INSERT INTO listings
                            (run_id, account_id, product_id, title_used, price_used,
@@ -1408,10 +1444,9 @@ class RunController:
                     self._record_failed(account, pid, payload,
                                         "draft creation failed")
                 self._inter_post_delay()
-            # v0.2.124: bounded mode (Draft & Publish only) — if a whole
-            # group produced no draft at all, stop instead of looping
-            # forever on the cycling products. With bounded=False (Create
-            # Drafts) this block never runs: original behavior preserved.
+            # Bounded mode stops if a whole group produced no draft, instead
+            # of looping forever on cycling products. Create Drafts and the
+            # dedicated Draft & Publish flow both enable this guard.
             if bounded and created == _created_before:
                 self.log(f"[{label}] draft batch stopped: a full group of "
                          f"{group} attempt(s) created no draft — not "
@@ -1554,10 +1589,9 @@ class RunController:
                     self._record_failed(account, pid, payload,
                                         "draft creation failed")
                 self._inter_post_delay()
-            # v0.2.124: bounded mode (Draft & Publish only) — if a whole
-            # group produced no draft at all, stop instead of looping
-            # forever on the cycling products. With bounded=False (Create
-            # Drafts) this block never runs: original behavior preserved.
+            # Bounded mode stops if a whole group produced no draft, instead
+            # of looping forever on cycling products. Create Drafts and the
+            # dedicated Draft & Publish flow both enable this guard.
             if bounded and created == _created_before:
                 self.log(f"[{label}] draft batch stopped: a full group of "
                          f"{group} attempt(s) created no draft — not "
@@ -1653,8 +1687,17 @@ class RunController:
     # -- mode: create_drafts (drafts only, no publish) ------------------------------
     def _create_drafts_only_flow(self, account: dict, driver, quota: int,
                                  account_idx: int) -> None:
+        """Create drafts only, reusing Draft & Publish form filling without publishing."""
         label = account["label"]
-        n = self._create_drafts_batch(account, driver, quota, account_idx)
+        # Isolate this action's browser form workflow: same verified fields and
+        # Save Draft handling as Draft & Publish, but never invoke its publish phase.
+        _prev_flag = getattr(driver, "_fms_draft_publish_fill", False)
+        try:
+            driver._fms_draft_publish_fill = True
+            n = self._create_drafts_batch(account, driver, quota, account_idx,
+                                          bounded=True)
+        finally:
+            driver._fms_draft_publish_fill = _prev_flag
         self.log(f"[{label}] created {n} draft(s) — publish them later",
                  account_id=account["id"])
 

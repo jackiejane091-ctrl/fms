@@ -2107,12 +2107,12 @@ class PlaywrightDriver(BaseDriver):
 
     # -- Phase 2: drafts --------------------------------------------------------
     def _create_draft_draft_publish(self, payload: dict) -> str | None:
-        """Draft & Publish ONLY: save a draft, then queue it by its exact title.
+        """State-aware draft workflow used by Draft & Publish and Create Drafts.
 
         Facebook does not consistently expose listing_id immediately after Save Draft.
-        For this dedicated workflow, successful Save Draft clicks are queued by title;
-        the publish phase opens the matching draft from the Drafts list in a new tab.
-        Other draft/post workflows are intentionally unchanged.
+        Draft & Publish queues the saved draft by title for its later publish phase;
+        Create Drafts uses the same form/save flow but stops after draft verification.
+        Its optional image callback is registered only by Create Drafts.
         """
         self._ensure()
         page = self._page
@@ -2169,6 +2169,19 @@ class PlaywrightDriver(BaseDriver):
             except Exception:
                 human.human_pause(1800, 2600)
 
+            # Create Drafts only: reserve selected images as soon as Save Draft
+            # completes, before navigating to Your Drafts for verification. The
+            # callback is absent in the locked Draft & Publish action, so its
+            # behavior remains unchanged.
+            _saved_callback = getattr(self, "_fms_draft_saved_callback", None)
+            if callable(_saved_callback):
+                try:
+                    _saved_callback(payload)
+                except Exception as _callback_exc:
+                    self._last_error = (
+                        "Draft saved but image cooldown callback failed: "
+                        f"{type(_callback_exc).__name__}: {str(_callback_exc)[:120]}")
+
             title = str(payload.get("title") or "").strip()
             if not title:
                 self._last_error = "Draft & Publish: saved item has no title to identify it in Your Drafts"
@@ -2203,18 +2216,16 @@ class PlaywrightDriver(BaseDriver):
 
     def create_draft(self, payload: dict) -> str | None:
         """Fill and save one draft; refresh the same Item for Sale page for the next draft."""
-        # Strict isolation: only Action -> Draft & Publish raises this flag.
-        # Create Drafts and all other callers retain the original implementation below.
+        # The specialized, state-aware form workflow is explicitly enabled by
+        # Draft & Publish and Create Drafts. All other callers retain the legacy path.
         if getattr(self, "_fms_draft_publish_fill", False):
             return self._create_draft_draft_publish(payload)
         self._ensure()
         page = self._page
         assert page is not None
         try:
-            # v0.2.124: ONLY the Draft & Publish flow sets
-            # _fms_draft_publish_fill (engine._draft_publish_flow). Every
-            # other create_draft caller — Create Drafts, script draft
-            # blocks — keeps the shared _fill_form exactly as before.
+            # The flag is set only by Draft & Publish and Create Drafts.
+            # Script draft blocks and other callers keep the shared _fill_form.
             _fill = (self._fill_form_draft_publish
                      if getattr(self, "_fms_draft_publish_fill", False)
                      else self._fill_form)
