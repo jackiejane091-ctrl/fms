@@ -2532,20 +2532,31 @@ class PlaywrightDriver(BaseDriver):
                     href = "https://www.facebook.com" + href
                 if not href or href in seen or href in tried:
                     continue
-                low = href.lower()
-                if "marketplace" not in low:
+                parsed = urlparse(href)
+                low_path = parsed.path.lower().rstrip("/")
+                low_query = parsed.query.lower()
+                # Marketplace is part of the URL path, not the hostname.
+                # Accept Facebook subdomains (www.facebook.com, m.facebook.com)
+                # while rejecting unrelated hosts that merely contain the text.
+                host = (parsed.hostname or "").lower()
+                if host != "facebook.com" and not host.endswith(".facebook.com"):
                     continue
-                path = urlparse(low).path.rstrip("/")
-                # Skip bare navigation and the empty "create listing" form.
-                # Draft edit links use the same create/item path BUT carry a
-                # query string (draft_id=...), so only exclude bare ones.
-                if path in ("/marketplace", "/marketplace/you/selling",
-                            "/marketplace/you/drafts"):
+                # Only accept links that look like an actual saved-draft editor.
+                # Broad terms such as "listing" or "item" also match public
+                # listing-detail links and the generic Create Item form, which
+                # caused extra, incorrect tabs to open.
+                if low_path in ("/marketplace", "/marketplace/you/selling",
+                                "/marketplace/you/drafts", "/marketplace/create",
+                                "/marketplace/create/item") and not low_query:
                     continue
-                if path in ("/marketplace/create", "/marketplace/create/item") \
-                        and not urlparse(low).query:
-                    continue
-                if not any(k in low for k in ("create", "edit", "listing", "item", "draft")):
+                draft_query = any(key in low_query for key in (
+                    "draft_id=", "draftid=", "draft_id%3d", "draftid%3d",
+                    "is_draft=", "state=draft", "draft_token="))
+                draft_route = ("/draft" in low_path or "/edit" in low_path)
+                create_editor_with_draft_id = (
+                    low_path in ("/marketplace/create/item", "/marketplace/create")
+                    and draft_query)
+                if not (draft_query or draft_route or create_editor_with_draft_id):
                     continue
                 try:
                     label = (el.inner_text() or "").strip()
@@ -2614,6 +2625,7 @@ class PlaywrightDriver(BaseDriver):
         card = links[0]
         href = card["href"]
         tab = None
+        base_pages = set(self._context.pages) if self._context is not None else set()
         try:
             assert self._context is not None
             tab = self._context.new_page()
@@ -2652,20 +2664,27 @@ class PlaywrightDriver(BaseDriver):
                 pass
             human.human_pause(500, 900)
             publish_button.click(timeout=10000)
-            human.human_pause(2500, 4000)
-            # User design: the Publish click counts as published. No check
-            # whether Facebook actually published it, no confirmation wait.
+            # Allow Facebook 2–3 seconds to process the Publish click before
+            # moving to the next saved draft. Do not open or navigate any other
+            # listing/create-item pages as part of this action.
+            human.human_pause(2000, 3000)
             return {"ok": True, "label": card["label"] or None, "reason": None, "empty": False}
         except Exception as exc:
             return {"ok": False, "label": card["label"] or None,
                     "reason": f"Draft editor failed: {type(exc).__name__}", "empty": False}
         finally:
             tried.add(href)
-            if tab is not None:
-                try:
-                    tab.close()
-                except Exception:
-                    pass
+            # Close the editor tab created for this draft and any unexpected
+            # popup tabs spawned by Facebook during this one-draft operation.
+            # Preserve the original Drafts-list tab and any pre-existing tabs.
+            if self._context is not None:
+                for extra_tab in list(self._context.pages):
+                    if extra_tab in base_pages:
+                        continue
+                    try:
+                        extra_tab.close()
+                    except Exception:
+                        pass
 
     # -- Phase 2: manual-publish helper ------------------------------------------
     def fill_listing_form(self, payload: dict) -> str | None:
