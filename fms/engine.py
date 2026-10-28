@@ -115,6 +115,8 @@ class RunConfig:
     max_ads: int = 3
     renew_min_count: int = 1        # renew listing count range (user's
     renew_max_count: int = 5        # lower/upper limit)
+    publish_drafts_min_count: int = 1  # standalone Publish Drafts count range
+    publish_drafts_max_count: int = 3
     min_price: float | None = None   # None -> use product base_price
     max_price: float | None = None
     min_delay_s: float = 2.0         # delay between posts on one account
@@ -175,6 +177,9 @@ class RunConfig:
             raise ValueError("retry_count must be 0..10")
         if self.min_ads < 0 or self.max_ads < self.min_ads:
             raise ValueError("bad min_ads/max_ads")
+        if (self.publish_drafts_min_count < 1
+                or self.publish_drafts_max_count < self.publish_drafts_min_count):
+            raise ValueError("bad publish_drafts_min_count/publish_drafts_max_count")
         if self.mode == "script":
             if not self.script_id:
                 raise ValueError("script mode requires script_id")
@@ -213,6 +218,8 @@ class RunConfig:
             "min_ads": self.min_ads, "max_ads": self.max_ads,
             "renew_min_count": self.renew_min_count,
             "renew_max_count": self.renew_max_count,
+            "publish_drafts_min_count": self.publish_drafts_min_count,
+            "publish_drafts_max_count": self.publish_drafts_max_count,
             "min_price": self.min_price, "max_price": self.max_price,
             "min_delay_s": self.min_delay_s, "max_delay_s": self.max_delay_s,
             "shuffle": self.shuffle, "split_locations": self.split_locations,
@@ -260,6 +267,8 @@ class RunConfig:
             "min_ads": self.min_ads, "max_ads": self.max_ads,
             "renew_min_count": self.renew_min_count,
             "renew_max_count": self.renew_max_count,
+            "publish_drafts_min_count": self.publish_drafts_min_count,
+            "publish_drafts_max_count": self.publish_drafts_max_count,
             "min_price": self.min_price, "max_price": self.max_price,
             "publish_mode": self.publish_mode,
         }
@@ -1703,12 +1712,64 @@ class RunController:
 
     # -- mode: publish_drafts (publish drafts from any earlier run) -----------------
     def _publish_drafts_only_flow(self, account: dict, driver) -> None:
+        """Publish a configured count of saved drafts, in database list order.
+
+        This standalone action deliberately uses the Draft & Publish 1 browser
+        route (Your Drafts -> exact title/card -> fresh tab -> Next -> Publish),
+        without changing either locked Draft & Publish flow.
+        """
+        label = account["label"]
         drafts = self._draft_rows(account["id"], any_run=True)
         if not drafts:
-            self.log(f"[{account['label']}] no drafts to publish",
-                     account_id=account["id"])
+            self.log(f"[{label}] no drafts to publish", account_id=account["id"])
             return
-        self._publish_draft_rows(account, driver, drafts)
+
+        lo = max(1, int(self.cfg.publish_drafts_min_count))
+        hi = max(lo, int(self.cfg.publish_drafts_max_count))
+        target = random.randint(lo, hi)
+        selected = drafts[:target]  # ORDER BY id: start of saved-drafts list first
+        if len(selected) < target:
+            self.log(f"[{label}] Publish Drafts requested {target}, only "
+                     f"{len(selected)} saved draft(s) available; processing all available",
+                     account_id=account["id"])
+        self.log(f"[{label}] Publish Drafts: selected {len(selected)} of "
+                 f"{len(drafts)} saved draft(s), list order, range={lo}-{hi}",
+                 account_id=account["id"])
+
+        mode = self.cfg.publish_mode
+        gap_s = self.cfg.publish_gap_min * 60.0 / max(0.1, self.cfg.speed)
+        for i, draft in enumerate(selected):
+            self._wait_if_paused()
+            if mode == "one_by_one" and i > 0:
+                self.log(f"[{label}] waiting {self.cfg.publish_gap_min} min "
+                         "before next publish", account_id=account["id"])
+                self._sleep_interruptible(gap_s)
+
+            # Always opt into the proven Draft & Publish 1 draft-link route.
+            # The browser opens the matching draft in a fresh tab and closes
+            # that tab in its finally block before this loop advances.
+            title = str(draft.get("title_used") or "").strip()
+            ok = bool(title) and driver.publish_draft("draft-title:" + title)
+            if ok:
+                self.db.execute(
+                    "UPDATE listings SET status = 'posted', posted_at = ?, error = NULL "
+                    "WHERE id = ?", (utcnow(), draft["id"]))
+                self.db.execute(
+                    "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
+                    (self.run_id,))
+                self.log(f"[{label}] published '{draft['title_used']}'",
+                         account_id=account["id"])
+            else:
+                reason = (getattr(driver, "_last_error", None)
+                          or ("saved draft has no title" if not title
+                              else "Facebook publish was not confirmed"))
+                self.db.execute(
+                    "UPDATE listings SET status = 'draft', error = ? WHERE id = ?",
+                    (f"publish pending: {str(reason)[:400]}", draft["id"]))
+                self.log(f"[{label}] PUBLISH PENDING for saved draft "
+                         f"'{draft['title_used']}' (ID {draft['fb_listing_id']}): {reason}. "
+                         "Draft preserved for retry; moving to the next selected draft.",
+                         level="error", account_id=account["id"])
 
     # -- mode: delete actions ---------------------------------------------------------
     def _record_deleted(self, account: dict, listing_id: str,

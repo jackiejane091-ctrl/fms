@@ -91,6 +91,8 @@ class RunIn(BaseModel):
     max_ads: int = 3
     renew_min_count: int = 1
     renew_max_count: int = 5
+    publish_drafts_min_count: int = 1
+    publish_drafts_max_count: int = 3
     scrap_include_description: bool = True
     scrap_include_location: bool = True
     download_folder: str | None = None

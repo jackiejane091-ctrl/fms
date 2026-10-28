@@ -136,15 +136,18 @@ function configureMinMaxDialog(){
   const selectedAction = document.getElementById('actionSel').value;
   const isRenew1 = selectedAction === 'renew_listing_1';
   const isDeleteRelist = selectedAction === 'delete_relist';
-  const isCountOnly = isRenew1 || isDeleteRelist;
-  document.getElementById('mmMinLabel').textContent = isDeleteRelist ? 'Min Delete & Relist' : (isRenew1 ? 'Min Renew Listings' : 'Min listings');
-  document.getElementById('mmMaxLabel').textContent = isDeleteRelist ? 'Max Delete & Relist' : (isRenew1 ? 'Max Renew Listings' : 'Max listings');
-  document.getElementById('mmMinPriceField').style.display = isRenew1 ? 'none' : (isDeleteRelist ? 'none' : '');
-  document.getElementById('mmMaxPriceField').style.display = isRenew1 ? 'none' : (isDeleteRelist ? 'none' : '');
-  document.getElementById('mmHint').textContent = isDeleteRelist
+  const isPublishDrafts = selectedAction === 'publish_drafts';
+  const isCountOnly = isRenew1 || isDeleteRelist || isPublishDrafts;
+  document.getElementById('mmMinLabel').textContent = isPublishDrafts ? 'Min Publish Drafts' : (isDeleteRelist ? 'Min Delete & Relist' : (isRenew1 ? 'Min Renew Listings' : 'Min listings'));
+  document.getElementById('mmMaxLabel').textContent = isPublishDrafts ? 'Max Publish Drafts' : (isDeleteRelist ? 'Max Delete & Relist' : (isRenew1 ? 'Max Renew Listings' : 'Max listings'));
+  document.getElementById('mmMinPriceField').style.display = isPublishDrafts ? 'none' : (isRenew1 ? 'none' : (isDeleteRelist ? 'none' : ''));
+  document.getElementById('mmMaxPriceField').style.display = isPublishDrafts ? 'none' : (isRenew1 ? 'none' : (isDeleteRelist ? 'none' : ''));
+  document.getElementById('mmHint').textContent = isPublishDrafts
+    ? 'Saved drafts list ke start se order mein Min–Max ke darmiyan drafts publish honge. Har draft ke liye tab close karke agla draft process hoga.'
+    : (isDeleteRelist
     ? 'Har account par Min–Max ke darmiyan eligible Delete & Relist listings process hongi.'
     : (isRenew1 ? 'Har account ke liye Min–Max ke darmiyan eligible listings renew karne ki koshish hogi.'
-    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.');
+    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.'));
 }
 async function startRun(){
   // v0.2.50: show the Min/Max dialog first — Save starts the run.
@@ -207,7 +210,11 @@ async function _doStartRun(){
   let _maxA = parseInt(_mm('mmMaxAds').value) || 3;
   if(_maxA < _minA){ const _t = _minA; _minA = _maxA; _maxA = _t; }
   body.min_ads = _minA; body.max_ads = _maxA;
-  if(actVal === 'renew_listing_1'){
+  if(actVal === 'publish_drafts'){
+    // Standalone Publish Drafts has its own count controls; don't alter other actions.
+    body.publish_drafts_min_count = _minA;
+    body.publish_drafts_max_count = _maxA;
+  } else if(actVal === 'renew_listing_1'){
     // Renew Listing 1 keeps its existing count-only settings; do not send price filters.
     body.renew_min_count = _minA;
     body.renew_max_count = _maxA;
