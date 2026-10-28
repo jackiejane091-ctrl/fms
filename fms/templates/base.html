@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <div class="brand">FMS <span class="phase">Phase 2</span></div>
+  <div class="brand">FMS <img src="/static/logo.png" class="brand-logo" alt="FMS logo"></div>
   <nav>
     <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a>
     <a href="/accounts" class="{% if request.url.path.startswith('/accounts') %}active{% endif %}">Accounts</a>
