@@ -48,7 +48,6 @@ ACTIONS = [
     ("delete_draft", "Delete Draft"),
     ("delete_take_action", "Delete Take Action Listings"),
     ("delete_all_invalid", "Delete All Invalid Listings"),
-    ("renew_listing", "Renew Listing"),
     ("renew_listing_1", "Renew listing 1"),
     ("delete_relist", "Delete & Relist"),
     ("login", "Login"),
@@ -59,7 +58,7 @@ ACTIONS = [
 # Keep the former complete mode valid for saved/older runs and API clients,
 # but do not expose it as a separate visible Post action.
 MODES = (tuple(key for key, _ in ACTIONS)
-         + ("draft_publish", "complete", "manual_publish", "script", "wait_next_turn"))
+         + ("draft_publish", "renew_listing", "complete", "manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
 POSTING_MODES = {"complete", "test_single_post", "draft_publish", "draft_publish_1", "manual_publish",
                  "relist_edit", "create_drafts", "publish_drafts"}
