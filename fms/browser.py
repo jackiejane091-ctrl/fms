@@ -145,6 +145,20 @@ class BaseDriver(ABC):
         """Publish a previously saved draft. Return True on success."""
         raise NotImplementedError
 
+    def reset_list_publish(self) -> None:
+        """Reset the simple list-order publish session (tried-card memory)."""
+        raise NotImplementedError
+
+    def publish_next_draft_from_list(self) -> dict:
+        """Publish ONE draft from the loaded Drafts list, in page order.
+
+        Returns {"ok": bool, "label": str|None, "reason": str|None,
+        "empty": bool}. ok=True means Publish was clicked (no Facebook
+        confirmation check, per user design). empty=True means the list
+        has no untried draft card left.
+        """
+        raise NotImplementedError
+
     def fill_listing_form(self, payload: dict) -> str | None:
         """Fill one listing form in a NEW tab WITHOUT publishing (manual-publish
         helper). Return a tab handle, or None on failure."""
@@ -2488,6 +2502,171 @@ class PlaywrightDriver(BaseDriver):
             self._last_error = f"publish draft {draft_id} failed: {type(exc).__name__}: {str(exc)[:160]}"
             return False
 
+    # -- Simple list-order Publish Drafts (user design 2026-10-28) -----------
+    # Open the Drafts list, let it fully load, then take draft cards one
+    # by one in page order into a fresh tab and click Next -> Publish.
+    # No title search, no title verification, no publish confirmation:
+    # the Publish click itself counts as published. Every wait is bounded,
+    # so a missing card or button can never hang the run the way the
+    # unbounded title wait did. publish_draft() is untouched: Draft &
+    # Publish 1 keeps using it.
+    def reset_list_publish(self) -> None:
+        self._fms_list_tried: set[str] = set()
+
+    def _list_draft_links(self, page) -> list[dict]:
+        """Collect untried draft-card links from the loaded list page, page order."""
+        from urllib.parse import urlparse
+        tried = getattr(self, "_fms_list_tried", set())
+        links: list[dict] = []
+        seen: set[str] = set()
+        try:
+            anchors = page.locator("a[href]")
+            total = min(anchors.count(), 200)
+            for i in range(total):
+                try:
+                    el = anchors.nth(i)
+                    href = (el.get_attribute("href") or "").strip()
+                except Exception:
+                    continue
+                if href.startswith("/"):
+                    href = "https://www.facebook.com" + href
+                if not href or href in seen or href in tried:
+                    continue
+                low = href.lower()
+                if "marketplace" not in low:
+                    continue
+                path = urlparse(low).path.rstrip("/")
+                # Skip bare navigation and the empty "create listing" form.
+                # Draft edit links use the same create/item path BUT carry a
+                # query string (draft_id=...), so only exclude bare ones.
+                if path in ("/marketplace", "/marketplace/you/selling",
+                            "/marketplace/you/drafts"):
+                    continue
+                if path in ("/marketplace/create", "/marketplace/create/item") \
+                        and not urlparse(low).query:
+                    continue
+                if not any(k in low for k in ("create", "edit", "listing", "item", "draft")):
+                    continue
+                try:
+                    label = (el.inner_text() or "").strip()
+                except Exception:
+                    label = ""
+                seen.add(href)
+                links.append({"href": href, "label": label})
+        except Exception:
+            pass
+        return links
+
+    def _wait_button(self, tab, candidates, bound_s: int = 60):
+        """Poll button candidates until one is visible+enabled, else None."""
+        import time
+        deadline = time.time() + bound_s
+        while time.time() < deadline:
+            for candidate in candidates:
+                try:
+                    total = min(candidate.count(), 20)
+                    for j in range(total):
+                        item = candidate.nth(j) if total > 1 else candidate
+                        if item.is_visible() and item.is_enabled():
+                            return item
+                except Exception:
+                    continue
+            try:
+                tab.wait_for_timeout(1000)
+            except Exception:
+                return None
+        return None
+
+    def publish_next_draft_from_list(self) -> dict:
+        """Publish the next untried draft card from the Drafts list page."""
+        self._ensure()
+        page = self._page
+        assert page is not None
+        import re
+        import time
+        tried = getattr(self, "_fms_list_tried", None)
+        if tried is None:
+            tried = self._fms_list_tried = set()
+        try:
+            page.goto("https://www.facebook.com/marketplace/you/selling?state=DRAFT",
+                      wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            return {"ok": False, "label": None,
+                    "reason": f"Drafts list did not open: {type(exc).__name__}",
+                    "empty": False}
+        try:
+            page.wait_for_load_state("load", timeout=60000)
+        except Exception:
+            pass  # Page may keep polling; collect whatever rendered.
+        # Let the list render, then take whatever cards are present.
+        links: list[dict] = []
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            links = self._list_draft_links(page)
+            if links:
+                break
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                break
+        if not links:
+            return {"ok": False, "label": None, "reason": None, "empty": True}
+        card = links[0]
+        href = card["href"]
+        tab = None
+        try:
+            assert self._context is not None
+            tab = self._context.new_page()
+            tab.goto(href, wait_until="domcontentloaded", timeout=60000)
+            try:
+                tab.wait_for_load_state("load", timeout=60000)
+            except Exception:
+                pass
+            next_candidates = [
+                tab.get_by_role("button", name=re.compile(r"^\s*next\s*$", re.I)),
+                tab.locator("div[role='button'][aria-label='Next'], button[aria-label='Next' i]"),
+                tab.get_by_text(re.compile(r"^\s*next\s*$", re.I), exact=True),
+            ]
+            next_button = self._wait_button(tab, next_candidates, bound_s=60)
+            if next_button is None:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": "Next button not found in draft editor", "empty": False}
+            try:
+                next_button.scroll_into_view_if_needed(timeout=5000)
+            except Exception:
+                pass
+            human.human_pause(500, 900)
+            next_button.click(timeout=10000)
+            publish_candidates = [
+                tab.get_by_role("button", name=re.compile(r"^\s*publish(?:\s+listing)?\s*$", re.I)),
+                tab.locator("div[role='button'][aria-label='Publish'], button[aria-label*='Publish' i]"),
+                tab.get_by_text(re.compile(r"^\s*publish\s*$", re.I), exact=True),
+            ]
+            publish_button = self._wait_button(tab, publish_candidates, bound_s=60)
+            if publish_button is None:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": "Publish button not found in draft editor", "empty": False}
+            try:
+                publish_button.scroll_into_view_if_needed(timeout=5000)
+            except Exception:
+                pass
+            human.human_pause(500, 900)
+            publish_button.click(timeout=10000)
+            human.human_pause(2500, 4000)
+            # User design: the Publish click counts as published. No check
+            # whether Facebook actually published it, no confirmation wait.
+            return {"ok": True, "label": card["label"] or None, "reason": None, "empty": False}
+        except Exception as exc:
+            return {"ok": False, "label": card["label"] or None,
+                    "reason": f"Draft editor failed: {type(exc).__name__}", "empty": False}
+        finally:
+            tried.add(href)
+            if tab is not None:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+
     # -- Phase 2: manual-publish helper ------------------------------------------
     def fill_listing_form(self, payload: dict) -> str | None:
         """Open a NEW tab, fill the form, do NOT publish. Returns a tab handle."""
@@ -4063,6 +4242,13 @@ class MockDriver(BaseDriver):
         self._record("publish_draft", draft_id=draft_id)
         time.sleep(0.02)
         return True
+
+    def reset_list_publish(self) -> None:
+        return None
+
+    def publish_next_draft_from_list(self) -> dict:
+        self._record("publish_next_draft_from_list")
+        return {"ok": False, "label": None, "reason": None, "empty": True}
 
     def fill_listing_form(self, payload: dict) -> str | None:
         cls = type(self)

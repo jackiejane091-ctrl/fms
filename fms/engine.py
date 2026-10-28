@@ -1712,64 +1712,88 @@ class RunController:
 
     # -- mode: publish_drafts (publish drafts from any earlier run) -----------------
     def _publish_drafts_only_flow(self, account: dict, driver) -> None:
-        """Publish a configured count of saved drafts, in database list order.
+        """Simple list-order Publish Drafts (user design 2026-10-28).
 
-        This standalone action deliberately uses the Draft & Publish 1 browser
-        route (Your Drafts -> exact title/card -> fresh tab -> Next -> Publish),
-        without changing either locked Draft & Publish flow.
+        Open the Drafts list, let it fully load, then take draft cards one
+        by one in page order into a fresh tab and click Next -> Publish.
+        No title search, no title verification, no publish confirmation:
+        the Publish click counts as published. No safety gate.
+        Draft & Publish 1 / Draft & Publish / Create Drafts are untouched.
         """
         label = account["label"]
-        drafts = self._draft_rows(account["id"], any_run=True)
-        if not drafts:
-            self.log(f"[{label}] no drafts to publish", account_id=account["id"])
+        publish_next = getattr(driver, "publish_next_draft_from_list", None)
+        if publish_next is None:
+            self.log(f"[{label}] Publish Drafts: driver does not support the "
+                     f"simple list mode", level="error", account_id=account["id"])
             return
-
         lo = max(1, int(self.cfg.publish_drafts_min_count))
         hi = max(lo, int(self.cfg.publish_drafts_max_count))
         target = random.randint(lo, hi)
-        selected = drafts[:target]  # ORDER BY id: start of saved-drafts list first
-        if len(selected) < target:
-            self.log(f"[{label}] Publish Drafts requested {target}, only "
-                     f"{len(selected)} saved draft(s) available; processing all available",
-                     account_id=account["id"])
-        self.log(f"[{label}] Publish Drafts: selected {len(selected)} of "
-                 f"{len(drafts)} saved draft(s), list order, range={lo}-{hi}",
-                 account_id=account["id"])
-
+        self.log(f"[{label}] Publish Drafts (simple list mode): opening the "
+                 f"Drafts list and publishing up to {target} draft(s) in page "
+                 f"order, range={lo}-{hi}. No title check, no publish "
+                 f"confirmation.", account_id=account["id"])
+        try:
+            driver.reset_list_publish()
+        except Exception:
+            pass
         mode = self.cfg.publish_mode
         gap_s = self.cfg.publish_gap_min * 60.0 / max(0.1, self.cfg.speed)
-        for i, draft in enumerate(selected):
+        published = 0
+        skipped = 0
+        for i in range(target):
             self._wait_if_paused()
             if mode == "one_by_one" and i > 0:
                 self.log(f"[{label}] waiting {self.cfg.publish_gap_min} min "
                          "before next publish", account_id=account["id"])
                 self._sleep_interruptible(gap_s)
-
-            # Always opt into the proven Draft & Publish 1 draft-link route.
-            # The browser opens the matching draft in a fresh tab and closes
-            # that tab in its finally block before this loop advances.
-            title = str(draft["title_used"] or "").strip()
-            ok = bool(title) and driver.publish_draft("draft-title:" + title)
-            if ok:
-                self.db.execute(
-                    "UPDATE listings SET status = 'posted', posted_at = ?, error = NULL "
-                    "WHERE id = ?", (utcnow(), draft["id"]))
+            res = publish_next()
+            if res.get("empty"):
+                self.log(f"[{label}] Drafts list has no more drafts; stopping "
+                         f"after {published} published", account_id=account["id"])
+                break
+            if res.get("ok"):
+                published += 1
                 self.db.execute(
                     "UPDATE runs SET total_posted = total_posted + 1 WHERE id = ?",
                     (self.run_id,))
-                self.log(f"[{label}] published '{draft['title_used']}'",
-                         account_id=account["id"])
+                self._mark_list_published(account["id"], res.get("label"))
+                self.log(f"[{label}] published draft from list "
+                         f"({published}/{target})", account_id=account["id"])
             else:
-                reason = (getattr(driver, "_last_error", None)
-                          or ("saved draft has no title" if not title
-                              else "Facebook publish was not confirmed"))
-                self.db.execute(
-                    "UPDATE listings SET status = 'draft', error = ? WHERE id = ?",
-                    (f"publish pending: {str(reason)[:400]}", draft["id"]))
-                self.log(f"[{label}] PUBLISH PENDING for saved draft "
-                         f"'{draft['title_used']}' (ID {draft['fb_listing_id']}): {reason}. "
-                         "Draft preserved for retry; moving to the next selected draft.",
-                         level="error", account_id=account["id"])
+                skipped += 1
+                reason = res.get("reason") or "unknown"
+                self.log(f"[{label}] skipped a draft card: {reason}; moving to "
+                         f"the next card", level="error", account_id=account["id"])
+        self.log(f"[{label}] Publish Drafts done: {published} published, "
+                 f"{skipped} skipped", account_id=account["id"])
+
+    def _mark_list_published(self, account_id: int, label) -> None:
+        """Best-effort DB bookkeeping for a page-published draft.
+
+        Only marks a row when exactly one saved draft has a title exactly
+        equal to the card label (or its first line); otherwise leaves
+        records alone. Never blocks or affects publishing.
+        """
+        if not label:
+            return
+        try:
+            candidates = {str(label).strip()}
+            first_line = str(label).split("\n")[0].strip()
+            if first_line:
+                candidates.add(first_line)
+            for cand in candidates:
+                rows = self.db.fetchall(
+                    """SELECT id FROM listings
+                       WHERE account_id = ? AND status = 'draft' AND title_used = ?""",
+                    (account_id, cand))
+                if len(rows) == 1:
+                    self.db.execute(
+                        "UPDATE listings SET status = 'posted', posted_at = ?, error = NULL "
+                        "WHERE id = ?", (utcnow(), rows[0]["id"]))
+                    return
+        except Exception:
+            pass
 
     # -- mode: delete actions ---------------------------------------------------------
     def _record_deleted(self, account: dict, listing_id: str,
