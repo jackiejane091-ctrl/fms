@@ -2645,12 +2645,52 @@ class PlaywrightDriver(BaseDriver):
                     location = (location_lookup(card.get("label") or "") or "").strip()
                 except Exception:
                     location = None
-            if location:
-                location_ok, location_detail = self._select_location(tab, location)
-                if not location_ok:
-                    return {"ok": False, "label": card["label"] or None,
-                            "reason": f"Saved location could not be selected: {location_detail}",
-                            "empty": False}
+            if not location:
+                # Fail closed: never advance/publish a draft when its saved
+                # location could not be resolved from the product/listing record.
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": "Saved location was not found for this draft; Next was not clicked",
+                        "empty": False}
+
+            # The editor tab can exist before Facebook has rendered the full
+            # form. Wait up to 60 seconds for the actual Location input (not
+            # merely DOMContentLoaded/load) before trying to fill it.
+            location_input = None
+            location_field_detail = ""
+            location_deadline = time.time() + 60
+            while time.time() < location_deadline:
+                try:
+                    candidate, location_field_detail = self._find_location_input_in_section(tab)
+                    if candidate is not None and candidate.is_visible() and candidate.is_enabled():
+                        location_input = candidate
+                        break
+                except Exception:
+                    pass
+                try:
+                    tab.wait_for_timeout(750)
+                except Exception:
+                    break
+            if location_input is None:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": "Draft form Location field did not load within 60 seconds; Next was not clicked",
+                        "empty": False}
+
+            location_ok, location_detail = self._select_location(tab, location)
+            if not location_ok:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": f"Saved location could not be selected: {location_detail}",
+                        "empty": False}
+
+            # Re-check the selected value before enabling the Next step.
+            try:
+                selected_location = (location_input.input_value() or "").strip()
+            except Exception:
+                selected_location = ""
+            if not selected_location or location.split(",")[0].strip().lower() not in selected_location.lower():
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": "Location selection could not be verified; Next was not clicked",
+                        "empty": False}
+
             next_candidates = [
                 tab.get_by_role("button", name=re.compile(r"^\s*next\s*$", re.I)),
                 tab.locator("div[role='button'][aria-label='Next'], button[aria-label='Next' i]"),
