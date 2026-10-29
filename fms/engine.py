@@ -1740,13 +1740,44 @@ class RunController:
         gap_s = self.cfg.publish_gap_min * 60.0 / max(0.1, self.cfg.speed)
         published = 0
         skipped = 0
+
+        _location_offsets: dict[str, int] = {}
+
+        def _saved_draft_location(card_label: str) -> str | None:
+            """Resolve a draft card to its saved location_used value.
+
+            When a product reuses the same title, consume matching saved draft
+            rows in creation order so rotating locations remain aligned.
+            """
+            title = str(card_label or "").strip().split("\n")[0].strip()
+            if not title:
+                return None
+            try:
+                rows = self.db.fetchall(
+                    """SELECT location_used FROM listings
+                       WHERE account_id = ? AND status = 'draft' AND title_used = ?
+                       ORDER BY id""",
+                    (account["id"], title))
+                offset = _location_offsets.get(title, 0)
+                if offset >= len(rows):
+                    return None
+                _location_offsets[title] = offset + 1
+                return (rows[offset]["location_used"] or "").strip()
+            except Exception:
+                return None
+
         for i in range(target):
             self._wait_if_paused()
             if mode == "one_by_one" and i > 0:
                 self.log(f"[{label}] waiting {self.cfg.publish_gap_min} min "
                          "before next publish", account_id=account["id"])
                 self._sleep_interruptible(gap_s)
-            res = publish_next()
+            try:
+                res = publish_next(_saved_draft_location)
+            except TypeError:
+                # Compatibility with legacy/test drivers that expose the old
+                # no-argument method; production PlaywrightDriver accepts lookup.
+                res = publish_next()
             if res.get("empty"):
                 self.log(f"[{label}] Drafts list has no more drafts; stopping "
                          f"after {published} published", account_id=account["id"])

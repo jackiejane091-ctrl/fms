@@ -2588,8 +2588,11 @@ class PlaywrightDriver(BaseDriver):
                 return None
         return None
 
-    def publish_next_draft_from_list(self) -> dict:
-        """Publish the next untried draft card from the Drafts list page."""
+    def publish_next_draft_from_list(self, location_lookup=None) -> dict:
+        """Publish the next untried draft card, applying its saved location first.
+
+        location_lookup(label) may return the saved location for this draft.
+        """
         self._ensure()
         page = self._page
         assert page is not None
@@ -2634,6 +2637,20 @@ class PlaywrightDriver(BaseDriver):
                 tab.wait_for_load_state("load", timeout=60000)
             except Exception:
                 pass
+            # Location is the only additional step: resolve it from this
+            # draft's saved product/listing record, then select it before Next.
+            location = None
+            if callable(location_lookup):
+                try:
+                    location = (location_lookup(card.get("label") or "") or "").strip()
+                except Exception:
+                    location = None
+            if location:
+                location_ok, location_detail = self._select_location(tab, location)
+                if not location_ok:
+                    return {"ok": False, "label": card["label"] or None,
+                            "reason": f"Saved location could not be selected: {location_detail}",
+                            "empty": False}
             next_candidates = [
                 tab.get_by_role("button", name=re.compile(r"^\s*next\s*$", re.I)),
                 tab.locator("div[role='button'][aria-label='Next'], button[aria-label='Next' i]"),
