@@ -271,6 +271,18 @@ class BaseDriver(ABC):
 
 
 # ------------------------------------------------------------- real driver ---
+class _AccountSessionStop(Exception):
+    """Account/session-wide failure in the Publish Drafts path.
+
+    Raised (not returned as a skip) when the problem affects the whole
+    account, not one draft: Facebook login/checkpoint/recovery, an expired
+    session, or a Facebook error page where no draft is selected. The
+    engine logs the message and stops this account's queue instead of
+    skipping drafts one by one; nothing is published and no draft row is
+    marked posted. A later run retries the account from scratch.
+    """
+
+
 class PlaywrightDriver(BaseDriver):
     """Real driver using Playwright + persistent per-account browser profile."""
 
@@ -930,7 +942,15 @@ class PlaywrightDriver(BaseDriver):
                 f"row={outcome.get('caption') or '-'} (section match)")
         return page.locator('[data-fms-location-input="1"]').first, desc
 
-    def _select_location(self, page, location: str) -> tuple[bool, str]:
+    def _select_location(self, page, location: str, wait_until_ready: bool = False) -> tuple[bool, str]:
+        """Select a location suggestion for the given location text.
+
+        wait_until_ready is used only by the Publish Drafts path: the
+        section search and the suggestion wait then poll until ready with
+        pause-aware error handling and no time limit, instead of short
+        fixed attempts. Every other caller uses the default False path,
+        which is unchanged.
+        """
         # v0.2.55: extra care (user's explicit instruction). Type the FULL
         # location text, wait for the suggestion list, then click the FIRST
         # suggestion — never pick blindly.
@@ -975,15 +995,35 @@ class PlaywrightDriver(BaseDriver):
             # wait, then a safe, diagnosed failure. Never climbs to the
             # panel, never considers Title/Price.
             _desc2 = ""
-            for _attempt in range(8):
-                cand2, _desc2 = self._find_location_input_in_section(page)
-                if cand2 is not None:
-                    loc, ident = cand2, _desc2
-                    break
-                try:
-                    page.wait_for_timeout(750)
-                except Exception:
-                    break
+            if wait_until_ready:
+                # Publish Drafts path: keep polling the section finder
+                # until the input appears — no time limit, so slow rendering
+                # never fails the draft. The shared helper raises for
+                # account-wide problems (queue stops) and returns a reason
+                # for a draft-level Facebook error (draft skipped).
+                _holder = {"desc": ""}
+
+                def _section_check():
+                    cand2, desc2 = self._find_location_input_in_section(page)
+                    _holder["desc"] = desc2
+                    return cand2
+
+                section_ok, section_value = self._poll_until_ready(
+                    page, _section_check, "Location field")
+                if section_ok:
+                    loc, ident = section_value, _holder["desc"]
+                else:
+                    _desc2 = section_value
+            else:
+                for _attempt in range(8):
+                    cand2, _desc2 = self._find_location_input_in_section(page)
+                    if cand2 is not None:
+                        loc, ident = cand2, _desc2
+                        break
+                    try:
+                        page.wait_for_timeout(750)
+                    except Exception:
+                        break
             if loc is None:
                 self._note_field_error(
                     page, "location-field",
@@ -1011,17 +1051,43 @@ class PlaywrightDriver(BaseDriver):
             focus_desc = ""
         self._type(loc, location)
         human.human_pause(1500, 2500)  # let suggestions appear
-        try:
-            first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
-            first.wait_for(timeout=8000)
-        except Exception as exc_s:
-            self._note_field_error(
-                page, "location-select",
-                f"Location '{location}' suggestion not selected: "
-                f"{type(exc_s).__name__}")
-            return False, (f"suggestions: no suggestion list appeared "
-                           f"({type(exc_s).__name__}) "
-                           f"[field: {ident}; focus: {focus_desc}]")
+        first = None
+        if wait_until_ready:
+            # Publish Drafts path: keep polling for the suggestion list
+            # until it appears — no time limit, so a slow suggestion
+            # service never fails the draft. Account-wide problems raise
+            # (queue stops); a draft-level Facebook error returns a reason
+            # (draft skipped).
+            def _sug_check():
+                try:
+                    cand = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
+                    cand.first.wait_for(timeout=1000)
+                    return cand
+                except Exception:
+                    return None
+
+            sug_ok, sug_value = self._poll_until_ready(
+                page, _sug_check, "Location suggestions")
+            if sug_ok:
+                first = sug_value
+            else:
+                self._note_field_error(
+                    page, "location-select",
+                    f"Location '{location}' suggestion not selected: {sug_value}")
+                return False, (f"suggestions: {sug_value} "
+                               f"[field: {ident}; focus: {focus_desc}]")
+        if first is None:
+            try:
+                first = S.to_playwright(page, S.F_LOCATION_FIRST_RESULT)
+                first.wait_for(timeout=8000)
+            except Exception as exc_s:
+                self._note_field_error(
+                    page, "location-select",
+                    f"Location '{location}' suggestion not selected: "
+                    f"{type(exc_s).__name__}")
+                return False, (f"suggestions: no suggestion list appeared "
+                               f"({type(exc_s).__name__}) "
+                               f"[field: {ident}; focus: {focus_desc}]")
         # Sanity: the suggestion should contain part of our text.
         sug_text = ""
         try:
@@ -2506,10 +2572,18 @@ class PlaywrightDriver(BaseDriver):
     # Open the Drafts list, let it fully load, then take draft cards one
     # by one in page order into a fresh tab and click Next -> Publish.
     # No title search, no title verification, no publish confirmation:
-    # the Publish click itself counts as published. Every wait is bounded,
-    # so a missing card or button can never hang the run the way the
-    # unbounded title wait did. publish_draft() is untouched: Draft &
+    # the Publish click itself counts as published. Waits follow actual UI
+    # readiness, not timers: slow loading never fails a draft, and explicit
+    # Facebook/account errors plus Pause/Stop are the exits, so a missing
+    # card or button cannot silently hang the run the way the unbounded
+    # title wait did. publish_draft() is untouched: Draft &
     # Publish 1 keeps using it.
+    # Publish Drafts readiness waits have NO time limit by design (user
+    # requirement): slow internet or slow Facebook rendering must never
+    # fail a draft just for taking long. A wait exits only on actual UI
+    # readiness, on an explicit Facebook/account error (see
+    # _poll_until_ready), or on Pause/Stop.
+
     def reset_list_publish(self) -> None:
         self._fms_list_tried: set[str] = set()
 
@@ -2588,10 +2662,96 @@ class PlaywrightDriver(BaseDriver):
                 return None
         return None
 
+    def _poll_until_ready(self, page, check, stage, error_action="skip"):
+        """Poll check() until it returns a truthy value, with no time limit.
+
+        Slow loading must never fail a draft, so there is deliberately no
+        deadline: the only exits are actual readiness, an explicit failure
+        signal, or Pause/Stop. Every poll step calls _pause_checkpoint()
+        so Pause blocks here and Stop raises out of the wait. Each poll
+        also inspects the page for failure signals:
+        - account/session-wide signals (login/checkpoint/recovery URL, or
+          a session-expired page) always raise _AccountSessionStop, which
+          the engine logs and which stops this account's queue instead of
+          skipping drafts one by one;
+        - a Facebook error shown for this draft (a visible alert carrying
+          error text, or an error page with no usable form inputs) returns
+          (False, reason) when error_action is "skip" so the caller skips
+          just this draft, or raises _AccountSessionStop when error_action
+          is "stop" (list stage: no draft is selected yet).
+        The error text is only trusted together with an alert element or
+        with zero usable inputs, so a draft's own description text cannot
+        fake an error. check() exceptions count as "not ready yet".
+        Returns (True, value) or (False, reason). Used only by the
+        Publish Drafts path.
+        """
+        while True:
+            self._pause_checkpoint()
+            try:
+                url = (page.url or "").lower()
+            except Exception:
+                url = ""
+            if any(token in url for token in ("/login", "/checkpoint", "/recover")):
+                raise _AccountSessionStop(
+                    f"Facebook login/checkpoint required during {stage} — "
+                    "Publish Drafts stopped for this account")
+            try:
+                err = page.evaluate("""() => {
+                  const vis = el => { const r=el.getBoundingClientRect();
+                    const s=getComputedStyle(el); return r.width>0 && r.height>0 &&
+                    s.display!=='none' && s.visibility!=='hidden'; };
+                  const text = (document.body?.innerText || '').toLowerCase();
+                  if (/session expired|your session has expired/.test(text)) return 'session';
+                  const alerts = Array.from(document.querySelectorAll('[role=alert]')).filter(vis);
+                  const errText = /something went wrong|this content isn't available|content isn't available|failed to load/.test(text);
+                  if (alerts.length && errText) return 'draft-error';
+                  const inputs = Array.from(document.querySelectorAll('input,textarea,[role=textbox]')).filter(vis);
+                  if (errText && inputs.length === 0) return 'draft-error';
+                  return '';
+                }""")
+            except Exception:
+                err = ""
+            if err == "session":
+                raise _AccountSessionStop(
+                    f"Facebook session expired during {stage} — "
+                    "Publish Drafts stopped for this account")
+            if err == "draft-error":
+                reason = f"Facebook error shown during {stage}; draft skipped safely"
+                if error_action == "stop":
+                    raise _AccountSessionStop(
+                        f"Facebook error during {stage} — "
+                        "Publish Drafts stopped for this account")
+                return False, reason
+            try:
+                value = check()
+            except Exception:
+                value = None
+            if value:
+                return True, value
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                time.sleep(1)
+
     def publish_next_draft_from_list(self, location_lookup=None) -> dict:
         """Publish the next untried draft card, applying its saved location first.
 
         location_lookup(label) may return the saved location for this draft.
+        Readiness is checked against the real UI, not navigation events: the
+        Drafts list must stabilize, the editor must render usable, settled
+        controls, the Location field must appear, and the saved location
+        must be selected and verified before Next is clicked. Waits have
+        no time limit, so slow loading never fails a draft; they stay
+        responsive to Pause/Stop and exit on explicit failure signals.
+        A draft-level problem (missing saved location, unresolvable
+        location selection, or a Facebook error shown for that draft)
+        returns a stage-named failure and the draft is skipped, never
+        published blind. An account/session-wide problem (login,
+        checkpoint, expired session, or a Facebook error before any draft
+        is selected) raises _AccountSessionStop so the engine stops this
+        account's queue and reports it instead of skipping drafts one by
+        one. Publish is clicked only after the location is selected and
+        verified.
         """
         self._ensure()
         page = self._page
@@ -2612,19 +2772,61 @@ class PlaywrightDriver(BaseDriver):
             page.wait_for_load_state("load", timeout=60000)
         except Exception:
             pass  # Page may keep polling; collect whatever rendered.
-        # Let the list render, then take whatever cards are present.
-        links: list[dict] = []
-        deadline = time.time() + 30
-        while time.time() < deadline:
+        # Wait for the Drafts list to actually finish rendering and stabilize
+        # instead of accepting the first link that happens to appear. Scroll
+        # to the bottom to trigger lazy-loaded cards; proceed only after the
+        # card set and document height stay stable for several polls and no
+        # loading indicator remains. An empty list also stabilizes (no links,
+        # no busy indicator, steady height) and ends the run cleanly.
+        list_state = {"signature": None, "height": -1, "stable": 0, "links": []}
+
+        def _list_check():
             links = self._list_draft_links(page)
-            if links:
-                break
             try:
-                page.wait_for_timeout(1000)
+                state = page.evaluate("""() => {
+                    const visible = el => { const r=el.getBoundingClientRect();
+                      const s=getComputedStyle(el); return r.width>0 && r.height>0 &&
+                      s.display!=='none' && s.visibility!=='hidden'; };
+                    const busy = Array.from(document.querySelectorAll(
+                      '[role=progressbar], [data-visualcompletion=loading-state]'
+                    )).some(visible);
+                    const text = (document.body?.innerText || '').toLowerCase();
+                    const empty = /no drafts|you don.t have any drafts|you have no drafts|nothing to show/.test(text);
+                    return {busy, empty, height: Math.max(document.body?.scrollHeight||0,
+                      document.documentElement?.scrollHeight||0)};
+                }""") or {}
             except Exception:
-                break
-        if not links:
+                state = {}
+            busy = bool(state.get("busy"))
+            empty = bool(state.get("empty"))
+            height = state.get("height", -1)
+            if empty and not links and not busy:
+                return "empty"
+            signature = tuple(item.get("href") for item in links)
+            if signature == list_state["signature"] and height == list_state["height"] and not busy:
+                list_state["stable"] += 1
+            else:
+                list_state["stable"] = 0
+            list_state["signature"] = signature
+            list_state["height"] = height
+            list_state["links"] = links
+            try:
+                page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+            except Exception:
+                pass
+            if links and list_state["stable"] >= 3:
+                return "stable"
+            if not links and not busy and list_state["stable"] >= 3:
+                return "empty"
+            return None
+
+        list_ok, list_value = self._poll_until_ready(
+            page, _list_check, "Drafts list", error_action="stop")
+        if list_value == "empty":
             return {"ok": False, "label": None, "reason": None, "empty": True}
+        if not list_ok:
+            return {"ok": False, "label": None, "reason": list_value, "empty": False}
+        links = list_state["links"]
         card = links[0]
         href = card["href"]
         tab = None
@@ -2637,6 +2839,51 @@ class PlaywrightDriver(BaseDriver):
                 tab.wait_for_load_state("load", timeout=60000)
             except Exception:
                 pass
+            # Navigation events alone are not enough: React may render the
+            # form long after DOMContentLoaded/load. Wait for the actual
+            # editor UI to be usable and settled: the Title and Price
+            # controls themselves must be visible AND enabled (identified
+            # by their own aria-label/placeholder/name, with body text as
+            # fallback), a details/location section must be present, no
+            # loading indicator may be visible, and the ready condition
+            # must hold on two consecutive polls so a transient flash
+            # during a React re-render cannot pass the gate.
+            editor_state = {"stable": 0}
+
+            def _editor_check():
+                try:
+                    ready = tab.evaluate("""() => {
+                      const usable = el => { const r=el.getBoundingClientRect();
+                        const s=getComputedStyle(el); return r.width>0 && r.height>0 &&
+                        s.display!=='none' && s.visibility!=='hidden' && !el.disabled &&
+                        el.getAttribute('aria-disabled') !== 'true'; };
+                      const text = (document.body?.innerText || '').toLowerCase();
+                      const fields = Array.from(document.querySelectorAll('input,textarea,[role=textbox]')).filter(usable);
+                      const attr = el => ((el.getAttribute('aria-label') || '') + ' ' +
+                        (el.placeholder || '') + ' ' + (el.getAttribute('name') || '')).toLowerCase();
+                      const hasTitle = fields.some(el => /\\btitle\\b/.test(attr(el)));
+                      const hasPrice = fields.some(el => /\\bprice\\b/.test(attr(el)));
+                      const titlePrice = (hasTitle && hasPrice) ||
+                        (/\\btitle\\b/.test(text) && /\\bprice\\b/.test(text) && fields.length >= 2);
+                      const details = /more details|show more details|\\blocation\\b/.test(text);
+                      const busy = Array.from(document.querySelectorAll(
+                        '[role=progressbar], [data-visualcompletion=loading-state]'
+                      )).some(usable);
+                      return titlePrice && details && fields.length >= 2 && !busy;
+                    }""")
+                except Exception:
+                    ready = False
+                if ready:
+                    editor_state["stable"] += 1
+                else:
+                    editor_state["stable"] = 0
+                return editor_state["stable"] >= 2
+
+            editor_ok, editor_reason = self._poll_until_ready(
+                tab, _editor_check, "Draft editor")
+            if not editor_ok:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": editor_reason, "empty": False}
             # Location is the only additional step: resolve it from this
             # draft's saved product/listing record, then select it before Next.
             location = None
@@ -2653,15 +2900,12 @@ class PlaywrightDriver(BaseDriver):
                         "empty": False}
 
             # The editor tab can exist before Facebook has rendered the full
-            # form. Wait up to 60 seconds for the actual Location input (not
-            # merely DOMContentLoaded/load) before trying to fill it.
-            location_input = None
-            location_field_detail = ""
-            location_deadline = time.time() + 60
-            while time.time() < location_deadline:
-                # The editor may have its own scrollable panel and the Location
-                # row can be below the initial viewport. Scroll the visible label
-                # into view before retrying the section-scoped input finder.
+            # form. Wait for the actual Location input (not merely
+            # DOMContentLoaded/load) under a generous, pause-aware limit.
+            # The editor may have its own scrollable panel and the Location
+            # row can be below the initial viewport, so scroll the visible
+            # label into view before retrying the section-scoped finder.
+            def _location_check():
                 try:
                     labels = tab.get_by_text("Location", exact=True)
                     for li in range(min(labels.count(), 8)):
@@ -2675,26 +2919,25 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
                 try:
-                    candidate, location_field_detail = self._find_location_input_in_section(tab)
+                    candidate, _detail = self._find_location_input_in_section(tab)
                     if candidate is not None and candidate.is_visible() and candidate.is_enabled():
                         try:
                             candidate.scroll_into_view_if_needed(timeout=3000)
                         except Exception:
                             pass
-                        location_input = candidate
-                        break
+                        return candidate
                 except Exception:
                     pass
-                try:
-                    tab.wait_for_timeout(750)
-                except Exception:
-                    break
-            if location_input is None:
-                return {"ok": False, "label": card["label"] or None,
-                        "reason": "Draft form Location field did not load within 60 seconds; Next was not clicked",
-                        "empty": False}
+                return None
 
-            location_ok, location_detail = self._select_location(tab, location)
+            loc_ok, loc_value = self._poll_until_ready(
+                tab, _location_check, "Draft form Location field")
+            if not loc_ok:
+                return {"ok": False, "label": card["label"] or None,
+                        "reason": loc_value, "empty": False}
+            location_input = loc_value
+
+            location_ok, location_detail = self._select_location(tab, location, wait_until_ready=True)
             if not location_ok:
                 return {"ok": False, "label": card["label"] or None,
                         "reason": f"Saved location could not be selected: {location_detail}",
@@ -2715,10 +2958,12 @@ class PlaywrightDriver(BaseDriver):
                 tab.locator("div[role='button'][aria-label='Next'], button[aria-label='Next' i]"),
                 tab.get_by_text(re.compile(r"^\s*next\s*$", re.I), exact=True),
             ]
-            next_button = self._wait_button(tab, next_candidates, bound_s=60)
-            if next_button is None:
+            next_ok, next_button = self._poll_until_ready(
+                tab, lambda: self._wait_button(tab, next_candidates, bound_s=5),
+                "Next button")
+            if not next_ok:
                 return {"ok": False, "label": card["label"] or None,
-                        "reason": "Next button not found in draft editor", "empty": False}
+                        "reason": next_button, "empty": False}
             try:
                 next_button.scroll_into_view_if_needed(timeout=5000)
             except Exception:
@@ -2730,10 +2975,12 @@ class PlaywrightDriver(BaseDriver):
                 tab.locator("div[role='button'][aria-label='Publish'], button[aria-label*='Publish' i]"),
                 tab.get_by_text(re.compile(r"^\s*publish\s*$", re.I), exact=True),
             ]
-            publish_button = self._wait_button(tab, publish_candidates, bound_s=60)
-            if publish_button is None:
+            publish_ok, publish_button = self._poll_until_ready(
+                tab, lambda: self._wait_button(tab, publish_candidates, bound_s=5),
+                "Publish button")
+            if not publish_ok:
                 return {"ok": False, "label": card["label"] or None,
-                        "reason": "Publish button not found in draft editor", "empty": False}
+                        "reason": publish_button, "empty": False}
             try:
                 publish_button.scroll_into_view_if_needed(timeout=5000)
             except Exception:
@@ -2745,7 +2992,18 @@ class PlaywrightDriver(BaseDriver):
             # listing/create-item pages as part of this action.
             human.human_pause(2000, 3000)
             return {"ok": True, "label": card["label"] or None, "reason": None, "empty": False}
+        except _AccountSessionStop:
+            # Account/session-wide failure: never convert it into a skipped
+            # draft. Re-raise so the engine logs it and stops this
+            # account's queue instead of skipping drafts one by one.
+            raise
         except Exception as exc:
+            # The engine owns the stop signal (_StopRun) and browser.py must
+            # not import engine.py, so re-raise it by name: a Pause/Stop
+            # checkpoint inside the readiness waits must actually stop the
+            # run instead of being converted into a skipped draft.
+            if type(exc).__name__ == "_StopRun":
+                raise
             return {"ok": False, "label": card["label"] or None,
                     "reason": f"Draft editor failed: {type(exc).__name__}", "empty": False}
         finally:
