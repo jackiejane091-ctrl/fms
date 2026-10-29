@@ -2659,9 +2659,28 @@ class PlaywrightDriver(BaseDriver):
             location_field_detail = ""
             location_deadline = time.time() + 60
             while time.time() < location_deadline:
+                # The editor may have its own scrollable panel and the Location
+                # row can be below the initial viewport. Scroll the visible label
+                # into view before retrying the section-scoped input finder.
+                try:
+                    labels = tab.get_by_text("Location", exact=True)
+                    for li in range(min(labels.count(), 8)):
+                        label_node = labels.nth(li)
+                        if label_node.is_visible():
+                            try:
+                                label_node.scroll_into_view_if_needed(timeout=2000)
+                            except Exception:
+                                pass
+                            break
+                except Exception:
+                    pass
                 try:
                     candidate, location_field_detail = self._find_location_input_in_section(tab)
                     if candidate is not None and candidate.is_visible() and candidate.is_enabled():
+                        try:
+                            candidate.scroll_into_view_if_needed(timeout=3000)
+                        except Exception:
+                            pass
                         location_input = candidate
                         break
                 except Exception:

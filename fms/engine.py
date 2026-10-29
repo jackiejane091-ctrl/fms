@@ -1742,27 +1742,62 @@ class RunController:
         skipped = 0
 
         _location_offsets: dict[str, int] = {}
+        _used_draft_rows: set[int] = set()
 
         def _saved_draft_location(card_label: str) -> str | None:
-            """Resolve a draft card to its saved location_used value.
+            """Resolve this visible draft to its product, then use saved product
+            location settings (not the location previously stored on the draft).
 
-            When a product reuses the same title, consume matching saved draft
-            rows in creation order so rotating locations remain aligned.
+            Facebook's card text often includes extra UI text, so match normalized
+            title text first and only use a single unambiguous pending draft as a
+            fallback. Never guess between multiple unrelated products.
             """
-            title = str(card_label or "").strip().split("\n")[0].strip()
-            if not title:
-                return None
+            import re
+            raw = str(card_label or "").strip()
+            title = raw.split("\n")[0].strip()
+            norm = lambda value: re.sub(r"\s+", " ", str(value or "")).strip().casefold()
             try:
                 rows = self.db.fetchall(
-                    """SELECT location_used FROM listings
-                       WHERE account_id = ? AND status = 'draft' AND title_used = ?
+                    """SELECT id, product_id, title_used FROM listings
+                       WHERE account_id = ? AND status = 'draft'
                        ORDER BY id""",
-                    (account["id"], title))
-                offset = _location_offsets.get(title, 0)
-                if offset >= len(rows):
+                    (account["id"],))
+                available = [r for r in rows if int(r["id"]) not in _used_draft_rows]
+                if not available:
                     return None
-                _location_offsets[title] = offset + 1
-                return (rows[offset]["location_used"] or "").strip()
+                nt = norm(title)
+                exact_matches = [r for r in available
+                                 if norm(r["title_used"]) == nt and nt]
+                if exact_matches:
+                    # Repeated product titles are valid: consume the oldest
+                    # still-unused matching draft row one at a time.
+                    row = exact_matches[0]
+                else:
+                    # Card labels may decorate the title with price/metadata.
+                    partial_matches = [r for r in available if norm(r["title_used"])
+                                       and nt and
+                                       (norm(r["title_used"]) in norm(raw) or
+                                        norm(raw) in norm(r["title_used"]))]
+                    if len(partial_matches) == 1:
+                        row = partial_matches[0]
+                    elif len(available) == 1:
+                        row = available[0]
+                    else:
+                        return None
+                _used_draft_rows.add(int(row["id"]))
+                product_id = row["product_id"]
+                if product_id is None:
+                    return None
+                product = products_mod.get_product(self.db, int(product_id))
+                if not product:
+                    return None
+                # Publish Drafts uses the location saved on this product,
+                # not the location_used value stored on the old draft row.
+                locations = product.get("locations") or []
+                locations = [str(v).strip() for v in locations if str(v or "").strip()]
+                if not locations:
+                    return None
+                return locations[0]
             except Exception:
                 return None
 
