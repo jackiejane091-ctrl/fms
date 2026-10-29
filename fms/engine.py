@@ -1741,65 +1741,23 @@ class RunController:
         published = 0
         skipped = 0
 
-        _location_offsets: dict[str, int] = {}
-        _used_draft_rows: set[int] = set()
+        # Publish Drafts uses the product selected for this run directly.
+        # Do not match draft labels/titles or draft listing rows to products.
+        _publish_location: str | None = None
+        try:
+            selected_product_ids = list(self.cfg.product_ids or [])
+            if selected_product_ids:
+                selected_product = products_mod.get_product(self.db, int(selected_product_ids[0]))
+                saved_locations = (selected_product or {}).get("locations") or []
+                saved_locations = [str(v).strip() for v in saved_locations if str(v or "").strip()]
+                if saved_locations:
+                    _publish_location = saved_locations[0]
+        except Exception:
+            _publish_location = None
 
-        def _saved_draft_location(card_label: str) -> str | None:
-            """Resolve this visible draft to its product, then use saved product
-            location settings (not the location previously stored on the draft).
-
-            Facebook's card text often includes extra UI text, so match normalized
-            title text first and only use a single unambiguous pending draft as a
-            fallback. Never guess between multiple unrelated products.
-            """
-            import re
-            raw = str(card_label or "").strip()
-            title = raw.split("\n")[0].strip()
-            norm = lambda value: re.sub(r"\s+", " ", str(value or "")).strip().casefold()
-            try:
-                rows = self.db.fetchall(
-                    """SELECT id, product_id, title_used FROM listings
-                       WHERE account_id = ? AND status = 'draft'
-                       ORDER BY id""",
-                    (account["id"],))
-                available = [r for r in rows if int(r["id"]) not in _used_draft_rows]
-                if not available:
-                    return None
-                nt = norm(title)
-                exact_matches = [r for r in available
-                                 if norm(r["title_used"]) == nt and nt]
-                if exact_matches:
-                    # Repeated product titles are valid: consume the oldest
-                    # still-unused matching draft row one at a time.
-                    row = exact_matches[0]
-                else:
-                    # Card labels may decorate the title with price/metadata.
-                    partial_matches = [r for r in available if norm(r["title_used"])
-                                       and nt and
-                                       (norm(r["title_used"]) in norm(raw) or
-                                        norm(raw) in norm(r["title_used"]))]
-                    if len(partial_matches) == 1:
-                        row = partial_matches[0]
-                    elif len(available) == 1:
-                        row = available[0]
-                    else:
-                        return None
-                _used_draft_rows.add(int(row["id"]))
-                product_id = row["product_id"]
-                if product_id is None:
-                    return None
-                product = products_mod.get_product(self.db, int(product_id))
-                if not product:
-                    return None
-                # Publish Drafts uses the location saved on this product,
-                # not the location_used value stored on the old draft row.
-                locations = product.get("locations") or []
-                locations = [str(v).strip() for v in locations if str(v or "").strip()]
-                if not locations:
-                    return None
-                return locations[0]
-            except Exception:
-                return None
+        def _saved_draft_location(_card_label: str = "") -> str | None:
+            """Return the selected product's saved location; draft label is ignored."""
+            return _publish_location
 
         for i in range(target):
             self._wait_if_paused()

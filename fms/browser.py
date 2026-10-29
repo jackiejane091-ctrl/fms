@@ -2772,12 +2772,10 @@ class PlaywrightDriver(BaseDriver):
             page.wait_for_load_state("load", timeout=60000)
         except Exception:
             pass  # Page may keep polling; collect whatever rendered.
-        # Wait for the Drafts list to actually finish rendering and stabilize
-        # instead of accepting the first link that happens to appear. Scroll
-        # to the bottom to trigger lazy-loaded cards; proceed only after the
-        # card set and document height stay stable for several polls and no
-        # loading indicator remains. An empty list also stabilizes (no links,
-        # no busy indicator, steady height) and ends the run cleanly.
+        # Wait for the Drafts list to finish rendering and stabilize without
+        # scrolling the list. Scrolling is reserved for the opened draft form.
+        # An empty list also stabilizes (no links, no busy indicator, steady
+        # height) and ends the run cleanly.
         list_state = {"signature": None, "height": -1, "stable": 0, "links": []}
 
         def _list_check():
@@ -2810,10 +2808,6 @@ class PlaywrightDriver(BaseDriver):
             list_state["signature"] = signature
             list_state["height"] = height
             list_state["links"] = links
-            try:
-                page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
-            except Exception:
-                pass
             if links and list_state["stable"] >= 3:
                 return "stable"
             if not links and not busy and list_state["stable"] >= 3:
