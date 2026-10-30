@@ -54,6 +54,7 @@ ACTIONS = [
     ("download_images_titles", "Download Images & Titles"),
     ("change_location", "Change Marketplace Location"),
     ("scrap_data", "Scrap Data"),
+    ("create_listings_only", "Create Listings Only"),
 ]
 # Keep the former complete mode valid for saved/older runs and API clients,
 # but do not expose it as a separate visible Post action.
@@ -61,7 +62,7 @@ MODES = (tuple(key for key, _ in ACTIONS)
          + ("draft_publish", "renew_listing", "complete", "manual_publish", "script", "wait_next_turn"))
 # Modes that create listings and therefore need product datasets.
 POSTING_MODES = {"complete", "test_single_post", "draft_publish", "draft_publish_1", "manual_publish",
-                 "relist_edit", "create_drafts", "publish_drafts"}
+                 "relist_edit", "create_drafts", "publish_drafts", "create_listings_only"}
 PUBLISH_MODES = ("all_together", "one_by_one")
 
 
@@ -116,6 +117,7 @@ class RunConfig:
     renew_max_count: int = 5        # lower/upper limit)
     publish_drafts_min_count: int = 1  # standalone Publish Drafts count range
     publish_drafts_max_count: int = 3
+    create_listings_count: int = 1  # Create Listings Only: exact filled forms per account
     min_price: float | None = None   # None -> use product base_price
     max_price: float | None = None
     min_delay_s: float = 2.0         # delay between posts on one account
@@ -179,6 +181,8 @@ class RunConfig:
         if (self.publish_drafts_min_count < 1
                 or self.publish_drafts_max_count < self.publish_drafts_min_count):
             raise ValueError("bad publish_drafts_min_count/publish_drafts_max_count")
+        if self.create_listings_count < 1:
+            raise ValueError("create_listings_count must be >= 1")
         if self.mode == "script":
             if not self.script_id:
                 raise ValueError("script mode requires script_id")
@@ -1009,6 +1013,8 @@ class RunController:
             self._delete_relist_ui_flow(account, driver)
         elif mode == "create_drafts":
             self._create_drafts_only_flow(account, driver, quota, account_idx)
+        elif mode == "create_listings_only":
+            self._create_listings_only_flow(account, driver, quota, account_idx)
         elif mode == "publish_drafts":
             self._publish_drafts_only_flow(account, driver)
         elif mode == "delete_duplicate":
@@ -1750,6 +1756,65 @@ class RunController:
         self.log(f"[{label}] created {n} draft(s) — publish them later",
                  account_id=account["id"])
 
+    # -- mode: create_listings_only (new action, v0.2.164) ------------------
+    def _create_listings_only_flow(self, account: dict, driver, quota: int,
+                                   account_idx: int) -> None:
+        """Create Listings Only: fill exactly create_listings_count forms,
+        one per NEW tab at the create-item form, and leave every completed
+        tab open. Never clicks Next, Publish, Save Draft, or any submit
+        action. Creates no listing records, so run posted counts never
+        report a publication. The browser stays open via driver.keep_open
+        (the existing Browser Launch mechanism). Image selection reuses
+        the existing rotation/cooldown rules; usage is NOT recorded because
+        nothing is saved or published (selection itself never writes
+        cooldown history).
+        """
+        label = account["label"]
+        # Keep the browser (and every completed tab) open after the quota
+        # completes — and on failure, so the user can inspect the forms.
+        if getattr(driver, "create_listings_only_tab", None) is None:
+            raise RuntimeError(
+                "Create Listings Only: driver does not support filled-form tabs")
+        driver.keep_open = True
+        target = max(1, int(self.cfg.create_listings_count))
+        completed = 0
+        consecutive_failures = 0
+        # One full product rotation failing in a row means a systemic
+        # problem (form changed, session lost), not a bad product: stop
+        # instead of looping forever. The account then follows the normal
+        # retry/failed path with its browser left open for inspection.
+        max_consecutive_failures = max(1, len(self.cfg.product_ids or []))
+        while completed < target:
+            self._wait_if_paused()
+            pid, product = self._next_product(account_idx)
+            if product is None:
+                consecutive_failures += 1
+                self.log(f"[{label}] listing form skipped: no product "
+                         f"available", level="error", account_id=account["id"])
+            else:
+                payload = self._rotation(product, account_idx, account_id=account["id"])
+                tab = driver.create_listings_only_tab(payload)
+                if tab is not None:
+                    completed += 1
+                    consecutive_failures = 0
+                    self.log(f"[{label}] listing form {completed}/{target} "
+                             f"ready: '{payload['title']}' (tab left open)",
+                             account_id=account["id"])
+                    self._inter_post_delay()
+                else:
+                    consecutive_failures += 1
+                    reason = (getattr(driver, "_last_error", None)
+                              or "listing form could not be completed")
+                    self.log(f"[{label}] listing form failed: {reason}",
+                             level="error", account_id=account["id"])
+            if consecutive_failures >= max_consecutive_failures:
+                raise RuntimeError(
+                    f"Create Listings Only stopped: {consecutive_failures} "
+                    f"consecutive listing form(s) failed for '{label}'")
+        self.log(f"[{label}] created {completed} listing form(s) — tabs left "
+                 f"open, nothing published or saved",
+                 account_id=account["id"])
+
     # -- mode: publish_drafts (publish drafts from any earlier run) -----------------
     def _publish_drafts_only_flow(self, account: dict, driver) -> None:
         """Simple list-order Publish Drafts (user design 2026-10-28).
@@ -2261,8 +2326,13 @@ class RunController:
                 (self.run_id,))["settings_json"])
             quotas = {int(k): v for k, v in settings.get("quotas", {}).items()}
             for acc in accounts:
-                quotas.setdefault(acc["id"],
-                                  random.randint(cfg.min_ads, cfg.max_ads))
+                if cfg.mode == "create_listings_only":
+                    # Each account gets the FULL Number of Listings
+                    # quota (never a divided share, never min/max ads).
+                    quotas.setdefault(acc["id"], int(cfg.create_listings_count))
+                else:
+                    quotas.setdefault(acc["id"],
+                                      random.randint(cfg.min_ads, cfg.max_ads))
             settings["quotas"] = quotas
             total_planned = sum(quotas[a["id"]] for a in accounts)
             self.db.execute(

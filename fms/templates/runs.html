@@ -46,6 +46,7 @@
     </span></label>
     <label>Min ads / account <input name="min_ads" type="number" value="1" min="0"></label>
     <label>Max ads / account <input name="max_ads" type="number" value="3" min="1"></label>
+    <label id="createListingsRow" style="display:none">Number of Listings <input name="create_listings_count" type="number" value="1" min="1"></label>
     <label>Min Actions <input name="renew_min_count" type="number" value="1" min="0"></label>
     <label>Max Actions <input name="renew_max_count" type="number" value="5" min="1"></label>
     <label>Min price <input name="min_price" type="number" step="0.01" placeholder="blank = product price"></label>
@@ -170,7 +171,7 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const POSTING_MODES = ['complete','draft_publish','manual_publish','relist_edit','create_drafts','publish_drafts'];
+const POSTING_MODES = ['complete','draft_publish','manual_publish','relist_edit','create_drafts','publish_drafts','create_listings_only'];
 function stepBatch(d){
   const el = document.getElementById('batchSize');
   el.value = Math.min(10, Math.max(1, (parseInt(el.value)||2) + d));
@@ -203,6 +204,7 @@ function modeChanged(){
   document.getElementById('urlsRow').style.display = needUrls ? '' : 'none';
   document.getElementById('scrapOptsRow').style.display = m === 'scrap_data' ? '' : 'none';
   document.getElementById('dlRow').style.display = m === 'download_images_titles' ? '' : 'none';
+  document.getElementById('createListingsRow').style.display = m === 'create_listings_only' ? '' : 'none';
   document.getElementById('waitRow').style.display = m === 'wait_next_turn' ? '' : 'none';
 }
 modeChanged();
@@ -249,6 +251,7 @@ document.getElementById('runForm').addEventListener('submit', async (e)=>{
     max_ads: parseInt(f.get('max_ads')),
     renew_min_count: parseInt(f.get('renew_min_count') || '1'),
     renew_max_count: parseInt(f.get('renew_max_count') || '5'),
+    create_listings_count: parseInt(f.get('create_listings_count')) || 1,
     min_price: num('min_price', null), max_price: num('max_price', null),
     min_delay_s: num('min_delay_s', 2), max_delay_s: num('max_delay_s', 5),
     shuffle: !!f.get('shuffle'), split_locations: !!f.get('split_locations'),

@@ -2344,6 +2344,93 @@ class PlaywrightDriver(BaseDriver):
             self._last_error = f"draft save failed: {type(exc).__name__}: {str(exc)[:160]}"
             return None
 
+    def create_listings_only_tab(self, payload: dict):
+        """Create Listings Only: open a NEW TAB at the create-item form,
+        wait until the form is fully loaded, fill it with the existing
+        draft-publish filler, and LEAVE THE TAB OPEN. Never clicks Next,
+        Publish, Save Draft, or any submit action. Returns the tab on
+        success, None on failure (a failed tab is closed so only completed
+        forms stay open).
+        """
+        self._ensure()
+        assert self._context is not None
+        tab = self._context.new_page()
+        try:
+            tab.goto("https://www.facebook.com/marketplace/create/item",
+                     wait_until="domcontentloaded", timeout=60000)
+            try:
+                tab.wait_for_load_state("load", timeout=60000)
+            except Exception:
+                pass
+            # Form-ready wait: usable Title + Price controls, a details /
+            # location section present, no loading indicator, stable on two
+            # consecutive polls — the same readiness idea as the Publish
+            # Drafts editor check. Bounded at ~120s so a form that never
+            # renders fails this listing instead of hanging the run; the
+            # payload pause checkpoint keeps Pause/Stop responsive.
+            stable = 0
+            ready = False
+            for _ in range(120):
+                pause = payload.get("_pause_checkpoint")
+                if callable(pause):
+                    pause()
+                try:
+                    ready_now = tab.evaluate("""() => {
+                      const usable = el => { const r=el.getBoundingClientRect();
+                        const s=getComputedStyle(el); return r.width>0 && r.height>0 &&
+                        s.display!=='none' && s.visibility!=='hidden' && !el.disabled &&
+                        el.getAttribute('aria-disabled') !== 'true'; };
+                      const text = (document.body?.innerText || '').toLowerCase();
+                      const fields = Array.from(document.querySelectorAll('input,textarea,[role=textbox]')).filter(usable);
+                      const attr = el => ((el.getAttribute('aria-label') || '') + ' ' +
+                        (el.placeholder || '') + ' ' + (el.getAttribute('name') || '')).toLowerCase();
+                      const hasTitle = fields.some(el => /\\btitle\\b/.test(attr(el)));
+                      const hasPrice = fields.some(el => /\\bprice\\b/.test(attr(el)));
+                      const titlePrice = (hasTitle && hasPrice) ||
+                        (/\\btitle\\b/.test(text) && /\\bprice\\b/.test(text) && fields.length >= 2);
+                      const details = /more details|show more details|\\blocation\\b/.test(text);
+                      const busy = Array.from(document.querySelectorAll(
+                        '[role=progressbar], [data-visualcompletion=loading-state]'
+                      )).some(usable);
+                      return titlePrice && details && fields.length >= 2 && !busy;
+                    }""")
+                except Exception:
+                    ready_now = False
+                if ready_now:
+                    stable += 1
+                    if stable >= 2:
+                        ready = True
+                        break
+                else:
+                    stable = 0
+                try:
+                    tab.wait_for_timeout(1000)
+                except Exception:
+                    pass
+            if not ready:
+                self._last_error = "Create Listings Only: create-item form did not finish loading"
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+                return None
+            if not self._fill_form_draft_publish(tab, payload):
+                self._last_error = (getattr(self, "_last_form_error", None)
+                                    or "Create Listings Only: form fill failed")
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+                return None
+            return tab
+        except Exception as exc:
+            self._last_error = f"Create Listings Only failed: {type(exc).__name__}: {str(exc)[:140]}"
+            try:
+                tab.close()
+            except Exception:
+                pass
+            return None
+
     def publish_draft(self, draft_id: str, location: str | None = None) -> bool:
         """Draft & Publish: open a queued draft from Your Drafts in a NEW tab and publish it.
 
