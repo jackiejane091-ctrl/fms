@@ -2344,17 +2344,30 @@ class PlaywrightDriver(BaseDriver):
             self._last_error = f"draft save failed: {type(exc).__name__}: {str(exc)[:160]}"
             return None
 
-    def publish_draft(self, draft_id: str) -> bool:
+    def publish_draft(self, draft_id: str, location: str | None = None) -> bool:
         """Draft & Publish: open a queued draft from Your Drafts in a NEW tab and publish it.
 
         Normal ID-based callers keep the existing exact-ID path. The isolated new
         Draft & Publish workflow passes draft-title:<title>, which follows the
         user's requested Drafts-list -> new tab -> Publish sequence.
+        v0.2.163: when the caller supplies a location (Draft & Publish 1),
+        it is selected and verified in the editor before Next, and Publish
+        is confirmed by the exact draft leaving Drafts (45s, full URL key).
+        Without a location, the token branch keeps its exact old behavior.
         """
         self._ensure()
         page = self._page
         assert page is not None
         import re
+        import time
+        from urllib.parse import urlsplit, parse_qsl
+
+        def _dp1_draft_url_key(value):
+            parsed = urlsplit(value or "")
+            query = tuple(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
+            return ((parsed.hostname or "").lower(),
+                    parsed.path.rstrip("/"), query)
+
         token = str(draft_id or "").strip()
         if token.startswith("draft-title:"):
             title = token[len("draft-title:"):].strip()
@@ -2403,6 +2416,19 @@ class PlaywrightDriver(BaseDriver):
                     return False
                 if target_href.startswith("/"):
                     target_href = "https://www.facebook.com" + target_href
+                # v0.2.163 confirmation guard: removal can only be verified
+                # when the opened URL is one of the Drafts-list links. If
+                # this card's link is not among them, confirmation is
+                # skipped and the legacy Publish-button check decides.
+                confirm_key = None
+                try:
+                    _links_now = self._list_draft_links(page)
+                    _target_key = _dp1_draft_url_key(target_href)
+                    if any(_dp1_draft_url_key(item.get("href")) == _target_key
+                           for item in _links_now):
+                        confirm_key = _target_key
+                except Exception:
+                    confirm_key = None
 
                 # Open the selected draft in a fresh browser tab, preserving the
                 # original Drafts tab for the next item and existing tab workflow.
@@ -2414,6 +2440,52 @@ class PlaywrightDriver(BaseDriver):
                 tab.goto(target_href, wait_until="domcontentloaded", timeout=0)
                 tab.wait_for_load_state("load", timeout=0)
                 tab.get_by_text(title, exact=True).first.wait_for(state="visible", timeout=0)
+
+                if location is not None:
+                    # v0.2.163: same location step as Publish Drafts —
+                    # select the run's first product location (passed by
+                    # the engine) and verify it before Next is clicked.
+                    # Fail closed: any location failure skips this draft
+                    # without Next or Publish; the draft row is preserved.
+                    location_input = None
+                    while location_input is None:
+                        try:
+                            labels = tab.get_by_text("Location", exact=True)
+                            for li in range(min(labels.count(), 8)):
+                                label_node = labels.nth(li)
+                                if label_node.is_visible():
+                                    try:
+                                        label_node.scroll_into_view_if_needed(timeout=2000)
+                                    except Exception:
+                                        pass
+                                    break
+                        except Exception:
+                            pass
+                        try:
+                            candidate, _loc_detail = self._find_location_input_in_section(tab)
+                            if candidate is not None and candidate.is_visible() and candidate.is_enabled():
+                                try:
+                                    candidate.scroll_into_view_if_needed(timeout=3000)
+                                except Exception:
+                                    pass
+                                location_input = candidate
+                        except Exception:
+                            pass
+                        if location_input is None:
+                            tab.wait_for_timeout(1000)
+                    location_ok, location_detail = self._select_location(tab, location)
+                    if not location_ok:
+                        self._last_error = (
+                            f"Saved location could not be selected: {location_detail}")
+                        return False
+                    try:
+                        selected_location = (location_input.input_value() or "").strip()
+                    except Exception:
+                        selected_location = ""
+                    if not selected_location or location.split(",")[0].strip().lower() not in selected_location.lower():
+                        self._last_error = (
+                            "Location selection could not be verified; Next was not clicked")
+                        return False
 
                 # Draft & Publish 1 ONLY: the edit-listing form requires Next before
                 # Facebook reveals the final Publish action. Wait for a visible,
@@ -2472,6 +2544,44 @@ class PlaywrightDriver(BaseDriver):
                 human.human_pause(500, 900)
                 publish_button.click(timeout=10000)
                 human.human_pause(2500, 4000)
+                if location is not None and confirm_key is not None:
+                    # v0.2.163: same post-publish confirmation as Publish
+                    # Drafts — success requires the exact draft URL (full
+                    # key incl. draft_id) to disappear from the Drafts list
+                    # within 45s. A slow Facebook list update past 45s
+                    # reports failed and the draft is retried next run.
+                    confirm_deadline = time.monotonic() + 45
+                    last_confirm_error = None
+                    confirmed = False
+                    while time.monotonic() < confirm_deadline:
+                        try:
+                            page.goto(
+                                "https://www.facebook.com/marketplace/you/selling?state=DRAFT",
+                                wait_until="domcontentloaded", timeout=60000)
+                            try:
+                                page.wait_for_load_state("load", timeout=15000)
+                            except Exception:
+                                pass
+                            remaining = self._list_draft_links(page)
+                            still_in_drafts = any(
+                                _dp1_draft_url_key(item.get("href")) == confirm_key
+                                for item in remaining
+                            )
+                            if not still_in_drafts:
+                                confirmed = True
+                                break
+                            last_confirm_error = "Facebook still shows this listing in Drafts"
+                        except Exception as confirm_exc:
+                            last_confirm_error = (
+                                f"{type(confirm_exc).__name__}: {str(confirm_exc)[:100]}")
+                        page.wait_for_timeout(1500)
+                    if not confirmed:
+                        self._last_error = (
+                            f"Publish was clicked for '{title}', "
+                            f"but Facebook did not confirm removal from Drafts: "
+                            f"{last_confirm_error or 'confirmation timed out'}")
+                        return False
+                    return True
                 # The click is the requested action. Allow Facebook time to process
                 # it; if the editor clearly remains unchanged, report pending.
                 try:

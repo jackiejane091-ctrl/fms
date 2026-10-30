@@ -1610,19 +1610,60 @@ class RunController:
 
     def _publish_draft_rows_1(self, account: dict, driver,
                             drafts: list[dict]) -> None:
-        """Publish given draft rows (all-together or one-by-one with gap)."""
+        """Publish given draft rows (all-together or one-by-one with gap).
+
+        v0.2.163: same location rule as Publish Drafts — the run's first
+        selected product's saved location is used for every draft, the
+        editor gets it before Next, and Publish is confirmed by the
+        draft leaving Drafts. A missing location fails closed: the draft
+        is skipped (preserved for retry), never published blind.
+        """
         label = account["label"]
         mode = self.cfg.publish_mode
         gap_s = self.cfg.publish_gap_min * 60.0 / max(0.1, self.cfg.speed)
         self.log(f"[{label}] publish phase: {len(drafts)} draft(s), mode={mode}",
                  account_id=account["id"])
+        # Draft & Publish 1 (v0.2.163): same location rule as Publish
+        # Drafts — the run's first selected product's saved location is
+        # used for every draft in this run. No per-draft title matching.
+        _publish_location: str | None = None
+        try:
+            selected_product_ids = list(self.cfg.product_ids or [])
+            if selected_product_ids:
+                selected_product = products_mod.get_product(self.db, int(selected_product_ids[0]))
+                saved_locations = (selected_product or {}).get("locations") or []
+                saved_locations = [str(v).strip() for v in saved_locations if str(v or "").strip()]
+                if saved_locations:
+                    _publish_location = saved_locations[0]
+        except Exception:
+            _publish_location = None
         for i, d in enumerate(drafts):
             self._wait_if_paused()
             if mode == "one_by_one" and i > 0:
                 self.log(f"[{label}] waiting {self.cfg.publish_gap_min} min "
                          f"before next publish", account_id=account["id"])
                 self._sleep_interruptible(gap_s)
-            ok = driver.publish_draft(d["fb_listing_id"])
+            if _publish_location is None:
+                # Fail closed: never advance/publish a draft when its
+                # saved location could not be resolved. The draft row
+                # stays 'draft' so a resumed run retries the SAME draft.
+                self.db.execute(
+                    "UPDATE listings SET status = 'draft', error = ? WHERE id = ?",
+                    ("publish pending: Saved location was not found for this draft; "
+                     "Next was not clicked", d["id"]),
+                )
+                self.log(f"[{label}] PUBLISH PENDING for saved draft "
+                         f"'{d['title_used']}': Saved location was not found for "
+                         "this draft; Next was not clicked. "
+                         "Draft preserved for retry; it will not be recreated.",
+                         level="error", account_id=account["id"])
+                continue
+            try:
+                ok = driver.publish_draft(d["fb_listing_id"], _publish_location)
+            except TypeError:
+                # Compatibility with legacy/test drivers that expose the old
+                # one-argument method; production PlaywrightDriver accepts location.
+                ok = driver.publish_draft(d["fb_listing_id"])
             if ok:
                 self.db.execute(
                     "UPDATE listings SET status = 'posted', posted_at = ? "
