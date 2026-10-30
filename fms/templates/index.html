@@ -53,7 +53,7 @@
       <h3 style="margin:0 0 14px">Listing Settings</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
         <label><span id="mmMinLabel">Min listings</span><br><input type="number" id="mmMinAds" value="1" min="1" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
-        <label><span id="mmMaxLabel">Max listings</span><br><input type="number" id="mmMaxAds" value="3" min="1" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
+        <label id="mmMaxAdsField"><span id="mmMaxLabel">Max listings</span><br><input type="number" id="mmMaxAds" value="3" min="1" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
         <label id="mmMinPriceField">Min price<br><input type="number" id="mmMinPrice" placeholder="—" min="0" step="any" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
         <label id="mmMaxPriceField">Max price<br><input type="number" id="mmMaxPrice" placeholder="—" min="0" step="any" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px"></label>
       </div>
@@ -137,17 +137,21 @@ function configureMinMaxDialog(){
   const isRenew1 = selectedAction === 'renew_listing_1';
   const isDeleteRelist = selectedAction === 'delete_relist';
   const isPublishDrafts = selectedAction === 'publish_drafts';
+  const isCreateListingsOnly = selectedAction === 'create_listings_only';
   const isCountOnly = isRenew1 || isDeleteRelist || isPublishDrafts;
-  document.getElementById('mmMinLabel').textContent = isPublishDrafts ? 'Min Publish Drafts' : (isDeleteRelist ? 'Min Delete & Relist' : (isRenew1 ? 'Min Renew Listings' : 'Min listings'));
+  document.getElementById('mmMinLabel').textContent = isCreateListingsOnly ? 'No. of Listings' : (isPublishDrafts ? 'Min Publish Drafts' : (isDeleteRelist ? 'Min Delete & Relist' : (isRenew1 ? 'Min Renew Listings' : 'Min listings')));
+  document.getElementById('mmMaxAdsField').style.display = isCreateListingsOnly ? 'none' : '';
   document.getElementById('mmMaxLabel').textContent = isPublishDrafts ? 'Max Publish Drafts' : (isDeleteRelist ? 'Max Delete & Relist' : (isRenew1 ? 'Max Renew Listings' : 'Max listings'));
   document.getElementById('mmMinPriceField').style.display = isPublishDrafts ? 'none' : (isRenew1 ? 'none' : (isDeleteRelist ? 'none' : ''));
   document.getElementById('mmMaxPriceField').style.display = isPublishDrafts ? 'none' : (isRenew1 ? 'none' : (isDeleteRelist ? 'none' : ''));
-  document.getElementById('mmHint').textContent = isPublishDrafts
+  document.getElementById('mmHint').textContent = isCreateListingsOnly
+    ? 'Har ID pe No. of Listings ke mutabiq forms bhari jayengi, har listing ki price Min–Max ke darmiyan hogi. Koi form publish ya save nahi hoga.'
+    : (isPublishDrafts
     ? 'Saved drafts list ke start se order mein Min–Max ke darmiyan drafts publish honge. Har draft ke liye tab close karke agla draft process hoga.'
     : (isDeleteRelist
     ? 'Har account par Min–Max ke darmiyan eligible Delete & Relist listings process hongi.'
     : (isRenew1 ? 'Har account ke liye Min–Max ke darmiyan eligible listings renew karne ki koshish hogi.'
-    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.'));
+    : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.')));
 }
 async function startRun(){
   // v0.2.50: show the Min/Max dialog first — Save starts the run.
@@ -229,6 +233,12 @@ async function _doStartRun(){
     if(!isNaN(_minP) && !isNaN(_maxP) && _maxP > 0){
       body.min_price = Math.min(_minP, _maxP); body.max_price = Math.max(_minP, _maxP);
     }
+  }
+  // Create Listings Only: the dashboard dialog's single field is the exact
+  // count. Read it fresh (not the swapped _minA) so a value above the
+  // hidden Max field is never reduced by the Min/Max swap above.
+  if(actVal === 'create_listings_only'){
+    body.create_listings_count = Math.max(1, parseInt(_mm('mmMinAds').value) || 1);
   }
   // Include all products (home page uses all products for posting modes).
   body.product_ids = {{ product_ids_json|default('[]') }};
