@@ -2981,11 +2981,51 @@ class PlaywrightDriver(BaseDriver):
                 pass
             human.human_pause(500, 900)
             publish_button.click(timeout=10000)
-            # Allow Facebook 2–3 seconds to process the Publish click before
-            # moving to the next saved draft. Do not open or navigate any other
-            # listing/create-item pages as part of this action.
-            human.human_pause(2000, 3000)
-            return {"ok": True, "label": card["label"] or None, "reason": None, "empty": False}
+
+            # Confirm the actual Facebook state change, not merely that the
+            # Publish button accepted a click. Keep the query string: Facebook
+            # draft editor URLs share a path, while draft_id in the query
+            # distinguishes individual drafts.
+            from urllib.parse import urlsplit, parse_qsl
+
+            def _draft_url_key(value):
+                parsed = urlsplit(value or "")
+                query = tuple(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
+                return ((parsed.hostname or "").lower(),
+                        parsed.path.rstrip("/"), query)
+
+            target_draft_key = _draft_url_key(href)
+            confirm_deadline = time.monotonic() + 45
+            last_confirm_error = None
+            while time.monotonic() < confirm_deadline:
+                try:
+                    page.goto(
+                        "https://www.facebook.com/marketplace/you/selling?state=DRAFT",
+                        wait_until="domcontentloaded", timeout=60000)
+                    try:
+                        page.wait_for_load_state("load", timeout=15000)
+                    except Exception:
+                        pass
+                    remaining = self._list_draft_links(page)
+                    still_in_drafts = any(
+                        _draft_url_key(item.get("href")) == target_draft_key
+                        for item in remaining
+                    )
+                    if not still_in_drafts:
+                        return {"ok": True, "label": card["label"] or None,
+                                "reason": None, "empty": False}
+                    last_confirm_error = "Facebook still shows this listing in Drafts"
+                except Exception as confirm_exc:
+                    last_confirm_error = (
+                        f"{type(confirm_exc).__name__}: {str(confirm_exc)[:100]}")
+                page.wait_for_timeout(1500)
+
+            self._last_error = (
+                f"Publish was clicked for '{card['label'] or 'draft'}', "
+                f"but Facebook did not confirm removal from Drafts: "
+                f"{last_confirm_error or 'confirmation timed out'}")
+            return {"ok": False, "label": card["label"] or None,
+                    "reason": self._last_error, "empty": False}
         except _AccountSessionStop:
             # Account/session-wide failure: never convert it into a skipped
             # draft. Re-raise so the engine logs it and stops this
