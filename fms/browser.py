@@ -1678,13 +1678,20 @@ class PlaywrightDriver(BaseDriver):
 
 
         try:
-            ok, detail = self._open_create_item_form(page)
-            if not ok:
-                # v0.2.56: the form never opened — still snap so the user
-                # sees what the page showed instead.
-                self._note_field_error(page, "form-open", detail or
-                                       "create-item form did not open")
-                return False
+            # Create Listings Only sets payload["_skip_open_form"]: its tab
+            # already opened the create link and waited for the form to be
+            # ready, so fill directly without the feed -> Marketplace ->
+            # Create click detour. Every other caller keeps the click-through
+            # (v0.2.44: direct URL alone once left the Title field never
+            # appearing; the CLO readiness wait covers that case instead).
+            if not payload.get("_skip_open_form", False):
+                ok, detail = self._open_create_item_form(page)
+                if not ok:
+                    # v0.2.56: the form never opened — still snap so the user
+                    # sees what the page showed instead.
+                    self._note_field_error(page, "form-open", detail or
+                                           "create-item form did not open")
+                    return False
 
             # v0.2.58: user's EXACT form order (no more guessing):
             # Main form: Photos -> Title -> Price -> Category -> Condition.
@@ -2346,8 +2353,9 @@ class PlaywrightDriver(BaseDriver):
 
     def create_listings_only_tab(self, payload: dict):
         """Create Listings Only: open a NEW TAB at the create-item form,
-        wait until the form is fully loaded, fill it with the existing
-        draft-publish filler, and LEAVE THE TAB OPEN. Never clicks Next,
+        wait until the form is fully loaded, fill it directly on the
+        already-loaded form (no feed -> Marketplace -> Create detour)
+        with the existing draft-publish filler, and LEAVE THE TAB OPEN. Never clicks Next,
         Publish, Save Draft, or any submit action. Returns the tab on
         success, None on failure (a failed tab is closed so only completed
         forms stay open).
@@ -2414,6 +2422,10 @@ class PlaywrightDriver(BaseDriver):
                 except Exception:
                     pass
                 return None
+            # Direct fill: this tab already opened the create link and
+            # waited for the form to be ready — tell the filler to skip
+            # the feed -> Marketplace -> Create click detour.
+            payload["_skip_open_form"] = True
             if not self._fill_form_draft_publish(tab, payload):
                 self._last_error = (getattr(self, "_last_form_error", None)
                                     or "Create Listings Only: form fill failed")
