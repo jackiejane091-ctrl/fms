@@ -135,27 +135,29 @@ def _norm_label(s: Any) -> str:
 
 def _select_category(page, expected: Any,
                      results: list[dict[str, str]]) -> None:
-    """Category selection from the OPEN list only (v0.2.173).
+    """Select the saved Marketplace category from the currently opened menu.
 
-    Opens the Category combobox and immediately selects the saved
-    product category from the list that opened — matching only VISIBLE
-    options, never a hidden first DOM match (the failure that left
-    category FAILED while the list stood open). Uses the popup's own
-    search box when one exists and scrolls the list in rounds, because
-    Facebook's category list is long and virtualized.
-
-    Records VERIFIED / UNCERTAIN / FAILED / SKIPPED like the other
-    field steps and always returns normally: on failure the form
-    workflow CONTINUES to the next field (never stops). Serves the
-    category step only; _select_option (availability, condition) is
-    untouched.
+    This is deliberately best-effort: category failure is recorded, but the
+    caller continues with Condition and the remaining form fields.  Only the
+    category interaction is handled here; other dropdowns/workflows are not
+    changed.
     """
     if expected is None or str(expected).strip() == "":
         _record(results, "category", None, "", "SKIPPED",
                 "No saved value configured")
         return
+
     wanted = str(expected).strip()
     wanted_norm = _norm_label(wanted)
+    # Product Manager may store a category path separated by ||.  Facebook's
+    # category picker normally exposes the selectable leaf/label, so try the
+    # complete saved value first, then its individual path labels.
+    wanted_labels = [wanted]
+    if "||" in wanted:
+        wanted_labels.extend(part.strip() for part in wanted.split("||")
+                             if part.strip() and part.strip() != wanted)
+    wanted_norms = {_norm_label(item) for item in wanted_labels}
+
     try:
         field = S.to_playwright(page, S.F_CATEGORY)
         field.wait_for(timeout=8000)
@@ -164,97 +166,203 @@ def _select_category(page, expected: Any,
         except Exception:
             pass
         human.human_click(page, field)
-        human.human_pause(400, 700)
-        # The popup that actually opened: first VISIBLE listbox/menu,
-        # never a hidden first DOM match.
+        human.human_pause(450, 750)
+
+        # Facebook has rendered the category search input both inside and
+        # outside the listbox in different UI builds. Search globally among
+        # visible search-like inputs first, then fall back to visible inputs
+        # inside the active popup.
+        popup_selector = "[role='listbox'], [role='menu'], [role='tree'], [role='dialog']"
         popup = None
         try:
-            cands = page.locator("[role='listbox'], [role='menu']")
-            for i in range(cands.count()):
-                cand = cands.nth(i)
+            popups = page.locator(popup_selector)
+            for idx in range(popups.count()):
+                candidate = popups.nth(idx)
                 try:
-                    if cand.is_visible():
-                        popup = cand
+                    if candidate.is_visible():
+                        popup = candidate
                         break
                 except Exception:
                     continue
         except Exception:
-            popup = None
-        if popup is None:
-            popup = page.locator("[role='listbox'], [role='menu']").first
-            try:
-                popup.wait_for(state="visible", timeout=8000)
-            except Exception:
-                _record(results, "category", wanted, "", "FAILED",
-                        "Category dropdown did not open "
-                        "(no options list appeared)")
-                return
-        # Use the popup's own search box if it has one (a human would;
-        # it also defeats the virtualized long list).
-        try:
-            search = popup.locator(
-                "input[type='text'], input[type='search'], "
-                "input:not([type])").first
-            if search.count() > 0 and search.is_visible():
-                search.click(timeout=2000)
-                search.fill(wanted, timeout=3000)
-                human.human_pause(500, 900)
-        except Exception:
             pass
-        option_sel = "[role='option'], [role='menuitem'], [role='treeitem']"
-        seen: list[str] = []
-        seen_norms: set[str] = set()
-        match = None
-        for _round in range(5):
-            options = popup.locator(option_sel)
-            for i in range(min(options.count(), 60)):
-                opt = options.nth(i)
+
+        search_candidates = page.locator(
+            "input[type='search'], input[placeholder*='Search' i], "
+            "input[aria-label*='Search' i], input[role='combobox']"
+        )
+        search = None
+        try:
+            for idx in range(search_candidates.count()):
+                candidate = search_candidates.nth(idx)
                 try:
-                    # VISIBLE options only: hidden copies of the wanted
-                    # text must never be picked.
-                    if not opt.is_visible():
-                        continue
-                    text = (opt.inner_text(timeout=800) or "").strip()
+                    if candidate.is_visible() and candidate.is_enabled():
+                        search = candidate
+                        break
                 except Exception:
                     continue
-                if not text:
-                    continue
-                norm = _norm_label(text)
-                if norm not in seen_norms:
-                    seen_norms.add(norm)
-                    seen.append(text)
-                if norm == wanted_norm:
-                    match = opt
-                    break
-            if match is not None:
-                break
+        except Exception:
+            pass
+        if search is None and popup is not None:
             try:
-                popup.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+                local_inputs = popup.locator(
+                    "input[type='text'], input:not([type]), input[type='search']"
+                )
+                for idx in range(local_inputs.count()):
+                    candidate = local_inputs.nth(idx)
+                    try:
+                        if candidate.is_visible() and candidate.is_enabled():
+                            search = candidate
+                            break
+                    except Exception:
+                        continue
             except Exception:
                 pass
-            human.human_pause(350, 600)
-        if match is None:
+
+        if search is not None:
+            try:
+                search.click(timeout=2500)
+                search.fill(wanted_labels[-1], timeout=3500)
+                human.human_pause(500, 850)
+            except Exception:
+                # Search is an enhancement; visible-option matching below
+                # remains available if this particular UI has no usable box.
+                pass
+
+        option_selector = (
+            "[role='option'], [role='menuitem'], [role='treeitem'], "
+            "[role='listitem']"
+        )
+        seen: list[str] = []
+        seen_norms: set[str] = set()
+        selected = None
+
+        # Virtualized category menus can replace their visible options as the
+        # user scrolls. Scroll the actual scrollable ancestor, not just the
+        # outer listbox (which may not own the scroll position).
+        for _round in range(10):
+            options = page.locator(option_selector)
+            try:
+                count = min(options.count(), 120)
+            except Exception:
+                count = 0
+            for idx in range(count):
+                option = options.nth(idx)
+                try:
+                    if not option.is_visible():
+                        continue
+                    label = (option.inner_text(timeout=900) or "").strip()
+                except Exception:
+                    continue
+                if not label:
+                    continue
+                norm = _norm_label(label)
+                if norm not in seen_norms:
+                    seen_norms.add(norm)
+                    seen.append(label)
+                if norm in wanted_norms:
+                    selected = option
+                    break
+            if selected is not None:
+                break
+
+            # Fallback for Facebook builds which render clickable menu rows
+            # without ARIA option roles. Match exact visible text only.
+            if _round == 0:
+                for label in wanted_labels:
+                    try:
+                        candidates = page.get_by_text(label, exact=True)
+                        for idx in range(min(candidates.count(), 20)):
+                            candidate = candidates.nth(idx)
+                            try:
+                                if candidate.is_visible() and candidate.is_enabled():
+                                    selected = candidate
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+                    if selected is not None:
+                        break
+                if selected is not None:
+                    break
+
+            try:
+                scroll_info = page.evaluate("""() => {
+                    const roots = Array.from(document.querySelectorAll(
+                      '[role="listbox"], [role="menu"], [role="tree"], [role="dialog"]'
+                    )).filter(el => {
+                      const r = el.getBoundingClientRect();
+                      return r.width && r.height && getComputedStyle(el).visibility !== 'hidden';
+                    });
+                    const root = roots[0] || document.activeElement;
+                    let el = root;
+                    while (el && el !== document.body) {
+                      const st = getComputedStyle(el);
+                      if (el.scrollHeight > el.clientHeight + 4 &&
+                          /(auto|scroll)/.test(st.overflowY)) {
+                        const before = el.scrollTop;
+                        el.scrollTop = Math.min(el.scrollTop + Math.max(240, el.clientHeight * 0.8),
+                                                el.scrollHeight);
+                        if (el.scrollTop !== before) return true;
+                      }
+                      el = el.parentElement;
+                    }
+                    const before = window.scrollY;
+                    window.scrollBy(0, 500);
+                    return window.scrollY !== before;
+                }""")
+                if not scroll_info:
+                    # A mouse wheel over the open popup helps when the menu
+                    # handles scrolling through an event listener.
+                    if popup is not None:
+                        box = popup.bounding_box()
+                        if box:
+                            page.mouse.move(box["x"] + box["width"] / 2,
+                                            box["y"] + box["height"] / 2)
+                            page.mouse.wheel(0, 500)
+            except Exception:
+                pass
+            human.human_pause(250, 450)
+
+        if selected is None:
             _record(results, "category", wanted, "", "FAILED",
-                    "No visible matching category option appeared. Options seen: "
-                    + (" | ".join(seen[:12]) if seen else "(none)"))
+                    "Saved category was not found in visible menu options. "
+                    "Visible options: " + (" | ".join(seen[:16]) if seen else "(none)"))
             return
-        human.human_click(page, match)
-        human.human_pause(300, 600)
+
+        human.human_click(page, selected)
+        human.human_pause(350, 600)
         actual = _visible_value(field)
         if not actual:
             try:
                 actual = (field.inner_text(timeout=2000) or "").strip()
             except Exception:
                 actual = ""
-        if wanted_norm and wanted_norm in _norm_label(actual):
+        actual_norm = _norm_label(actual)
+        if any(label_norm and label_norm in actual_norm
+               for label_norm in wanted_norms):
             _record(results, "category", wanted, actual, "VERIFIED",
-                    "Selected option read back from the Category control")
+                    "Selected category read back from Category control")
         else:
-            _record(results, "category", wanted, actual, "UNCERTAIN",
-                    "Option clicked, but selected field text did not exactly confirm it")
+            # Some FB comboboxes render the selected label in a sibling node.
+            # Check the visible field container once more before recording an
+            # uncertain result; never interrupt the rest of form filling.
+            try:
+                container_text = _norm_label(field.locator("xpath=..").inner_text(timeout=1200))
+            except Exception:
+                container_text = ""
+            if any(label_norm and label_norm in container_text
+                   for label_norm in wanted_norms):
+                _record(results, "category", wanted, container_text, "VERIFIED",
+                        "Selected category verified in Category field container")
+            else:
+                _record(results, "category", wanted, actual, "UNCERTAIN",
+                        "Option was clicked; selected value was not readable from field")
     except Exception as exc:
         _record(results, "category", wanted, "", "FAILED",
                 f"{type(exc).__name__}: {str(exc)[:180]}")
+
 
 
 def _select_option(page, field_selector, expected: Any, field: str,
