@@ -52,9 +52,24 @@ document.getElementById('newScript').addEventListener('submit', async (e)=>{
   else fmsAlert('Failed: ' + await r.text());
 });
 async function delScript(id){
-  if(!confirm('Delete script #' + id + '?')) return;
-  await fetch('/api/scripts/' + id, {method:'DELETE'});
-  location.reload();
+  // FMS's own confirm dialog (no browser "127.0.0.1:8000 says" popup).
+  if(!await fmsConfirm('Delete script #' + id + '?')) return;
+  let r;
+  try{
+    r = await fetch('/api/scripts/' + id, {method:'DELETE'});
+  }catch(err){
+    fmsAlert('Delete nahi hua: ' + err);
+    return;
+  }
+  if(r.ok){ location.reload(); return; }
+  // Never reload silently on failure: show the exact server error so a
+  // failed delete is visible instead of looking like nothing happened.
+  let detail = '';
+  try{
+    const t = await r.text();
+    try{ detail = JSON.parse(t).detail || t; }catch(_){ detail = t; }
+  }catch(_){}
+  fmsAlert('Delete nahi hua' + (detail ? ': ' + detail : ''));
 }
 </script>
 {% endblock %}
