@@ -128,6 +128,135 @@ def _fill_text(page, selector, field: str, value: Any,
                 f"{type(exc).__name__}: {str(exc)[:180]}")
 
 
+def _norm_label(s: Any) -> str:
+    """Normalize a UI label for comparison: lowercase, single spaces."""
+    return " ".join(str(s or "").lower().split())
+
+
+def _select_category(page, expected: Any,
+                     results: list[dict[str, str]]) -> None:
+    """Category selection from the OPEN list only (v0.2.173).
+
+    Opens the Category combobox and immediately selects the saved
+    product category from the list that opened — matching only VISIBLE
+    options, never a hidden first DOM match (the failure that left
+    category FAILED while the list stood open). Uses the popup's own
+    search box when one exists and scrolls the list in rounds, because
+    Facebook's category list is long and virtualized.
+
+    Records VERIFIED / UNCERTAIN / FAILED / SKIPPED like the other
+    field steps and always returns normally: on failure the form
+    workflow CONTINUES to the next field (never stops). Serves the
+    category step only; _select_option (availability, condition) is
+    untouched.
+    """
+    if expected is None or str(expected).strip() == "":
+        _record(results, "category", None, "", "SKIPPED",
+                "No saved value configured")
+        return
+    wanted = str(expected).strip()
+    wanted_norm = _norm_label(wanted)
+    try:
+        field = S.to_playwright(page, S.F_CATEGORY)
+        field.wait_for(timeout=8000)
+        try:
+            field.scroll_into_view_if_needed(timeout=2500)
+        except Exception:
+            pass
+        human.human_click(page, field)
+        human.human_pause(400, 700)
+        # The popup that actually opened: first VISIBLE listbox/menu,
+        # never a hidden first DOM match.
+        popup = None
+        try:
+            cands = page.locator("[role='listbox'], [role='menu']")
+            for i in range(cands.count()):
+                cand = cands.nth(i)
+                try:
+                    if cand.is_visible():
+                        popup = cand
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            popup = None
+        if popup is None:
+            popup = page.locator("[role='listbox'], [role='menu']").first
+            try:
+                popup.wait_for(state="visible", timeout=8000)
+            except Exception:
+                _record(results, "category", wanted, "", "FAILED",
+                        "Category dropdown did not open "
+                        "(no options list appeared)")
+                return
+        # Use the popup's own search box if it has one (a human would;
+        # it also defeats the virtualized long list).
+        try:
+            search = popup.locator(
+                "input[type='text'], input[type='search'], "
+                "input:not([type])").first
+            if search.count() > 0 and search.is_visible():
+                search.click(timeout=2000)
+                search.fill(wanted, timeout=3000)
+                human.human_pause(500, 900)
+        except Exception:
+            pass
+        option_sel = "[role='option'], [role='menuitem'], [role='treeitem']"
+        seen: list[str] = []
+        seen_norms: set[str] = set()
+        match = None
+        for _round in range(5):
+            options = popup.locator(option_sel)
+            for i in range(min(options.count(), 60)):
+                opt = options.nth(i)
+                try:
+                    # VISIBLE options only: hidden copies of the wanted
+                    # text must never be picked.
+                    if not opt.is_visible():
+                        continue
+                    text = (opt.inner_text(timeout=800) or "").strip()
+                except Exception:
+                    continue
+                if not text:
+                    continue
+                norm = _norm_label(text)
+                if norm not in seen_norms:
+                    seen_norms.add(norm)
+                    seen.append(text)
+                if norm == wanted_norm:
+                    match = opt
+                    break
+            if match is not None:
+                break
+            try:
+                popup.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+            except Exception:
+                pass
+            human.human_pause(350, 600)
+        if match is None:
+            _record(results, "category", wanted, "", "FAILED",
+                    "No visible matching category option appeared. Options seen: "
+                    + (" | ".join(seen[:12]) if seen else "(none)"))
+            return
+        human.human_click(page, match)
+        human.human_pause(300, 600)
+        actual = _visible_value(field)
+        if not actual:
+            try:
+                actual = (field.inner_text(timeout=2000) or "").strip()
+            except Exception:
+                actual = ""
+        if wanted_norm and wanted_norm in _norm_label(actual):
+            _record(results, "category", wanted, actual, "VERIFIED",
+                    "Selected option read back from the Category control")
+        else:
+            _record(results, "category", wanted, actual, "UNCERTAIN",
+                    "Option clicked, but selected field text did not exactly confirm it")
+    except Exception as exc:
+        _record(results, "category", wanted, "", "FAILED",
+                f"{type(exc).__name__}: {str(exc)[:180]}")
+
+
 def _select_option(page, field_selector, expected: Any, field: str,
                    results: list[dict[str, str]], exact: bool = True,
                    timeout: int = 8000,
@@ -423,8 +552,7 @@ def run_single_post_test(driver, payload: dict) -> dict[str, Any]:
                    ("{:.2f}".format(float(price)) if price not in (None, "") else None), results,
                    numeric_compare=True)
         _pause_checkpoint(payload)
-        _select_option(page, S.F_CATEGORY, payload.get("category"), "category", results,
-                       exact=False, production_sequence=True)
+        _select_category(page, payload.get("category"), results)
         _pause_checkpoint(payload)
         _select_option(page, S.F_CONDITION_FIELD, payload.get("condition"), "condition", results,
                        exact=True)
