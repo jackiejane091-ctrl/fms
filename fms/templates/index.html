@@ -154,11 +154,18 @@ function configureMinMaxDialog(){
     : 'Har ID pe Min–Max ke darmiyan listings hongi, har listing ki price Min–Max ke darmiyan hogi.')));
 }
 async function startRun(){
-  // v0.2.50: show the Min/Max dialog first — Save starts the run.
   const gids = selectedGroups();
   const actVal = document.getElementById('actionSel').value;
   if(!gids.length){ fmsAlert('Pehle kam az kam ek group select karein.'); return; }
   if(!actVal){ fmsAlert('Pehle Script box se koi Action ya Script select karein.'); return; }
+  // Scripts carry their own blocks (Post counts, durations) — the
+  // Min/Max dialog has no role in a script run, so skip it and start
+  // directly. Every other action still shows the dialog as before.
+  if(actVal.startsWith('script:')){
+    await _doStartRun();
+    return;
+  }
+  // v0.2.50: show the Min/Max dialog first — Save starts the run.
   configureMinMaxDialog();
   const dlg = document.getElementById('minmaxDlg');
   if(dlg){ dlg.style.display = 'flex'; }
