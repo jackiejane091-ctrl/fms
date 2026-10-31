@@ -2587,6 +2587,7 @@ class ScriptRunController:
         self._accounts_done = 0
         self._in_progress: set = set()
         self._run_accounts: list = []
+        self._failed_ids: set = set()
         self._signals: dict[str, threading.Event] = {}
 
     # -- public controls (same interface as RunController) -----------------------
@@ -2725,6 +2726,7 @@ class ScriptRunController:
             pending_ids = {acc["id"] for acc, _ in self._pending}
             delayed_ids = {acc["id"] for _, _, acc, _ in self._delayed}
             in_prog_ids = set(self._in_progress) | delayed_ids
+            failed_ids = set(self._failed_ids)
         try:
             row = self.db.fetchone(
                 "SELECT settings_json FROM runs WHERE id = ?", (self.run_id,))
@@ -2751,15 +2753,52 @@ class ScriptRunController:
                 buckets["in_progress"].append(aid)
             elif aid in done_ids:
                 buckets["done_posting"].append(aid)
-            else:
-                # In no queue, not held, not finished: login failed or a
-                # block error marked it done without finishing.
+            elif aid in failed_ids:
                 buckets["failed"].append(aid)
+            # else: held when the run stopped mid-flight (the worker
+            # already discarded it) — no live bucket; the final board
+            # maps such accounts to pending on stop.
         out: dict[str, list] = {}
         for key, ids in buckets.items():
             out[key] = [labels[i] for i in ids]
             out[key + "_ids"] = ids
         return out
+
+    def _save_final_board(self, stopped: bool = False) -> None:
+        """Snapshot the board when the run ends so the dashboard keeps
+        showing Done/Failed (like normal runs) until the user presses
+        Refresh — instead of everything silently flipping back to Pending.
+        On stop, unfinished accounts map to pending (they never finished);
+        genuine failures stay failed.
+        """
+        try:
+            qs = self.queue_state()
+            if qs is None:
+                return
+            final: dict[str, str] = {}
+            labels: dict[str, str] = {}
+            seen_ids: set[int] = set()
+            for key in ("pending", "in_progress", "done_posting", "failed"):
+                for aid, label in zip(qs[key + "_ids"], qs[key]):
+                    state = "pending" if (stopped and key == "in_progress") else key
+                    final[str(aid)] = state
+                    labels[str(aid)] = label
+                    seen_ids.add(aid)
+            for acc in self._run_accounts:
+                if acc["id"] not in seen_ids:
+                    # Held when the run ended (the worker already
+                    # discarded it): pending on stop, failed otherwise.
+                    final[str(acc["id"])] = "pending" if stopped else "failed"
+                    labels[str(acc["id"])] = acc["label"]
+            row = self.db.fetchone(
+                "SELECT settings_json FROM runs WHERE id = ?", (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+            settings["final_board"] = final
+            settings["final_board_labels"] = labels
+            self.db.execute("UPDATE runs SET settings_json=? WHERE id=?",
+                            (json.dumps(settings), self.run_id))
+        except Exception:
+            pass
 
     def _persist_state(self, account: dict, state: dict) -> None:
         row = self.db.fetchone("SELECT settings_json FROM runs WHERE id = ?",
@@ -3136,6 +3175,8 @@ class ScriptRunController:
                 reason = getattr(driver, "login_error", "") or "unknown reason"
                 self.log(f"[{label}] login FAILED: {reason}",
                          level="error", account_id=account["id"])
+                with self._q_lock:
+                    self._failed_ids.add(account["id"])
                 self._mark_done(account)
                 return
             rng = random.Random((self.run_id * 1000003) ^ account["id"])
@@ -3172,6 +3213,8 @@ class ScriptRunController:
         except Exception as exc:
             self.log(f"[{label}] script ERROR: {type(exc).__name__}: {exc}",
                      level="error", account_id=account["id"])
+            with self._q_lock:
+                self._failed_ids.add(account["id"])
             self._mark_done(account)  # avoid a poisoned account stalling the run
         finally:
             try:
@@ -3278,16 +3321,19 @@ class ScriptRunController:
             self.db.execute(
                 "UPDATE runs SET status='completed', finished_at=? WHERE id=?",
                 (utcnow(), self.run_id))
+            self._save_final_board()
             self.log("script run completed")
         except _StopRun:
             self.db.execute(
                 "UPDATE runs SET status='stopped', finished_at=? WHERE id=?",
                 (utcnow(), self.run_id))
+            self._save_final_board(stopped=True)
             self.log("script run stopped by user", level="warning")
         except Exception as exc:
             self.db.execute(
                 "UPDATE runs SET status='failed', finished_at=? WHERE id=?",
                 (utcnow(), self.run_id))
+            self._save_final_board()
             self.log(f"script run FAILED: {type(exc).__name__}: {exc}",
                      level="error")
 
