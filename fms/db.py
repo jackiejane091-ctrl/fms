@@ -227,6 +227,17 @@ class Database:
                    last_used_at TEXT NOT NULL,
                    PRIMARY KEY (account_id, image_path))"""
         )
+        # Create Listings Only sequential picture state (CLO-only). No
+        # other action reads or writes this table, and it never touches
+        # the 8-day cooldown tables above.
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS clo_image_state (
+                   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                   product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                   last_image TEXT NOT NULL,
+                   updated_at TEXT NOT NULL,
+                   PRIMARY KEY (account_id, product_id))"""
+        )
         self._conn.execute(
             "INSERT OR IGNORE INTO app_settings(key, value) VALUES (?, ?)",
             ("skip_images_days", "8")

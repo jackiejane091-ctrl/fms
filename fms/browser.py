@@ -2362,6 +2362,7 @@ class PlaywrightDriver(BaseDriver):
         """
         self._ensure()
         assert self._context is not None
+        self._clo_never_ready = False
         tab = self._context.new_page()
         try:
             tab.goto("https://www.facebook.com/marketplace/create/item",
@@ -2417,6 +2418,7 @@ class PlaywrightDriver(BaseDriver):
                     pass
             if not ready:
                 self._last_error = "Create Listings Only: create-item form did not finish loading"
+                self._clo_never_ready = True
                 try:
                     tab.close()
                 except Exception:

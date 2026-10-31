@@ -1757,6 +1757,61 @@ class RunController:
                  account_id=account["id"])
 
     # -- mode: create_listings_only (new action, v0.2.164) ------------------
+    def _clo_next_images(self, account_id: int, pid: int, product: dict) -> list[str]:
+        """Create Listings Only picture sequence (CLO-only).
+
+        Returns the next batch of pictures for one tab, in folder order:
+        main images first, then extra images, duplicates removed. The
+        batch continues from the last picture a previous CLO tab or run
+        took for this account+product (stored in clo_image_state), wraps
+        to the first picture when the folder is exhausted, and never
+        repeats a picture inside one tab. A product with no pictures
+        yields []. The position is persisted as soon as pictures are
+        taken, so a tab that later fails still moves the sequence on —
+        the next tab always takes the following pictures. Nothing here
+        reads or writes the 8-day cooldown tables.
+        """
+        from pathlib import Path as _Path
+        ordered = list(dict.fromkeys(
+            [str(p) for p in (product.get("main_images") or []) if p]
+            + [str(p) for p in (product.get("extra_images") or []) if p]))
+        if not ordered:
+            return []
+        try:
+            count = min(10, 1 + max(0, int(product.get("extra_image_count") or 0)))
+        except (TypeError, ValueError):
+            count = 1
+        last = None
+        try:
+            row = self.db.fetchone(
+                "SELECT last_image FROM clo_image_state WHERE account_id = ? AND product_id = ?",
+                (int(account_id), int(pid)),
+            )
+            last = row["last_image"] if row else None
+        except Exception:
+            last = None
+        canon = [str(_Path(p).expanduser().resolve()) for p in ordered]
+        start = 0
+        if last:
+            try:
+                start = (canon.index(str(_Path(last).expanduser().resolve())) + 1) % len(ordered)
+            except ValueError:
+                start = 0
+        picked: list[str] = []
+        idx = start
+        while len(picked) < count and len(picked) < len(ordered):
+            picked.append(ordered[idx % len(ordered)])
+            idx += 1
+        try:
+            self.db.execute(
+                "INSERT INTO clo_image_state(account_id, product_id, last_image, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(account_id, product_id) DO UPDATE SET last_image=excluded.last_image, updated_at=excluded.updated_at",
+                (int(account_id), int(pid), str(_Path(picked[-1]).expanduser().resolve()), utcnow()),
+            )
+        except Exception:
+            pass
+        return picked
+
     def _create_listings_only_flow(self, account: dict, driver, quota: int,
                                    account_idx: int) -> None:
         """Create Listings Only: fill exactly create_listings_count forms,
@@ -1764,10 +1819,10 @@ class RunController:
         tab open. Never clicks Next, Publish, Save Draft, or any submit
         action. Creates no listing records, so run posted counts never
         report a publication. The browser stays open via driver.keep_open
-        (the existing Browser Launch mechanism). Image selection reuses
-        the existing rotation/cooldown rules; usage is NOT recorded because
-        nothing is saved or published (selection itself never writes
-        cooldown history).
+        (the existing Browser Launch mechanism). Pictures follow the
+        CLO-only sequence (folder order, wrapping, persistent across
+        runs); the shared cooldown selection is replaced for this action
+        only, and nothing is written to the cooldown tables.
         """
         label = account["label"]
         # Keep the browser (and every completed tab) open after the quota
@@ -1778,39 +1833,51 @@ class RunController:
         driver.keep_open = True
         target = max(1, int(self.cfg.create_listings_count))
         completed = 0
-        consecutive_failures = 0
-        # One full product rotation failing in a row means a systemic
-        # problem (form changed, session lost), not a bad product: stop
-        # instead of looping forever. The account then follows the normal
-        # retry/failed path with its browser left open for inspection.
-        max_consecutive_failures = max(1, len(self.cfg.product_ids or []))
+        consecutive_never_ready = 0
+        # Filling errors never stop a CLO run: a failed tab is skipped,
+        # never counted, and the run keeps opening new tabs until the
+        # requested count is complete. Only a form that NEVER LOADS is
+        # guarded: that many consecutive never-ready tabs in a row (one
+        # full product rotation, as the old guard) stop the account,
+        # because no tab could ever succeed then. A fill failure resets
+        # the streak. Pause/Stop stays responsive via _wait_if_paused.
+        max_never_ready = max(1, len(self.cfg.product_ids or []))
         while completed < target:
             self._wait_if_paused()
             pid, product = self._next_product(account_idx)
             if product is None:
-                consecutive_failures += 1
-                self.log(f"[{label}] listing form skipped: no product "
-                         f"available", level="error", account_id=account["id"])
-            else:
-                payload = self._rotation(product, account_idx, account_id=account["id"])
-                tab = driver.create_listings_only_tab(payload)
-                if tab is not None:
-                    completed += 1
-                    consecutive_failures = 0
-                    self.log(f"[{label}] listing form {completed}/{target} "
-                             f"ready: '{payload['title']}' (tab left open)",
-                             account_id=account["id"])
-                    self._inter_post_delay()
-                else:
-                    consecutive_failures += 1
-                    reason = (getattr(driver, "_last_error", None)
-                              or "listing form could not be completed")
-                    self.log(f"[{label}] listing form failed: {reason}",
-                             level="error", account_id=account["id"])
-            if consecutive_failures >= max_consecutive_failures:
+                # No product to build from is a configuration problem, not
+                # a tab error: it can never succeed, so stop here instead
+                # of looping forever.
                 raise RuntimeError(
-                    f"Create Listings Only stopped: {consecutive_failures} "
-                    f"consecutive listing form(s) failed for '{label}'")
+                    f"Create Listings Only stopped: no product available for '{label}'")
+            payload = self._rotation(product, account_idx, account_id=account["id"])
+            # CLO-only picture sequence: replaces the builder's cooldown
+            # selection for this action only. Other actions never reach
+            # this line, so their images are untouched.
+            if product.get("main_images") or product.get("extra_images"):
+                payload["image_paths"] = self._clo_next_images(account["id"], pid, product)
+            tab = driver.create_listings_only_tab(payload)
+            if tab is not None:
+                completed += 1
+                consecutive_never_ready = 0
+                self.log(f"[{label}] listing form {completed}/{target} "
+                         f"ready: '{payload['title']}' (tab left open)",
+                         account_id=account["id"])
+                self._inter_post_delay()
+            else:
+                if getattr(driver, "_clo_never_ready", False):
+                    consecutive_never_ready += 1
+                else:
+                    consecutive_never_ready = 0
+                reason = (getattr(driver, "_last_error", None)
+                          or "listing form could not be completed")
+                self.log(f"[{label}] listing form failed: {reason}",
+                         level="error", account_id=account["id"])
+                if consecutive_never_ready >= max_never_ready:
+                    raise RuntimeError(
+                        f"Create Listings Only stopped: {consecutive_never_ready} "
+                        f"consecutive form(s) never finished loading for '{label}'")
         self.log(f"[{label}] created {completed} listing form(s) — tabs left "
                  f"open, nothing published or saved",
                  account_id=account["id"])
