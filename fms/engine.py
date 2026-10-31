@@ -2585,6 +2585,8 @@ class ScriptRunController:
         self._seq = itertools.count()
         self._accounts_total = 0
         self._accounts_done = 0
+        self._in_progress: set = set()
+        self._run_accounts: list = []
         self._signals: dict[str, threading.Event] = {}
 
     # -- public controls (same interface as RunController) -----------------------
@@ -2671,10 +2673,13 @@ class ScriptRunController:
     def _take_next(self):
         with self._q_lock:
             if self._pending:
-                return self._pending.popleft()
+                account, state = self._pending.popleft()
+                self._in_progress.add(account["id"])
+                return account, state
             now = time.time()
             if self._delayed and self._delayed[0][0] <= now:
                 _, _, account, state = heapq.heappop(self._delayed)
+                self._in_progress.add(account["id"])
                 return account, state
             return None
 
@@ -2704,6 +2709,57 @@ class ScriptRunController:
     def _all_done(self) -> bool:
         with self._q_lock:
             return self._accounts_done >= self._accounts_total
+
+    def queue_state(self) -> dict | None:
+        """Live board state for the dashboard (script runs only).
+
+        Same shape as RunController.queue_state, so the live dashboard
+        board shows only this run's accounts (the active-filtered queue)
+        instead of falling back to the full group list. Returns None
+        before the run's account list is built, so the board keeps its
+        existing fallback for that window.
+        """
+        with self._q_lock:
+            if not self._run_accounts:
+                return None
+            pending_ids = {acc["id"] for acc, _ in self._pending}
+            delayed_ids = {acc["id"] for _, _, acc, _ in self._delayed}
+            in_prog_ids = set(self._in_progress) | delayed_ids
+        try:
+            row = self.db.fetchone(
+                "SELECT settings_json FROM runs WHERE id = ?", (self.run_id,))
+            settings = json.loads(row["settings_json"]) if row else {}
+        except Exception:
+            settings = {}
+        prog = settings.get("script_progress", {}) or {}
+        done_ids = set()
+        for k, v in prog.items():
+            try:
+                if isinstance(v, dict) and v.get("finished"):
+                    done_ids.add(int(k))
+            except (TypeError, ValueError):
+                continue
+        labels = {a["id"]: a["label"] for a in self._run_accounts}
+        buckets: dict[str, list] = {
+            "pending": [], "in_progress": [], "done_posting": [], "failed": [],
+        }
+        for acc in self._run_accounts:
+            aid = acc["id"]
+            if aid in pending_ids:
+                buckets["pending"].append(aid)
+            elif aid in in_prog_ids:
+                buckets["in_progress"].append(aid)
+            elif aid in done_ids:
+                buckets["done_posting"].append(aid)
+            else:
+                # In no queue, not held, not finished: login failed or a
+                # block error marked it done without finishing.
+                buckets["failed"].append(aid)
+        out: dict[str, list] = {}
+        for key, ids in buckets.items():
+            out[key] = [labels[i] for i in ids]
+            out[key + "_ids"] = ids
+        return out
 
     def _persist_state(self, account: dict, state: dict) -> None:
         row = self.db.fetchone("SELECT settings_json FROM runs WHERE id = ?",
@@ -3140,6 +3196,9 @@ class ScriptRunController:
                 self._run_blocks(account, state)
             except _StopRun:
                 return
+            finally:
+                with self._q_lock:
+                    self._in_progress.discard(account["id"])
 
     def _thread_main(self) -> None:
         cfg = self.cfg
@@ -3175,6 +3234,9 @@ class ScriptRunController:
                 return
 
             # Restore per-account progress for resume-after-interruption.
+            # The live board reads this list via queue_state: it is exactly
+            # the active-filtered run queue, never the full group.
+            self._run_accounts = list(accounts)
             row = self.db.fetchone("SELECT settings_json FROM runs WHERE id=?",
                                    (self.run_id,))
             settings = json.loads(row["settings_json"]) if row else {}

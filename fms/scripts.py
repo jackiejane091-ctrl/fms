@@ -320,6 +320,11 @@ def update_script(db: Database, script_id: int, name: str | None = None,
 
 
 def delete_script(db: Database, script_id: int) -> None:
+    # runs.script_id references scripts(id) with no ON DELETE action, so
+    # deleting a script that was ever run fails with FOREIGN KEY
+    # constraint failed. Unlink past runs first — run history is kept,
+    # only the link to the deleted script is cleared.
+    db.execute("UPDATE runs SET script_id = NULL WHERE script_id = ?", (script_id,))
     db.execute("DELETE FROM scripts WHERE id = ?", (script_id,))
 
 
